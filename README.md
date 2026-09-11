@@ -6,19 +6,26 @@ synthesis, so audio starts playing while the language model is still talking.
 ## Setup
 
 ```bash
+git clone https://github.com/Snova-reemaa/sambanova-cartesia-demo.git
+cd sambanova-cartesia-demo
 python3 -m venv venv
 venv/bin/pip install -r requirements.txt
+cp .env.example .env
 ```
 
-`.env` needs:
+Then open `.env` and paste in **your own** two API keys:
 
-```
-SAMBANOVA_API_KEY=...
-SAMBANOVA_MODEL=Meta-Llama-3.3-70B-Instruct
-CARTESIA_API_KEY=...
-CARTESIA_MODEL=sonic-2
-CARTESIA_VOICE_ID=...
-```
+| variable | where to get it |
+| --- | --- |
+| `SAMBANOVA_API_KEY` | https://cloud.sambanova.ai/apis |
+| `CARTESIA_API_KEY` | https://play.cartesia.ai/keys |
+
+The model, voice, and port defaults in `.env.example` all work as-is, so those
+two lines are the only ones you have to fill in.
+
+`.env` is gitignored and must stay that way. Get your own keys rather than
+copying someone else's — they are per-account credentials, and a key pasted
+into chat or email should be considered burned.
 
 ## Live demo — mic or typing
 
