@@ -1,0 +1,24 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Virtualenv
+venv/
+.venv/
+env/
+
+# Generated audio and timings
+output/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# macOS / editors
+.DS_Store
+.vscode/
+.idea/
+*.swp

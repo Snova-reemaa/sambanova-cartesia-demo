@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice Loop — SambaNova → Cartesia</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div class="wrap">
+
+  <header class="bar">
+    <div class="brand">
+      <span class="dot" id="conn-dot"></span>
+      <strong>Voice Loop</strong>
+      <span class="sep">/</span>
+      <span class="muted" id="conn-text">connecting…</span>
+    </div>
+    <div class="stackinfo mono">
+      <span id="llm-model">—</span>
+      <span class="sep">→</span>
+      <span id="tts-model">—</span>
+      <span class="sep">·</span>
+      <span id="socket-note">socket —</span>
+    </div>
+  </header>
+
+  <section class="ask">
+    <div class="askrow">
+      <button id="mic" class="mic" type="button" aria-label="Hold to speak">
+        <svg viewBox="0 0 24 24" aria-hidden="true" width="20" height="20">
+          <path d="M12 3.5a2.6 2.6 0 0 1 2.6 2.6v5.2a2.6 2.6 0 0 1-5.2 0V6.1A2.6 2.6 0 0 1 12 3.5Z"/>
+          <path d="M6.2 11a5.8 5.8 0 0 0 11.6 0M12 16.8V20.5M9 20.5h6" fill="none" stroke-width="1.7" stroke-linecap="round"/>
+        </svg>
+        <span class="miclevel" id="miclevel"></span>
+      </button>
+      <input id="prompt" type="text" autocomplete="off" spellcheck="false"
+             placeholder="Ask something out loud, or type it here">
+      <button id="send" class="send" type="button">Send</button>
+    </div>
+    <p class="hint mono" id="hint">Press the mic and speak — it sends when you stop.</p>
+  </section>
+
+  <section class="panel">
+    <h2>This turn</h2>
+    <div class="scroller">
+      <canvas id="timeline" width="1760" height="300" aria-label="Live latency timeline"></canvas>
+    </div>
+    <div class="legend mono">
+      <span><i class="sw sw-llm-soft"></i>waiting for first byte</span>
+      <span><i class="sw sw-llm"></i>SambaNova text</span>
+      <span><i class="sw sw-tts"></i>Cartesia audio</span>
+      <span><i class="sw sw-play"></i>speaker playing</span>
+    </div>
+  </section>
+
+  <section class="readout" id="readout">
+    <div class="cell">
+      <span class="k">First token</span>
+      <span class="v v-llm" id="m-token">—</span>
+      <span class="n">SambaNova responds</span>
+    </div>
+    <div class="cell">
+      <span class="k">First sound</span>
+      <span class="v v-tts" id="m-audio">—</span>
+      <span class="n">you stop waiting here</span>
+    </div>
+    <div class="cell">
+      <span class="k">Text complete</span>
+      <span class="v" id="m-text">—</span>
+      <span class="n" id="m-chars">—</span>
+    </div>
+    <div class="cell">
+      <span class="k">Synthesis rate</span>
+      <span class="v" id="m-rate">—</span>
+      <span class="n">vs. playback speed</span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Transcript</h2>
+    <div id="log" class="log">
+      <p class="empty">Nothing yet. Ask it something.</p>
+    </div>
+  </section>
+
+  <footer class="mono">
+    The Cartesia socket opens once, when this page connects — so the numbers above
+    exclude the handshake, the way a warm production service would.
+  </footer>
+
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

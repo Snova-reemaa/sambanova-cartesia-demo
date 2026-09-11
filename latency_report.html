@@ -1,0 +1,520 @@
+<title>Prompt-to-Speech Waterfall</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --ground:   #EFF2F3;
+    --surface:  #FFFFFF;
+    --ink:      #101A20;
+    --muted:    #5B6D78;
+    --faint:    #8497A2;
+    --line:     #D5DDE1;
+    --hairline: #E4EAED;
+
+    --llm:      #C8621D;
+    --llm-soft: #F2D8C3;
+    --tts:      #16809A;
+    --tts-soft: #C6E2E9;
+    --excl:     #8497A2;
+
+    --sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:   #0C1317;
+      --surface:  #121C22;
+      --ink:      #E4ECF0;
+      --muted:    #93A6B1;
+      --faint:    #6F8290;
+      --line:     #23313A;
+      --hairline: #1A252C;
+
+      --llm:      #EF9247;
+      --llm-soft: #4A3524;
+      --tts:      #4CBDD4;
+      --tts-soft: #17414C;
+      --excl:     #6F8290;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:   #0C1317;
+    --surface:  #121C22;
+    --ink:      #E4ECF0;
+    --muted:    #93A6B1;
+    --faint:    #6F8290;
+    --line:     #23313A;
+    --hairline: #1A252C;
+
+    --llm:      #EF9247;
+    --llm-soft: #4A3524;
+    --tts:      #4CBDD4;
+    --tts-soft: #17414C;
+    --excl:     #6F8290;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.55;
+    margin: 0;
+    padding: 40px 24px 72px;
+  }
+
+  .wrap {
+    max-width: 940px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 32px;
+  }
+
+  /* ---- masthead ---- */
+
+  .masthead { display: flex; flex-direction: column; gap: 10px; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+
+  h1 {
+    font-size: 34px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.12;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  .standfirst {
+    max-width: 62ch;
+    color: var(--muted);
+    margin: 0;
+  }
+
+  /* ---- run header ---- */
+
+  .run {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 18px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .run-prompt {
+    font-family: var(--mono);
+    font-size: 14px;
+    color: var(--ink);
+  }
+  .run-prompt span {
+    color: var(--faint);
+    user-select: none;
+  }
+
+  .stack {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 28px;
+    padding-top: 14px;
+    border-top: 1px solid var(--hairline);
+  }
+
+  .stack div {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .stack b {
+    font-weight: 500;
+    color: var(--faint);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-right: 8px;
+  }
+
+  /* ---- sections ---- */
+
+  section { display: flex; flex-direction: column; gap: 14px; }
+
+  h2 {
+    font-size: 13px;
+    font-family: var(--mono);
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .lede { max-width: 66ch; margin: 0; color: var(--muted); }
+  .lede strong { color: var(--ink); font-weight: 600; }
+
+  .scroller { overflow-x: auto; }
+  svg { display: block; min-width: 660px; }
+
+  text { font-family: var(--mono); fill: var(--muted); }
+  .t-lane  { font-size: 12px; font-weight: 500; fill: var(--ink); }
+  .t-sub   { font-size: 10.5px; fill: var(--faint); }
+  .t-tick  { font-size: 10.5px; fill: var(--faint); }
+  .t-val   { font-size: 11.5px; font-weight: 600; }
+  .t-note  { font-size: 11px; fill: var(--muted); }
+  .t-zero  { font-size: 10.5px; font-weight: 600; fill: var(--ink); }
+
+  /* ---- readout ---- */
+
+  .readout {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .cell {
+    padding: 16px 18px;
+    border-right: 1px solid var(--hairline);
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .cell:last-child { border-right: none; }
+
+  .cell .k {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+  .cell .v {
+    font-family: var(--mono);
+    font-size: 22px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
+  .cell .v small { font-size: 13px; font-weight: 500; color: var(--muted); margin-left: 2px; }
+  .cell .n { font-size: 12px; color: var(--muted); }
+
+  .v-llm { color: var(--llm); }
+  .v-tts { color: var(--tts); }
+
+  /* ---- output ---- */
+
+  .output {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .output blockquote {
+    margin: 0;
+    padding-left: 16px;
+    border-left: 2px solid var(--tts);
+    max-width: 64ch;
+  }
+
+  audio { width: 100%; height: 38px; }
+
+  .cap { font-size: 12.5px; color: var(--faint); margin: 0; }
+
+  /* ---- fixes ---- */
+
+  ol.fixes {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    counter-reset: fix;
+  }
+
+  ol.fixes li {
+    display: grid;
+    grid-template-columns: 32px 1fr;
+    gap: 14px;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--hairline);
+    counter-increment: fix;
+  }
+  ol.fixes li:last-child { border-bottom: none; }
+
+  ol.fixes li::before {
+    content: counter(fix, decimal-leading-zero);
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--faint);
+    padding-top: 3px;
+  }
+
+  .fix-body { display: flex; flex-direction: column; gap: 6px; max-width: 66ch; }
+  .fix-body h3 { font-size: 15px; font-weight: 600; margin: 0; }
+  .fix-body p { margin: 0; color: var(--muted); font-size: 14px; }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.9em;
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 3px;
+    padding: 1px 5px;
+  }
+
+  footer {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--faint);
+    border-top: 1px solid var(--line);
+    padding-top: 16px;
+  }
+
+  a { color: var(--tts); }
+  :focus-visible { outline: 2px solid var(--tts); outline-offset: 2px; }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">Single run · 11 Sep 2026 · macOS, home network</div>
+    <h1>Where the seconds actually go</h1>
+    <p class="standfirst">One prompt through SambaNova inference into Cartesia speech synthesis,
+      measured at every hand-off. The headline number for a voice agent is not total time —
+      it is <strong>time until the user hears a syllable</strong>.</p>
+  </header>
+
+  <div class="run">
+    <div class="run-prompt"><span>prompt&nbsp;→&nbsp;</span>explain quantum entanglement like I'm 5, in two sentences</div>
+    <div class="stack">
+      <div><b>LLM</b>Meta-Llama-3.3-70B-Instruct</div>
+      <div><b>TTS</b>sonic-2</div>
+      <div><b>Audio</b>PCM s16le · 44.1 kHz mono</div>
+    </div>
+  </div>
+
+  <div class="readout">
+    <div class="cell">
+      <span class="k">First token</span>
+      <span class="v v-llm">1.67<small>s</small></span>
+      <span class="n">SambaNova responds</span>
+    </div>
+    <div class="cell">
+      <span class="k">First sound</span>
+      <span class="v v-tts">2.73<small>s</small></span>
+      <span class="n">the number users feel</span>
+    </div>
+    <div class="cell">
+      <span class="k">Text complete</span>
+      <span class="v">1.90<small>s</small></span>
+      <span class="n">409 chars generated</span>
+    </div>
+    <div class="cell">
+      <span class="k">Synthesis rate</span>
+      <span class="v">3.3<small>×</small></span>
+      <span class="n">faster than playback</span>
+    </div>
+  </div>
+
+  <section>
+    <h2>Timeline</h2>
+    <p class="lede">Everything left of zero happens <strong>before the user asks anything</strong> —
+      opening the Cartesia WebSocket. Pale bars are waiting for a first byte; solid bars are
+      bytes actually flowing.</p>
+
+    <div class="scroller">
+      <svg viewBox="0 0 900 322" role="img" aria-label="Latency waterfall. Socket setup takes 2217 milliseconds before the clock starts. SambaNova returns its first token at 1672 milliseconds and finishes streaming text at 1903 milliseconds. Cartesia returns its first audio at 2729 milliseconds and finishes at 7192 milliseconds.">
+        <defs>
+          <pattern id="hatch" width="6" height="6" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+            <rect width="6" height="6" fill="var(--hairline)"/>
+            <line x1="0" y1="0" x2="0" y2="6" stroke="var(--excl)" stroke-width="1.4" opacity="0.55"/>
+          </pattern>
+        </defs>
+
+        <!-- gridlines -->
+        <g stroke="var(--hairline)" stroke-width="1">
+          <line x1="162.2" y1="44" x2="162.2" y2="256"/>
+          <line x1="237.7" y1="44" x2="237.7" y2="256"/>
+          <line x1="388.7" y1="44" x2="388.7" y2="256"/>
+          <line x1="464.2" y1="44" x2="464.2" y2="256"/>
+          <line x1="539.8" y1="44" x2="539.8" y2="256"/>
+          <line x1="615.3" y1="44" x2="615.3" y2="256"/>
+          <line x1="690.8" y1="44" x2="690.8" y2="256"/>
+          <line x1="766.3" y1="44" x2="766.3" y2="256"/>
+          <line x1="841.8" y1="44" x2="841.8" y2="256"/>
+        </g>
+
+        <!-- axis -->
+        <line x1="132" y1="256" x2="872" y2="256" stroke="var(--line)" stroke-width="1"/>
+        <g class="t-tick" text-anchor="middle">
+          <text x="162.2" y="273">−2s</text>
+          <text x="237.7" y="273">−1s</text>
+          <text x="313.2" y="273">0</text>
+          <text x="388.7" y="273">1s</text>
+          <text x="464.2" y="273">2s</text>
+          <text x="539.8" y="273">3s</text>
+          <text x="615.3" y="273">4s</text>
+          <text x="690.8" y="273">5s</text>
+          <text x="766.3" y="273">6s</text>
+          <text x="841.8" y="273">7s</text>
+        </g>
+
+        <!-- t = 0 -->
+        <line x1="313.2" y1="34" x2="313.2" y2="256" stroke="var(--ink)" stroke-width="1.5"/>
+        <text class="t-zero" x="318" y="30">PROMPT SENT</text>
+
+        <!-- lane 1 : socket setup -->
+        <text class="t-lane" x="120" y="73" text-anchor="end">Socket setup</text>
+        <text class="t-sub"  x="120" y="87" text-anchor="end">not on the clock</text>
+        <rect x="145.8" y="58" width="167.4" height="26" fill="url(#hatch)" stroke="var(--excl)" stroke-width="1" stroke-dasharray="3 2" rx="2"/>
+        <text class="t-val" x="229.5" y="75" text-anchor="middle" fill="var(--muted)">2217 ms</text>
+
+        <!-- lane 2 : sambanova -->
+        <text class="t-lane" x="120" y="125" text-anchor="end">SambaNova</text>
+        <text class="t-sub"  x="120" y="139" text-anchor="end">Llama 3.3 70B</text>
+        <rect x="313.2" y="110" width="126.3" height="26" fill="var(--llm-soft)" rx="2"/>
+        <rect x="439.5" y="110" width="17.4"  height="26" fill="var(--llm)" rx="2"/>
+        <text class="t-val" x="376.4" y="127" text-anchor="middle" fill="var(--llm)">1672 ms to first token</text>
+        <line x1="456.9" y1="110" x2="456.9" y2="100" stroke="var(--llm)" stroke-width="1"/>
+        <text class="t-note" x="463" y="104">all 409 characters out in 231 ms</text>
+
+        <!-- lane 3 : cartesia -->
+        <text class="t-lane" x="120" y="177" text-anchor="end">Cartesia</text>
+        <text class="t-sub"  x="120" y="191" text-anchor="end">sonic-2</text>
+        <rect x="439.5" y="162" width="79.8"  height="26" fill="var(--tts-soft)" rx="2"/>
+        <rect x="519.3" y="162" width="337.0" height="26" fill="var(--tts)" rx="2"/>
+        <text class="t-val" x="687.8" y="179" text-anchor="middle" fill="var(--surface)">streaming audio</text>
+        <text class="t-note" x="435" y="179" text-anchor="end">1057 ms</text>
+
+        <!-- first sound callout -->
+        <line x1="519.3" y1="188" x2="519.3" y2="222" stroke="var(--tts)" stroke-width="1.5"/>
+        <circle cx="519.3" cy="188" r="3.5" fill="var(--tts)"/>
+        <text class="t-val" x="527" y="212" fill="var(--tts)">2.73 s — first sound</text>
+        <text class="t-note" x="527" y="226">the user stops waiting here</text>
+
+        <!-- end marker -->
+        <line x1="856.3" y1="162" x2="856.3" y2="240" stroke="var(--line)" stroke-width="1"/>
+        <text class="t-note" x="851" y="240" text-anchor="end">last audio 7.19 s</text>
+
+        <!-- legend -->
+        <rect x="132" y="296" width="11" height="11" fill="var(--llm-soft)" rx="2"/>
+        <text class="t-note" x="149" y="306">waiting for first byte</text>
+        <rect x="290" y="296" width="11" height="11" fill="var(--tts)" rx="2"/>
+        <text class="t-note" x="307" y="306">bytes flowing</text>
+        <rect x="410" y="296" width="11" height="11" fill="url(#hatch)" rx="2"/>
+        <text class="t-note" x="427" y="306">excluded from measurement</text>
+      </svg>
+    </div>
+  </section>
+
+  <section>
+    <h2>Does the audio ever run dry?</h2>
+    <p class="lede">Synthesis produced <strong>23.7 seconds</strong> of speech in 7.2 seconds of wall
+      clock. If playback starts the instant the first chunk lands, generation finishes
+      <strong>19 seconds ahead</strong> of the playhead — the buffer never empties, so this can stream
+      straight to a speaker with no pre-roll.</p>
+
+    <div class="scroller">
+      <svg viewBox="0 0 900 170" role="img" aria-label="Generation finishes at 7.2 seconds while playback runs from 2.7 seconds to 26.4 seconds, so the buffer never empties.">
+        <g stroke="var(--hairline)" stroke-width="1">
+          <line x1="269.0" y1="24" x2="269.0" y2="122"/>
+          <line x1="406.1" y1="24" x2="406.1" y2="122"/>
+          <line x1="543.1" y1="24" x2="543.1" y2="122"/>
+          <line x1="680.1" y1="24" x2="680.1" y2="122"/>
+          <line x1="817.2" y1="24" x2="817.2" y2="122"/>
+        </g>
+
+        <line x1="132" y1="122" x2="872" y2="122" stroke="var(--line)" stroke-width="1"/>
+        <g class="t-tick" text-anchor="middle">
+          <text x="132"   y="139">0</text>
+          <text x="269.0" y="139">5s</text>
+          <text x="406.1" y="139">10s</text>
+          <text x="543.1" y="139">15s</text>
+          <text x="680.1" y="139">20s</text>
+          <text x="817.2" y="139">25s</text>
+        </g>
+
+        <text class="t-lane" x="120" y="45" text-anchor="end">Generating</text>
+        <rect x="132" y="30" width="197.1" height="24" fill="var(--tts)" rx="2"/>
+        <text class="t-val" x="337" y="47" fill="var(--tts)">done at 7.2 s</text>
+
+        <text class="t-lane" x="120" y="93" text-anchor="end">Playing</text>
+        <rect x="206.8" y="78" width="649.1" height="24" fill="var(--tts-soft)" rx="2"/>
+        <text class="t-val" x="531.4" y="95" text-anchor="middle" fill="var(--ink)">23.7 s of speech</text>
+
+        <line x1="329.1" y1="30" x2="329.1" y2="112" stroke="var(--ink)" stroke-width="1" stroke-dasharray="3 3"/>
+        <text class="t-note" x="336" y="112">19 s of headroom from here on</text>
+      </svg>
+    </div>
+  </section>
+
+  <section>
+    <h2>The run you are reading about</h2>
+    <div class="output">
+      <audio controls preload="metadata" src="reply.wav"></audio>
+      <blockquote>Imagine you have two toy cars that are connected in a special way, so that if
+        you make one car spin around, the other car will start spinning around too, even if it's on
+        the other side of the room. This is kind of like what happens with quantum entanglement,
+        where two tiny particles can be connected in a way that lets them talk to each other and do
+        the same things, even if they're really, really far apart.</blockquote>
+      <p class="cap">Unedited output of the run charted above — 409 characters, 23.7 s of audio, 2.0 MB WAV.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>What changed in the code</h2>
+    <ol class="fixes">
+      <li>
+        <div class="fix-body">
+          <h3>The crash</h3>
+          <p>SambaNova closes a stream with a usage frame that carries an empty <code>choices</code>
+            list. <code>chunk.choices[0]</code> raised <code>IndexError</code> on the final chunk, every
+            time, after the answer had already been generated — so the run always died just before
+            writing audio. Skipping choice-less chunks fixes it.</p>
+        </div>
+      </li>
+      <li>
+        <div class="fix-body">
+          <h3>The clock started too early</h3>
+          <p>The stopwatch began before <code>websocket_connect()</code>, so 2.2 s of handshake was
+            billed to the language model. "First token" read <strong>3.9 s</strong> when the model was
+            really answering in <strong>1.67 s</strong>. In production that socket is already open when
+            the user speaks, so it does not belong on the clock at all.</p>
+        </div>
+      </li>
+      <li>
+        <div class="fix-body">
+          <h3>Timings survive the run</h3>
+          <p>Each run now writes <code>output/timings.json</code> alongside the WAV, and reports
+            synthesis rate against realtime — the number that decides whether audio can stream
+            straight to a speaker or has to buffer first.</p>
+        </div>
+      </li>
+    </ol>
+  </section>
+
+  <footer>Measured over residential wi-fi from a single warm run. Network conditions move these
+    numbers more than anything in the code — treat them as a shape, not a benchmark.</footer>
+
+</div>
