@@ -8,8 +8,10 @@ user would feel rather than including a cold handshake.
 """
 
 import asyncio
+import hmac
 import json
 import os
+import secrets
 import time
 
 from aiohttp import web, WSMsgType
@@ -22,6 +24,17 @@ from cartesia_tts import get_client as get_tts, output_format
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(HERE, "static")
+
+COOKIE_NAME = "voiceloop_session"
+SESSIONS = set()
+
+# Every turn spends real API credit, so the app is never served ungated. Set
+# DEMO_PASSPHRASE to something you can read out on a call; otherwise one is
+# generated at startup and printed to the console.
+PASSPHRASE = os.getenv("DEMO_PASSPHRASE", "").strip()
+GENERATED_PASSPHRASE = not PASSPHRASE
+if GENERATED_PASSPHRASE:
+    PASSPHRASE = secrets.token_urlsafe(9)
 
 SAMPLE_RATE = 44100
 SYSTEM_PROMPT = (
@@ -183,18 +196,76 @@ async def index(request):
     return web.FileResponse(os.path.join(STATIC, "index.html"))
 
 
+# ------------------------------------------------------------------ access
+
+def is_https(request):
+    """True when the visitor reached us over TLS, including via a tunnel."""
+    return request.headers.get("X-Forwarded-Proto", request.scheme) == "https"
+
+
+def authorised(request):
+    token = request.cookies.get(COOKIE_NAME)
+    return bool(token) and token in SESSIONS
+
+
+@web.middleware
+async def gate(request, handler):
+    # /static holds no secrets and the login page needs the stylesheet.
+    if request.path.startswith("/static") or request.path == "/login":
+        return await handler(request)
+
+    if authorised(request):
+        return await handler(request)
+
+    if request.path == "/ws":
+        return web.Response(status=401, text="unauthorized")
+
+    raise web.HTTPFound("/login")
+
+
+async def login(request):
+    if request.method == "GET":
+        return web.FileResponse(os.path.join(STATIC, "login.html"))
+
+    data = await request.post()
+    given = (data.get("passphrase") or "").strip()
+
+    # Constant-time compare so the response time leaks nothing about the value.
+    if not hmac.compare_digest(given, PASSPHRASE):
+        raise web.HTTPFound("/login?bad=1")
+
+    token = secrets.token_urlsafe(32)
+    SESSIONS.add(token)
+
+    response = web.HTTPFound("/")
+    response.set_cookie(
+        COOKIE_NAME, token,
+        httponly=True,
+        samesite="Lax",
+        secure=is_https(request),
+        max_age=60 * 60 * 8,
+    )
+    raise response
+
+
 def main():
     for key in ("SAMBANOVA_API_KEY", "CARTESIA_API_KEY"):
         if not os.getenv(key):
             raise SystemExit(f"{key} is missing from .env")
 
-    app = web.Application()
+    app = web.Application(middlewares=[gate])
     app.router.add_get("/", index)
+    app.router.add_get("/login", login)
+    app.router.add_post("/login", login)
     app.router.add_get("/ws", websocket_handler)
     app.router.add_static("/static", STATIC)
 
     port = int(os.getenv("PORT", "8080"))
-    print(f"\n  listening on http://localhost:{port}\n")
+    print(f"\n  listening on http://localhost:{port}")
+    print(f"  passphrase: {PASSPHRASE}")
+    if GENERATED_PASSPHRASE:
+        print("  (generated for this run — set DEMO_PASSPHRASE in .env to fix it)")
+    print()
     web.run_app(app, host="127.0.0.1", port=port, print=None)
 
 

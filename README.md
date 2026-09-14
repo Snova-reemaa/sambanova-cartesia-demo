@@ -47,6 +47,27 @@ To move it server-side, replace the `SpeechRecognition` block in
 resulting text as the existing `{"type": "prompt"}` message. Nothing else in the
 pipeline changes — the server only ever sees text.
 
+## Showing it to someone remote
+
+The demo is passphrase-gated: `/` redirects to a login page and the websocket
+returns 401 without a valid session cookie. Set `DEMO_PASSPHRASE` in `.env`, or
+let the server generate one and print it at startup.
+
+To put it on a temporary public URL:
+
+```bash
+brew install cloudflared          # once
+cloudflared tunnel --url http://localhost:8080
+```
+
+That prints a `https://<random>.trycloudflare.com` address. Share it along with
+the passphrase; both are needed. The URL dies the moment you stop `cloudflared`,
+which is the point — there is nothing left exposed after the call.
+
+Keep in mind the whole time the tunnel is up, every visitor's turns bill to
+**your** API keys. Stop the tunnel when the demo ends, and change the passphrase
+between audiences.
+
 ## One-shot CLI
 
 ```bash
