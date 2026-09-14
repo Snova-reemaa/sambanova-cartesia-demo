@@ -118,6 +118,23 @@ lite endpoint so it runs out of the box — that path parses HTML which can chan
 without notice and will rate limit under load, so add a key before showing
 anyone. A failed search never kills a turn; the model just answers without it.
 
+Tavily is the one to reach for: 1,000 credits a month, no card, and it returns
+a synthesised `answer` alongside the raw results. That matters here, because its
+per-result `content` is a raw page extract — one live query put an Instagram
+caption at the top and fed the model text reading "NOW PLAYING video ###". The
+`answer` field gives a clean sentence built from the same sources, which is what
+a spoken reply needs. Brave dropped its free tier in February 2026 and now wants
+a card on file.
+
+Check a key without starting the app:
+
+```bash
+venv/bin/python search.py "who won the 2026 super bowl"
+```
+
+It prints the provider it chose and confirms the key was read — by length and
+last four characters, never the key itself.
+
 ## Asking several things at once
 
 Keep talking while it works. Each request becomes its own card with live status,

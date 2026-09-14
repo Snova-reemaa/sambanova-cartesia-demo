@@ -44,6 +44,9 @@ def _clean(text):
 
 
 async def _tavily(session, query):
+    # include_answer gives back one clean sentence built from the sources.
+    # Tavily's per-result `content` is a raw page extract that often carries
+    # navigation furniture, which reads badly when spoken.
     async with session.post(
         "https://api.tavily.com/search",
         json={
@@ -51,13 +54,15 @@ async def _tavily(session, query):
             "query": query,
             "max_results": MAX_RESULTS,
             "search_depth": "basic",
+            "include_answer": True,
         },
     ) as r:
         data = await r.json()
-    return [
-        {"title": x.get("title", ""), "url": x.get("url", ""), "snippet": x.get("content", "")}
+    results = [
+        {"title": x.get("title", ""), "url": x.get("url", ""), "snippet": _clean(x.get("content"))}
         for x in data.get("results", [])[:MAX_RESULTS]
     ]
+    return {"answer": (data.get("answer") or "").strip() or None, "results": results}
 
 
 async def _brave(session, query):
@@ -122,22 +127,69 @@ PROVIDERS = {"tavily": _tavily, "brave": _brave, "serper": _serper, "ddg": _ddg}
 
 
 async def search(query):
-    """Return up to MAX_RESULTS {title, url, snippet} dicts. Never raises: a
-    failed search should degrade the answer, not kill the turn."""
+    """Return {"answer": str|None, "results": [{title, url, snippet}, ...]}.
+
+    Never raises: a failed search should degrade the answer, not kill the turn.
+    Only Tavily supplies `answer`; the others return results alone.
+    """
     name = provider()
     fn = PROVIDERS.get(name, _ddg)
     try:
         async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
-            return await fn(session, query)
+            out = await fn(session, query)
     except (asyncio.TimeoutError, aiohttp.ClientError, KeyError, ValueError):
-        return []
+        return {"answer": None, "results": []}
+
+    if isinstance(out, dict):
+        return out
+    return {"answer": None, "results": out}
 
 
-def as_context(results):
-    """Flatten results into something worth putting in a prompt."""
-    if not results:
+SNIPPET_CHARS = 500
+
+
+def as_context(found):
+    """Flatten a search payload into something worth putting in a prompt."""
+    results = found.get("results") or []
+    if not results and not found.get("answer"):
         return "No search results were returned."
+
     lines = []
+    if found.get("answer"):
+        lines.append(f"Summary of the sources:\n{found['answer']}")
     for i, r in enumerate(results, 1):
-        lines.append(f"[{i}] {r['title']}\n{r['snippet']}\nSource: {r['url']}")
+        snippet = (r["snippet"] or "")[:SNIPPET_CHARS]
+        lines.append(f"[{i}] {r['title']}\n{snippet}\nSource: {r['url']}")
     return "\n\n".join(lines)
+
+
+if __name__ == "__main__":
+    # python search.py "some query"  — check a key works without starting the app.
+    import sys
+
+    from dotenv import load_dotenv
+
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+
+    query = " ".join(sys.argv[1:]) or "who won the 2026 super bowl"
+    name = provider()
+    keyed = {"tavily": "TAVILY_API_KEY", "brave": "BRAVE_API_KEY", "serper": "SERPER_API_KEY"}
+
+    print(f"provider: {name}")
+    if name in keyed:
+        # Never print the key itself, just enough to confirm it was picked up.
+        value = os.getenv(keyed[name], "")
+        print(f"{keyed[name]}: set, {len(value)} chars, ends {value[-4:]!r}")
+    else:
+        print("no search key found — using the keyless DuckDuckGo fallback")
+
+    found = asyncio.get_event_loop().run_until_complete(search(query))
+    print(f"\n{query!r} -> {len(found['results'])} results")
+    if found.get("answer"):
+        print(f"  answer: {found['answer'][:200]}")
+    for r in found["results"]:
+        print(f"  - {r['title'][:70]}")
+        print(f"    {r['url'][:80]}")
+        print(f"    {r['snippet'][:110]}")
+    if not found["results"]:
+        print("  nothing came back — bad key, no quota, or the provider is unreachable")

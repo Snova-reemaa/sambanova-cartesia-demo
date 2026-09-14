@@ -299,7 +299,10 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
                 await chan.event({
                     "type": "sources", "turn_id": turn_id, "t": turn.now(),
                     "took_s": turn.search_s,
-                    "results": [{"title": r["title"], "url": r["url"]} for r in results],
+                    "results": [
+                        {"title": r["title"], "url": r["url"]}
+                        for r in results.get("results", [])
+                    ],
                 })
 
                 grounded = messages + [
