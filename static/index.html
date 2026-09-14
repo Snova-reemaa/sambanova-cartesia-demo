@@ -39,6 +39,7 @@
       </button>
       <input id="prompt" type="text" autocomplete="off" spellcheck="false"
              placeholder="Ask something out loud, or type it here">
+      <button id="stop" class="stop" type="button" hidden>Stop</button>
       <button id="send" class="send" type="button">Send</button>
     </div>
     <div class="pickers">
@@ -52,6 +53,16 @@
       </label>
       <p class="hint mono" id="hint">Press the mic and speak — it sends when you stop.</p>
     </div>
+  </section>
+
+  <section class="chooser" id="chooser" hidden>
+    <p class="ch-ask" id="ch-ask"></p>
+    <div class="ch-buttons" id="ch-buttons"></div>
+  </section>
+
+  <section class="panel" id="requests-panel" hidden>
+    <h2>In flight</h2>
+    <div class="cards" id="cards"></div>
   </section>
 
   <section class="panel">

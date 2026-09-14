@@ -43,6 +43,14 @@ SYSTEM_PROMPT = (
 )
 MAX_HISTORY = 8  # user+assistant messages retained for context
 VOICE_LIMIT = 20  # how many Cartesia voices to offer in the picker
+MAX_CONCURRENT = 4  # requests accepted in flight at once on one connection
+
+# Cartesia caps concurrent synthesis per subscription (2 on the current plan);
+# exceeding it fails the whole context rather than queueing. SambaNova has no
+# such limit at this volume, so language-model calls all start immediately and
+# only synthesis waits for a slot.
+TTS_CONCURRENCY = int(os.getenv("CARTESIA_CONCURRENCY", "2"))
+TTS_SLOTS = None  # asyncio.Semaphore, created once the loop exists
 
 # Filled once at startup so every browser session shares one lookup.
 CATALOG = {"models": [], "voices": []}
@@ -82,6 +90,7 @@ class Turn:
         self.t0 = time.perf_counter()
         self.first_token = None
         self.last_token = None
+        self.tts_start = None    # when a synthesis slot came free
         self.first_audio = None
         self.last_audio = None
         self.audio_bytes = 0
@@ -95,6 +104,7 @@ class Turn:
         return {
             "first_token_s": self.first_token,
             "last_token_s": self.last_token,
+            "tts_start_s": self.tts_start,
             "first_audio_s": self.first_audio,
             "total_s": total,
             "audio_seconds": audio_seconds,
@@ -120,67 +130,127 @@ def pick_voice(requested):
     return default_voice()
 
 
-async def run_turn(ws_out, conn, llm, history, prompt, model=None, voice=None):
-    """Stream one prompt through the LLM into a fresh Cartesia context, relaying
+class Channel:
+    """Serialises writes to one browser socket.
+
+    Turns run concurrently, so without this two tasks can interleave halves of
+    a frame. Every audio frame is prefixed with its turn id, because binary
+    frames carry no other way to say which answer they belong to.
+    """
+
+    def __init__(self, ws):
+        self.ws = ws
+        self.lock = asyncio.Lock()
+
+    async def event(self, payload):
+        async with self.lock:
+            await self.ws.send_json(payload)
+
+    async def audio(self, turn_id, pcm):
+        async with self.lock:
+            await self.ws.send_bytes(turn_id.to_bytes(2, "big") + pcm)
+
+
+async def synthesise(chan, conn, turn_id, text, voice_id):
+    """Speak one fixed string — used for the assistant's own 'which first?'
+    question, which has no language model in front of it."""
+    ctx = conn.context(
+        model_id=os.getenv("CARTESIA_MODEL", "sonic-2"),
+        voice={"mode": "id", "id": voice_id},
+        output_format=output_format(),
+        language="en",
+    )
+    await ctx.push(text)
+    await ctx.no_more_inputs()
+    async for res in ctx.receive():
+        if res.type == "chunk" and res.audio:
+            await chan.audio(turn_id, res.audio)
+        elif res.type == "error":
+            raise RuntimeError(res.message or res.title or "Cartesia error")
+
+
+async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=None):
+    """Stream one prompt through the LLM into its own Cartesia context, relaying
     text events and raw PCM frames to the browser as they arrive."""
     turn = Turn()
     voice_id = pick_voice(voice)
     llm_model = pick_model(model)
     tts_model = os.getenv("CARTESIA_MODEL", "sonic-2")
-
-    ctx = conn.context(
-        model_id=tts_model,
-        voice={"mode": "id", "id": voice_id},
-        output_format=output_format(),
-        language="en",
-    )
     reply = ""
 
-    await ws_out.send_json(
-        {"type": "turn_start", "prompt": prompt, "model": llm_model, "voice_id": voice_id}
-    )
+    # Snapshot history now: a turn started alongside others should not see
+    # replies that land while it is still running.
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + list(history) + [
+        {"role": "user", "content": prompt}
+    ]
 
-    async def send_text():
+    await chan.event({
+        "type": "turn_start", "turn_id": turn_id, "prompt": prompt,
+        "model": llm_model, "voice_id": voice_id,
+    })
+
+    # The language model runs right away; text waits here for a synthesis slot.
+    pending_text = asyncio.Queue()
+
+    async def generate():
         nonlocal reply
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history + [
-            {"role": "user", "content": prompt}
-        ]
         async for delta in stream_chat(llm, messages, model=llm_model):
             if turn.first_token is None:
                 turn.first_token = turn.now()
-                await ws_out.send_json({"type": "first_token", "t": turn.first_token})
+                await chan.event({"type": "first_token", "turn_id": turn_id, "t": turn.first_token})
             reply += delta
-            await ws_out.send_json({"type": "token", "text": delta, "t": turn.now()})
-            await ctx.push(delta)
+            await chan.event({"type": "token", "turn_id": turn_id, "text": delta, "t": turn.now()})
+            await pending_text.put(delta)
         turn.last_token = turn.now()
-        await ws_out.send_json({"type": "text_done", "t": turn.last_token})
-        await ctx.no_more_inputs()
+        await chan.event({"type": "text_done", "turn_id": turn_id, "t": turn.last_token})
+        await pending_text.put(None)
 
-    async def receive_audio():
-        async for res in ctx.receive():
-            if res.type == "chunk" and res.audio:
-                if turn.first_audio is None:
-                    turn.first_audio = turn.now()
-                    await ws_out.send_json(
-                        {
-                            "type": "first_audio",
-                            "t": turn.first_audio,
-                            "sample_rate": SAMPLE_RATE,
-                        }
-                    )
-                turn.audio_bytes += len(res.audio)
-                await ws_out.send_bytes(res.audio)
-            elif res.type == "error":
-                raise RuntimeError(res.message or res.title or "Cartesia error")
-        turn.last_audio = turn.now()
+    async def synthesize():
+        async with TTS_SLOTS:
+            turn.tts_start = turn.now()
+            await chan.event({"type": "tts_start", "turn_id": turn_id, "t": turn.tts_start})
 
-    await asyncio.gather(send_text(), receive_audio())
+            ctx = conn.context(
+                model_id=tts_model,
+                voice={"mode": "id", "id": voice_id},
+                output_format=output_format(),
+                language="en",
+            )
+
+            async def pump():
+                while True:
+                    delta = await pending_text.get()
+                    if delta is None:
+                        break
+                    await ctx.push(delta)
+                await ctx.no_more_inputs()
+
+            async def drain():
+                async for res in ctx.receive():
+                    if res.type == "chunk" and res.audio:
+                        if turn.first_audio is None:
+                            turn.first_audio = turn.now()
+                            await chan.event({
+                                "type": "first_audio", "turn_id": turn_id,
+                                "t": turn.first_audio, "sample_rate": SAMPLE_RATE,
+                            })
+                        turn.audio_bytes += len(res.audio)
+                        await chan.audio(turn_id, res.audio)
+                    elif res.type == "error":
+                        raise RuntimeError(res.message or res.title or "Cartesia error")
+                turn.last_audio = turn.now()
+
+            await asyncio.gather(pump(), drain())
+
+    await asyncio.gather(generate(), synthesize())
 
     history.append({"role": "user", "content": prompt})
     history.append({"role": "assistant", "content": reply})
     del history[:-MAX_HISTORY]
 
-    await ws_out.send_json({"type": "done", "reply": reply, "metrics": turn.metrics()})
+    await chan.event({
+        "type": "done", "turn_id": turn_id, "reply": reply, "metrics": turn.metrics(),
+    })
 
 
 async def websocket_handler(request):
@@ -190,7 +260,9 @@ async def websocket_handler(request):
     llm = get_llm()
     tts = get_tts()
     history = []
-    busy = False
+    chan = Channel(ws)
+    running = {}       # turn_id -> task
+    next_turn_id = 1
 
     t_setup = time.perf_counter()
     manager = tts.tts.websocket_connect()
@@ -212,8 +284,20 @@ async def websocket_handler(request):
             "models": CATALOG["models"],
             "voices": CATALOG["voices"],
             "default_voice": default_voice(),
+            "max_concurrent": MAX_CONCURRENT,
         }
     )
+
+    async def supervise(turn_id, coro):
+        try:
+            await coro
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            await chan.event({"type": "error", "turn_id": turn_id, "message": str(exc)})
+        finally:
+            running.pop(turn_id, None)
+            await chan.event({"type": "idle", "turn_id": turn_id, "running": len(running)})
 
     try:
         async for msg in ws:
@@ -223,25 +307,45 @@ async def websocket_handler(request):
                 data = json.loads(msg.data)
             except ValueError:
                 continue
-            if data.get("type") != "prompt":
-                continue
 
-            prompt = (data.get("text") or "").strip()
-            if not prompt or busy:
-                continue
+            kind = data.get("type")
 
-            busy = True
-            try:
-                await run_turn(
-                    ws, conn, llm, history, prompt,
+            if kind == "prompt":
+                prompt = (data.get("text") or "").strip()
+                if not prompt:
+                    continue
+                if len(running) >= MAX_CONCURRENT:
+                    await chan.event({
+                        "type": "rejected",
+                        "message": f"Already working on {MAX_CONCURRENT} requests.",
+                    })
+                    continue
+
+                turn_id = next_turn_id
+                next_turn_id += 1
+                coro = run_turn(
+                    chan, conn, llm, history, turn_id, prompt,
                     model=data.get("model"),
                     voice=data.get("voice_id"),
                 )
-            except Exception as exc:
-                await ws.send_json({"type": "error", "message": str(exc)})
-            finally:
-                busy = False
+                running[turn_id] = asyncio.ensure_future(supervise(turn_id, coro))
+
+            elif kind == "say":
+                # The assistant's own "which would you like first?" question.
+                text = (data.get("text") or "").strip()
+                if not text:
+                    continue
+                try:
+                    await chan.event({"type": "say_start", "turn_id": 0})
+                    await synthesise(chan, conn, 0, text, pick_voice(data.get("voice_id")))
+                    await chan.event({"type": "say_done", "turn_id": 0})
+                except Exception as exc:
+                    await chan.event({"type": "error", "turn_id": 0, "message": str(exc)})
     finally:
+        for task in list(running.values()):
+            task.cancel()
+        if running:
+            await asyncio.gather(*running.values(), return_exceptions=True)
         try:
             await manager.__aexit__(None, None, None)
         except Exception:
@@ -308,6 +412,9 @@ async def login(request):
 
 
 async def on_startup(app):
+    global TTS_SLOTS
+    TTS_SLOTS = asyncio.Semaphore(TTS_CONCURRENCY)
+
     llm = get_llm()
     tts = get_tts()
     try:
@@ -315,6 +422,7 @@ async def on_startup(app):
     finally:
         await tts.close()
     print(f"  {len(CATALOG['models'])} models · {len(CATALOG['voices'])} voices available")
+    print(f"  up to {MAX_CONCURRENT} requests in flight, {TTS_CONCURRENCY} synthesising at once")
 
 
 def main():

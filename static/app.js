@@ -1,50 +1,62 @@
 'use strict';
 
 const SAMPLE_RATE = 44100;
+const SYSTEM_TURN = 0;        // the assistant's own "which first?" question
 
 const el = (id) => document.getElementById(id);
 const ui = {
   connDot: el('conn-dot'), connText: el('conn-text'),
   llmModel: el('llm-model'), ttsModel: el('tts-model'), socketNote: el('socket-note'),
-  mic: el('mic'), micLevel: el('miclevel'), prompt: el('prompt'), send: el('send'),
+  mic: el('mic'), micLevel: el('miclevel'), prompt: el('prompt'),
+  send: el('send'), stop: el('stop'),
   hint: el('hint'), canvas: el('timeline'), log: el('log'),
   pickModel: el('pick-model'), pickVoice: el('pick-voice'),
-  mToken: el('m-token'), mAudio: el('m-audio'), mText: el('m-text'),
-  mChars: el('m-chars'), mRate: el('m-rate'),
+  chooser: el('chooser'), chAsk: el('ch-ask'), chButtons: el('ch-buttons'),
+  panel: el('requests-panel'), cards: el('cards'),
 };
 
-const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 
 /* ------------------------------------------------------------------ state */
 
 let ws = null;
-let busy = false;
+let connected = false;
 
-// Everything about the turn currently on screen. Times are seconds since the
-// prompt left the browser; null means "hasn't happened yet".
-let turn = null;
+// Every request ever made this session, by turn id.
+const turns = new Map();
+let selectedId = null;        // which turn the big timeline shows
+let playingId = null;         // which turn is audible right now
+let liveId = null;            // turn allowed to play as it streams
 
-function newTurn() {
+const running = () => [...turns.values()].filter((t) => t.status === 'thinking');
+const awaiting = () => [...turns.values()]
+  .filter((t) => t.status === 'ready' && !t.played)
+  .sort((a, b) => a.id - b.id);
+
+function newTurn(id, prompt, model) {
   return {
+    id, prompt, model,
     startedAt: performance.now() / 1000,
-    firstToken: null,
-    firstAudio: null,
-    textDone: null,
-    audioDone: null,
-    playStart: null,     // audio-context clock, for the speaker lane
-    buffered: 0,         // seconds of audio handed to the speaker
+    firstToken: null, ttsStart: null, firstAudio: null, textDone: null, audioDone: null,
+    chunks: [],          // Float32Array pieces, in order
+    scheduled: 0,        // how many of those have been handed to the speaker
+    buffered: 0,         // seconds of audio received
+    carry: null,         // trailing odd byte between binary frames
     chars: 0,
-    node: null,          // transcript element being filled in
+    status: 'thinking',  // thinking | ready | playing | played | failed
+    played: false,
+    playStart: null,
+    node: null, card: null,
   };
 }
 
-const elapsed = () => turn ? performance.now() / 1000 - turn.startedAt : 0;
+const since = (t) => performance.now() / 1000 - t.startedAt;
 
 /* ------------------------------------------------------------- audio out */
 
 let audioCtx = null;
 let playhead = 0;
-let carry = null;   // trailing odd byte between binary frames
+let sources = [];            // live BufferSourceNodes, so barge-in can stop them
 
 function ensureAudio() {
   if (!audioCtx) {
@@ -55,27 +67,29 @@ function ensureAudio() {
   return audioCtx;
 }
 
-function playPcm(buffer) {
-  const ctx = ensureAudio();
-
+function decodePcm(turn, buffer) {
   let bytes = new Uint8Array(buffer);
-  if (carry) {
-    const joined = new Uint8Array(carry.length + bytes.length);
-    joined.set(carry, 0);
-    joined.set(bytes, carry.length);
+  if (turn.carry) {
+    const joined = new Uint8Array(turn.carry.length + bytes.length);
+    joined.set(turn.carry, 0);
+    joined.set(bytes, turn.carry.length);
     bytes = joined;
-    carry = null;
+    turn.carry = null;
   }
   if (bytes.length % 2) {
-    carry = bytes.slice(bytes.length - 1);
+    turn.carry = bytes.slice(bytes.length - 1);
     bytes = bytes.slice(0, bytes.length - 1);
   }
-  if (!bytes.length) return;
+  if (!bytes.length) return null;
 
   const pcm = new Int16Array(bytes.buffer, bytes.byteOffset, bytes.length / 2);
-  const samples = new Float32Array(pcm.length);
-  for (let i = 0; i < pcm.length; i++) samples[i] = pcm[i] / 32768;
+  const out = new Float32Array(pcm.length);
+  for (let i = 0; i < pcm.length; i++) out[i] = pcm[i] / 32768;
+  return out;
+}
 
+function speak(samples) {
+  const ctx = ensureAudio();
   const buf = ctx.createBuffer(1, samples.length, SAMPLE_RATE);
   buf.copyToChannel(samples, 0);
 
@@ -83,14 +97,123 @@ function playPcm(buffer) {
   src.buffer = buf;
   src.connect(ctx.destination);
 
-  // A small lead keeps the first chunk from being scheduled in the past.
-  const startAt = Math.max(playhead, ctx.currentTime + 0.08);
-  src.start(startAt);
-  playhead = startAt + buf.duration;
+  const at = Math.max(playhead, ctx.currentTime + 0.08);
+  src.start(at);
+  playhead = at + buf.duration;
 
-  if (turn) {
-    if (turn.playStart === null) turn.playStart = startAt;
-    turn.buffered += buf.duration;
+  sources.push(src);
+  src.onended = () => { sources = sources.filter((s) => s !== src); };
+  return at;
+}
+
+// Hand the speaker everything of this turn it has not heard yet.
+function flush(turn) {
+  while (turn.scheduled < turn.chunks.length) {
+    const at = speak(turn.chunks[turn.scheduled]);
+    if (turn.playStart === null) turn.playStart = at;
+    turn.scheduled++;
+  }
+}
+
+function playTurn(id) {
+  const turn = turns.get(id);
+  if (!turn) return;
+  stopAudio();                       // one answer at a time
+  ensureAudio();
+  playingId = id;
+  turn.played = true;
+  if (turn.status === 'ready') turn.status = 'playing';
+  flush(turn);
+  hideChooser();
+  select(id);
+  render();
+}
+
+function stopAudio() {
+  sources.forEach((s) => { try { s.stop(); } catch (e) { /* already ended */ } });
+  sources = [];
+  playhead = audioCtx ? audioCtx.currentTime : 0;
+  if (playingId !== null) {
+    const t = turns.get(playingId);
+    if (t && t.status === 'playing') t.status = 'played';
+  }
+  playingId = null;
+  liveId = null;
+}
+
+/* ---------------------------------------------------------- the chooser */
+
+const tidy = (s) => s.replace(/[?.!,\s]+$/, '').trim();
+
+// Name each answer by what makes it different. Questions asked in one breath
+// tend to share an opening ("in one sentence, what is X / Y"), so a label
+// built from the first few words names every one of them identically.
+function labelsFor(list) {
+  const words = list.map((t) => tidy(t.prompt).split(/\s+/));
+
+  let shared = 0;
+  const shortest = Math.min(...words.map((w) => w.length));
+  while (shared < shortest - 1) {
+    const here = words[0][shared].toLowerCase();
+    if (!words.every((w) => w[shared].toLowerCase() === here)) break;
+    shared++;
+  }
+
+  return words.map((w, i) => {
+    const rest = w.slice(shared);
+    const take = (rest.length ? rest : w).slice(0, 6);
+    const text = take.join(' ');
+    return text.split(/\s+/).length < w.length - shared ? `${text}…` : text;
+  });
+}
+
+function label(turn) {
+  return tidy(turn.prompt).split(/\s+/).slice(0, 6).join(' ');
+}
+
+function askWhichFirst() {
+  const waiting = awaiting();
+  if (waiting.length < 2) return;
+
+  const names = labelsFor(waiting);
+  const list = names.length === 2
+    ? `${names[0]}, and ${names[1]}`
+    : `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
+  const sentence = `Your answers on ${list} are ready. Which would you like to hear first?`;
+
+  ui.chAsk.textContent = sentence;
+  ui.chButtons.innerHTML = '';
+  waiting.forEach((t, i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.innerHTML = `<span class="num">${i + 1}</span>`;
+    b.append(document.createTextNode(names[i]));
+    b.title = t.prompt;
+    b.addEventListener('click', () => playTurn(t.id));
+    ui.chButtons.append(b);
+  });
+  ui.chooser.hidden = false;
+
+  // Say it out loud too. The answers are already buffered, so whichever the
+  // user picks starts instantly once this finishes.
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'say', text: sentence, voice_id: ui.pickVoice.value }));
+  }
+}
+
+function hideChooser() {
+  ui.chooser.hidden = true;
+}
+
+// Called whenever a turn finishes: decide what, if anything, to play.
+function settle() {
+  if (running().length) return;         // still work in flight
+  const waiting = awaiting();
+  if (!waiting.length) return;
+  if (waiting.length === 1) {
+    playTurn(waiting[0].id);            // nothing to choose between
+  } else {
+    askWhichFirst();
   }
 }
 
@@ -112,58 +235,48 @@ function niceStep(span) {
   return [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw) || mag * 10;
 }
 
+function shortModel(id) {
+  return String(id || '')
+    .replace(/^Meta-/, '').replace(/-Instruct$/, '').replace(/-it$/, '')
+    .replace(/-/g, ' ');
+}
+
 function drawTimeline() {
+  const turn = selectedId !== null ? turns.get(selectedId) : null;
+
   const c = ui.canvas;
   const dpr = window.devicePixelRatio || 1;
-  if (c.width !== VIEW_W * dpr) {
-    c.width = VIEW_W * dpr;
-    c.height = VIEW_H * dpr;
-  }
+  if (c.width !== VIEW_W * dpr) { c.width = VIEW_W * dpr; c.height = VIEW_H * dpr; }
   const g = c.getContext('2d');
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   g.clearRect(0, 0, VIEW_W, VIEW_H);
 
   const plotW = VIEW_W - PAD_L - PAD_R;
-  const now = turn ? elapsed() : 0;
+  const now = turn ? since(turn) : 0;
   const genEnd = turn && turn.audioDone !== null ? turn.audioDone : now;
   const domain = Math.max(4, genEnd * 1.12);
   const X = (t) => PAD_L + Math.min(t / domain, 1) * plotW;
 
-  const ink = css('--ink'), muted = css('--muted'), faint = css('--faint');
-  const hair = css('--hairline'), line = css('--line');
-
+  const ink = css('--ink'), faint = css('--faint');
   g.font = '10.5px "IBM Plex Mono", monospace';
 
-  // grid + axis
   const step = niceStep(domain);
-  g.strokeStyle = hair;
+  g.strokeStyle = css('--hairline');
   g.lineWidth = 1;
   g.fillStyle = faint;
   g.textAlign = 'center';
   for (let t = step; t <= domain; t += step) {
     const x = Math.round(X(t)) + 0.5;
-    g.beginPath();
-    g.moveTo(x, TOP - 4);
-    g.lineTo(x, AXIS_Y);
-    g.stroke();
+    g.beginPath(); g.moveTo(x, TOP - 4); g.lineTo(x, AXIS_Y); g.stroke();
     g.fillText(`${t >= 1 ? t.toFixed(t % 1 ? 1 : 0) : t.toFixed(1)}s`, x, AXIS_Y + 15);
   }
 
-  g.strokeStyle = line;
-  g.beginPath();
-  g.moveTo(PAD_L, AXIS_Y + 0.5);
-  g.lineTo(VIEW_W - PAD_R, AXIS_Y + 0.5);
-  g.stroke();
+  g.strokeStyle = css('--line');
+  g.beginPath(); g.moveTo(PAD_L, AXIS_Y + 0.5); g.lineTo(VIEW_W - PAD_R, AXIS_Y + 0.5); g.stroke();
 
-  // t = 0
-  g.strokeStyle = ink;
-  g.lineWidth = 1.5;
-  g.beginPath();
-  g.moveTo(PAD_L + 0.5, TOP - 6);
-  g.lineTo(PAD_L + 0.5, AXIS_Y);
-  g.stroke();
-  g.fillStyle = faint;
-  g.textAlign = 'center';
+  g.strokeStyle = ink; g.lineWidth = 1.5;
+  g.beginPath(); g.moveTo(PAD_L + 0.5, TOP - 6); g.lineTo(PAD_L + 0.5, AXIS_Y); g.stroke();
+  g.fillStyle = faint; g.textAlign = 'center';
   g.fillText('0', PAD_L, AXIS_Y + 15);
 
   const bar = (row, from, to, color) => {
@@ -171,22 +284,14 @@ function drawTimeline() {
     const x = X(from);
     const w = Math.max(X(to) - x, 1.5);
     g.fillStyle = color;
-    if (g.roundRect) {
-      g.beginPath();
-      g.roundRect(x, y, w, LANE_H, 2);
-      g.fill();
-    } else {
-      g.fillRect(x, y, w, LANE_H);
-    }
+    if (g.roundRect) { g.beginPath(); g.roundRect(x, y, w, LANE_H, 2); g.fill(); }
+    else g.fillRect(x, y, w, LANE_H);
   };
 
-  // The speaker sublabel carries the headroom figure, where it stays legible
-  // instead of being painted over the bar it describes.
   const subFor = (lane) => {
     if (lane.key === 'speaker' && turn && turn.buffered > 0) {
       return `${turn.buffered.toFixed(1)}s buffered`;
     }
-    // Name the model that produced this turn, so switching is legible here.
     if (lane.key === 'llm') {
       const id = (turn && turn.model) || (ui.pickModel && ui.pickModel.value);
       if (id) return shortModel(id).slice(0, 18);
@@ -197,11 +302,9 @@ function drawTimeline() {
   LANES.forEach((lane, row) => {
     const y = TOP + row * (LANE_H + LANE_GAP);
     g.textAlign = 'right';
-    g.fillStyle = ink;
-    g.font = '11.5px "IBM Plex Mono", monospace';
+    g.fillStyle = ink; g.font = '11.5px "IBM Plex Mono", monospace';
     g.fillText(lane.label, PAD_L - 12, y + 10);
-    g.fillStyle = faint;
-    g.font = '10px "IBM Plex Mono", monospace';
+    g.fillStyle = faint; g.font = '10px "IBM Plex Mono", monospace';
     g.fillText(subFor(lane), PAD_L - 12, y + 21);
   });
 
@@ -213,7 +316,6 @@ function drawTimeline() {
     return;
   }
 
-  // lane 0 — SambaNova
   if (turn.firstToken === null) {
     bar(0, 0, now, css('--llm-soft'));
   } else {
@@ -221,7 +323,6 @@ function drawTimeline() {
     bar(0, turn.firstToken, turn.textDone !== null ? turn.textDone : now, css('--llm'));
   }
 
-  // lane 1 — Cartesia (starts when the first token is pushed to it)
   if (turn.firstToken !== null) {
     const ttsEnd = turn.firstAudio !== null ? turn.firstAudio : now;
     bar(1, turn.firstToken, ttsEnd, css('--tts-soft'));
@@ -230,15 +331,13 @@ function drawTimeline() {
     }
   }
 
-  // lane 2 — speaker: solid for what has been heard, faint for what is buffered
-  if (turn.firstAudio !== null && turn.playStart !== null && audioCtx) {
-    const heardEnd = turn.firstAudio + Math.max(0, audioCtx.currentTime - turn.playStart);
+  if (turn.firstAudio !== null) {
     const bufEnd = turn.firstAudio + turn.buffered;
     bar(2, turn.firstAudio, bufEnd, css('--tts-soft'));
-    bar(2, turn.firstAudio, Math.min(heardEnd, bufEnd), css('--play'));
-
-    // Audio usually runs past the right edge; mark it rather than rescale the
-    // whole chart and squash the latencies this view exists to show.
+    if (turn.playStart !== null && audioCtx) {
+      const heard = turn.firstAudio + Math.max(0, audioCtx.currentTime - turn.playStart);
+      bar(2, turn.firstAudio, Math.min(heard, bufEnd), css('--play'));
+    }
     if (bufEnd > domain) {
       const y = TOP + 2 * (LANE_H + LANE_GAP);
       g.fillStyle = css('--ground');
@@ -248,16 +347,11 @@ function drawTimeline() {
     }
   }
 
-  // first-sound marker
   if (turn.firstAudio !== null) {
     const x = Math.round(X(turn.firstAudio)) + 0.5;
-    g.strokeStyle = css('--tts');
-    g.lineWidth = 1.5;
+    g.strokeStyle = css('--tts'); g.lineWidth = 1.5;
     g.setLineDash([3, 3]);
-    g.beginPath();
-    g.moveTo(x, TOP - 6);
-    g.lineTo(x, AXIS_Y);
-    g.stroke();
+    g.beginPath(); g.moveTo(x, TOP - 6); g.lineTo(x, AXIS_Y); g.stroke();
     g.setLineDash([]);
   }
 }
@@ -267,12 +361,75 @@ function startDrawing() {
   if (raf) return;
   const tick = () => {
     drawTimeline();
-    const settled = turn && turn.audioDone !== null &&
-      (!audioCtx || !turn.playStart || audioCtx.currentTime > turn.playStart + turn.buffered);
-    if (settled) { raf = null; drawTimeline(); return; }
+    const quiet = !running().length && playingId === null;
+    if (quiet) { raf = null; drawTimeline(); return; }
     raf = requestAnimationFrame(tick);
   };
   raf = requestAnimationFrame(tick);
+}
+
+/* ------------------------------------------------------------------ cards */
+
+const CHIP = {
+  thinking: 'thinking', queued: 'queued', ready: 'ready',
+  playing: 'playing', played: 'played', failed: 'failed',
+};
+
+function render() {
+  const all = [...turns.values()].sort((a, b) => a.id - b.id);
+  ui.panel.hidden = all.length < 2;
+  if (all.length < 2) { ui.cards.innerHTML = ''; return; }
+
+  ui.cards.innerHTML = '';
+  all.forEach((t) => {
+    const card = document.createElement('div');
+    card.className = 'card' + (t.id === selectedId ? ' selected' : '');
+    card.tabIndex = 0;
+
+    const q = document.createElement('div');
+    q.className = 'cq';
+    q.textContent = t.prompt;
+
+    // Text finished but no synthesis slot yet: Cartesia's plan limit, not us.
+    const queued = t.status === 'thinking' && t.textDone !== null && t.ttsStart === null;
+    const state = queued ? 'queued' : t.status;
+
+    const row = document.createElement('div');
+    row.className = 'crow';
+    const chip = document.createElement('span');
+    chip.className = `chip ${queued ? 'queued' : t.status}`;
+    chip.textContent = CHIP[state] || state;
+    const meta = document.createElement('span');
+    meta.className = 'cmeta';
+    meta.textContent = queued
+      ? 'waiting for a synthesis slot'
+      : (t.firstAudio !== null
+          ? `${t.firstAudio.toFixed(2)}s · ${t.buffered.toFixed(1)}s audio`
+          : (t.firstToken !== null ? `${t.firstToken.toFixed(2)}s to first token` : '…'));
+    row.append(chip, meta);
+
+    const bar = document.createElement('div');
+    bar.className = 'cbar';
+    const fill = document.createElement('i');
+    const pct = t.status === 'thinking'
+      ? (t.firstToken !== null ? 45 : 15)
+      : 100;
+    fill.style.width = `${pct}%`;
+    bar.append(fill);
+
+    card.append(q, row, bar);
+    card.addEventListener('click', () => {
+      if (t.status === 'ready' || t.status === 'played') playTurn(t.id);
+      else select(t.id);
+    });
+    ui.cards.append(card);
+  });
+}
+
+function select(id) {
+  selectedId = id;
+  render();
+  drawTimeline();
 }
 
 /* ------------------------------------------------------------ transcript */
@@ -283,120 +440,88 @@ function addMessage(cls, who, text) {
   }
   const row = document.createElement('div');
   row.className = `msg ${cls}`;
-
   const w = document.createElement('div');
   w.className = 'who';
   w.textContent = who;
-
   const what = document.createElement('div');
   what.className = 'what';
-
-  // Text lives in its own node so a trailing cursor can sit beside it.
   const body = document.createElement('span');
   body.textContent = text;
   what.append(body);
-
   row.append(w, what);
   ui.log.append(row);
-  return { row, what, body };
+  return { row, what, body, cursor: null };
 }
 
-function showCursor(msg) {
-  const cursor = document.createElement('span');
-  cursor.className = 'cursor';
-  msg.what.append(cursor);
-  msg.cursor = cursor;
+function showCursor(m) {
+  const c = document.createElement('span');
+  c.className = 'cursor';
+  m.what.append(c);
+  m.cursor = c;
 }
 
-function hideCursor(msg) {
-  if (msg && msg.cursor) {
-    msg.cursor.remove();
-    msg.cursor = null;
-  }
+function hideCursor(m) {
+  if (m && m.cursor) { m.cursor.remove(); m.cursor = null; }
 }
 
 /* ------------------------------------------------------------ metrics ui */
 
-const secs = (v) => v === null || v === undefined
-  ? '—'
-  : `${v.toFixed(2)}<small>s</small>`;
+const secs = (v) => (v === null || v === undefined) ? '—' : `${v.toFixed(2)}<small>s</small>`;
 
-function resetMetrics() {
-  ui.mToken.innerHTML = '—';
-  ui.mAudio.innerHTML = '—';
-  ui.mText.innerHTML = '—';
-  ui.mChars.textContent = '—';
-  ui.mRate.innerHTML = '—';
+function showMetrics(t) {
+  ui.mToken = ui.mToken || el('m-token');
+  el('m-token').innerHTML = secs(t ? t.firstToken : null);
+  el('m-audio').innerHTML = secs(t ? t.firstAudio : null);
+  el('m-text').innerHTML = secs(t ? t.textDone : null);
+  el('m-chars').textContent = t ? `${t.chars} chars` : '—';
+  const rt = t && t.audioDone ? t.buffered / t.audioDone : null;
+  el('m-rate').innerHTML = rt ? `${rt.toFixed(1)}<small>×</small>` : '—';
 }
 
 /* --------------------------------------------------------------- pickers */
 
-// Remembering the choice per browser is a convenience only; losing it is fine.
-const remember = (key, value) => {
-  try { localStorage.setItem(key, value); } catch (e) { /* private mode */ }
-};
-const recall = (key) => {
-  try { return localStorage.getItem(key); } catch (e) { return null; }
-};
-
-// "Meta-Llama-3.3-70B-Instruct" reads as "Llama 3.3 70B" in a 90px lane label.
-function shortModel(id) {
-  return String(id || '')
-    .replace(/^Meta-/, '')
-    .replace(/-Instruct$/, '')
-    .replace(/-it$/, '')
-    .replace(/-/g, ' ');
-}
+const remember = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
+const recall = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
 
 function fillPickers(m) {
   const models = m.models && m.models.length ? m.models : [m.llm_model];
   const wantModel = recall('voiceloop.model');
   ui.pickModel.innerHTML = '';
   models.forEach((id) => {
-    const opt = document.createElement('option');
-    opt.value = id;
-    opt.textContent = shortModel(id);
-    ui.pickModel.append(opt);
+    const o = document.createElement('option');
+    o.value = id; o.textContent = shortModel(id);
+    ui.pickModel.append(o);
   });
   ui.pickModel.value = models.includes(wantModel) ? wantModel : m.llm_model;
 
   const voices = m.voices || [];
   ui.pickVoice.innerHTML = '';
   if (!voices.length) {
-    const opt = document.createElement('option');
-    opt.value = m.default_voice;
-    opt.textContent = 'default voice';
-    ui.pickVoice.append(opt);
+    const o = document.createElement('option');
+    o.value = m.default_voice; o.textContent = 'default voice';
+    ui.pickVoice.append(o);
     ui.pickVoice.disabled = true;
   } else {
     voices.forEach((v) => {
-      const opt = document.createElement('option');
-      opt.value = v.id;
-      opt.textContent = v.language && v.language !== 'en'
-        ? `${v.name} (${v.language})`
-        : v.name;
-      opt.title = v.description || '';
-      ui.pickVoice.append(opt);
+      const o = document.createElement('option');
+      o.value = v.id;
+      o.textContent = v.language && v.language !== 'en' ? `${v.name} (${v.language})` : v.name;
+      o.title = v.description || '';
+      ui.pickVoice.append(o);
     });
-    const wantVoice = recall('voiceloop.voice');
+    const want = recall('voiceloop.voice');
     const ids = voices.map((v) => v.id);
-    ui.pickVoice.value = ids.includes(wantVoice) ? wantVoice : (
-      ids.includes(m.default_voice) ? m.default_voice : ids[0]
-    );
+    ui.pickVoice.value = ids.includes(want) ? want
+      : (ids.includes(m.default_voice) ? m.default_voice : ids[0]);
   }
-
   ui.llmModel.textContent = shortModel(ui.pickModel.value);
 }
 
 ui.pickModel.addEventListener('change', () => {
   remember('voiceloop.model', ui.pickModel.value);
   ui.llmModel.textContent = shortModel(ui.pickModel.value);
-  drawTimeline();
 });
-
-ui.pickVoice.addEventListener('change', () => {
-  remember('voiceloop.voice', ui.pickVoice.value);
-});
+ui.pickVoice.addEventListener('change', () => remember('voiceloop.voice', ui.pickVoice.value));
 
 /* --------------------------------------------------------------- socket */
 
@@ -406,109 +531,169 @@ function connect() {
   ws.binaryType = 'arraybuffer';
 
   ws.onopen = () => {
+    connected = true;
     ui.connDot.className = 'dot live';
     ui.connText.textContent = 'connected';
   };
-
   ws.onclose = () => {
+    connected = false;
     ui.connDot.className = 'dot dead';
     ui.connText.textContent = 'disconnected — restart the server and reload';
-    setBusy(true);
+    ui.send.disabled = true;
+    ui.mic.disabled = true;
   };
-
   ws.onerror = () => {
     ui.connDot.className = 'dot dead';
     ui.connText.textContent = 'connection error';
   };
-
   ws.onmessage = (ev) => {
-    if (ev.data instanceof ArrayBuffer) { playPcm(ev.data); return; }
-    handleEvent(JSON.parse(ev.data));
+    if (ev.data instanceof ArrayBuffer) { onAudio(ev.data); return; }
+    onEvent(JSON.parse(ev.data));
   };
 }
 
-function handleEvent(m) {
+function onAudio(buffer) {
+  if (buffer.byteLength < 3) return;
+  const id = new DataView(buffer).getUint16(0);
+  const body = buffer.slice(2);
+
+  // The assistant's own question always plays straight away.
+  if (id === SYSTEM_TURN) {
+    const samples = decodePcm({ carry: null }, body);
+    if (samples) speak(samples);
+    return;
+  }
+
+  const turn = turns.get(id);
+  if (!turn) return;
+
+  const samples = decodePcm(turn, body);
+  if (!samples) return;
+
+  turn.chunks.push(samples);
+  turn.buffered += samples.length / SAMPLE_RATE;
+
+  // Stream straight to the speaker only when this is the sole request in
+  // flight; otherwise hold it so the user gets to choose the order.
+  if (liveId === id || playingId === id) flush(turn);
+
+  updateStopButton();
+}
+
+function onEvent(m) {
+  const turn = m.turn_id ? turns.get(m.turn_id) : null;
+
   switch (m.type) {
     case 'ready':
       ui.ttsModel.textContent = m.tts_model;
       ui.socketNote.textContent = `socket warm in ${Math.round(m.socket_setup_ms)} ms`;
       ui.connText.textContent = 'ready';
       fillPickers(m);
-      setBusy(false);
+      ui.send.disabled = false;
+      ui.mic.disabled = !SpeechCtor;
       break;
 
-    case 'turn_start':
-      turn = newTurn();
-      turn.model = m.model;
-      playhead = 0;
-      carry = null;
-      resetMetrics();
+    case 'turn_start': {
+      const t = newTurn(m.turn_id, m.prompt, m.model);
+      turns.set(m.turn_id, t);
       addMessage('you', 'you', m.prompt);
-      turn.node = addMessage('bot', 'reply', '');
-      showCursor(turn.node);
+      t.node = addMessage('bot', 'reply', '');
+      showCursor(t.node);
+      // Only a lone request may play as it streams.
+      liveId = (running().length === 1 && !awaiting().length && playingId === null)
+        ? m.turn_id : null;
+      select(m.turn_id);
       startDrawing();
       break;
+    }
 
     case 'first_token':
       if (turn) turn.firstToken = m.t;
-      ui.mToken.innerHTML = secs(m.t);
+      if (m.turn_id === selectedId) showMetrics(turn);
+      render();
       break;
 
     case 'token':
       if (!turn) break;
       turn.chars += m.text.length;
       turn.node.body.textContent += m.text;
-      ui.mChars.textContent = `${turn.chars} chars`;
+      if (m.turn_id === selectedId) showMetrics(turn);
       break;
 
     case 'text_done':
       if (turn) turn.textDone = m.t;
-      ui.mText.innerHTML = secs(m.t);
+      if (m.turn_id === selectedId) showMetrics(turn);
+      render();
+      break;
+
+    case 'tts_start':
+      if (turn) turn.ttsStart = m.t;
+      render();
       break;
 
     case 'first_audio':
       if (turn) turn.firstAudio = m.t;
-      ui.mAudio.innerHTML = secs(m.t);
+      if (m.turn_id === selectedId) showMetrics(turn);
+      render();
       break;
 
-    case 'done': {
+    case 'done':
       if (turn) {
         turn.audioDone = m.metrics.total_s;
+        turn.status = (liveId === m.turn_id || playingId === m.turn_id) ? 'playing' : 'ready';
+        if (liveId === m.turn_id) turn.played = true;
         hideCursor(turn.node);
       }
-      const r = m.metrics.realtime_factor;
-      ui.mRate.innerHTML = r ? `${r.toFixed(1)}<small>×</small>` : '—';
-      ui.mText.innerHTML = secs(m.metrics.last_token_s);
-      setBusy(false);
+      if (m.turn_id === selectedId) showMetrics(turn);
+      render();
       break;
-    }
+
+    case 'idle':
+      settle();
+      render();
+      updateStopButton();
+      break;
+
+    case 'say_start':
+      ui.hint.className = 'hint mono';
+      ui.hint.textContent = 'asking which you want first…';
+      break;
+
+    case 'say_done':
+      ui.hint.textContent = 'Pick one above, or press the mic to ask something else.';
+      break;
+
+    case 'rejected':
+      ui.hint.className = 'hint mono warn';
+      ui.hint.textContent = m.message;
+      break;
 
     case 'error':
       addMessage('err', 'error', m.message);
       if (turn) {
         hideCursor(turn.node);
-        turn.audioDone = elapsed();
+        turn.status = 'failed';
+        turn.audioDone = since(turn);
       }
-      setBusy(false);
+      render();
       break;
   }
 }
 
-function setBusy(state) {
-  busy = state;
-  ui.send.disabled = state;
-  ui.mic.disabled = state || !SpeechCtor;
-  // Swapping model or voice mid-turn would mislabel the timeline.
-  ui.pickModel.disabled = state;
-  ui.pickVoice.disabled = state || ui.pickVoice.options.length < 2;
+/* ------------------------------------------------------------------ input */
+
+function updateStopButton() {
+  const audible = playingId !== null || sources.length > 0;
+  ui.stop.hidden = !audible;
 }
 
 function submit(text) {
   const value = (text || ui.prompt.value).trim();
-  if (!value || busy || !ws || ws.readyState !== WebSocket.OPEN) return;
-  ensureAudio();                 // must be created inside a user gesture
-  setBusy(true);
+  if (!value || !connected || ws.readyState !== WebSocket.OPEN) return;
+  ensureAudio();                  // needs a user gesture to start
   ui.prompt.value = '';
+  ui.hint.className = 'hint mono';
+  hideChooser();
   ws.send(JSON.stringify({
     type: 'prompt',
     text: value,
@@ -517,10 +702,13 @@ function submit(text) {
   }));
 }
 
+ui.send.addEventListener('click', () => submit());
+ui.prompt.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+ui.stop.addEventListener('click', () => { stopAudio(); render(); updateStopButton(); });
+
 /* ------------------------------------------------------------------ mic */
 
 const SpeechCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
-
 let rec = null, listening = false, micStream = null, meterRaf = null;
 
 async function startMeter() {
@@ -531,20 +719,15 @@ async function startMeter() {
     analyser.fftSize = 512;
     ctx.createMediaStreamSource(micStream).connect(analyser);
     const data = new Uint8Array(analyser.fftSize);
-
     const loop = () => {
       analyser.getByteTimeDomainData(data);
       let peak = 0;
-      for (let i = 0; i < data.length; i++) {
-        peak = Math.max(peak, Math.abs(data[i] - 128) / 128);
-      }
+      for (let i = 0; i < data.length; i++) peak = Math.max(peak, Math.abs(data[i] - 128) / 128);
       ui.micLevel.style.height = `${Math.min(100, peak * 260)}%`;
       meterRaf = requestAnimationFrame(loop);
     };
     loop();
-  } catch (err) {
-    // No meter is fine — speech recognition has its own mic access.
-  }
+  } catch (err) { /* the meter is optional */ }
 }
 
 function stopMeter() {
@@ -556,13 +739,17 @@ function stopMeter() {
 }
 
 function startListening() {
-  if (listening || busy || !SpeechCtor) return;
+  if (listening || !SpeechCtor) return;
+
+  // Barge-in: talking over the assistant stops it.
+  stopAudio();
+  updateStopButton();
+  render();
 
   rec = new SpeechCtor();
   rec.lang = 'en-US';
   rec.interimResults = true;
   rec.continuous = false;
-
   let finalText = '';
 
   rec.onstart = () => {
@@ -579,8 +766,7 @@ function startListening() {
     let interim = '';
     for (let i = ev.resultIndex; i < ev.results.length; i++) {
       const chunk = ev.results[i][0].transcript;
-      if (ev.results[i].isFinal) finalText += chunk;
-      else interim += chunk;
+      if (ev.results[i].isFinal) finalText += chunk; else interim += chunk;
     }
     ui.prompt.value = (finalText + interim).trim();
   };
@@ -610,20 +796,7 @@ function startListening() {
   rec.start();
 }
 
-function stopListening() {
-  if (rec) rec.stop();
-}
-
-/* --------------------------------------------------------------- wiring */
-
-ui.send.addEventListener('click', () => submit());
-ui.prompt.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') submit();
-});
-
-ui.mic.addEventListener('click', () => {
-  listening ? stopListening() : startListening();
-});
+ui.mic.addEventListener('click', () => { listening ? rec && rec.stop() : startListening(); });
 
 if (!SpeechCtor) {
   ui.mic.disabled = true;
@@ -632,6 +805,7 @@ if (!SpeechCtor) {
 }
 
 window.addEventListener('resize', drawTimeline);
-setBusy(true);
+ui.send.disabled = true;
+ui.mic.disabled = true;
 drawTimeline();
 connect();

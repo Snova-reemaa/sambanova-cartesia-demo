@@ -65,6 +65,46 @@ To move it server-side, replace the `SpeechRecognition` block in
 resulting text as the existing `{"type": "prompt"}` message. Nothing else in the
 pipeline changes — the server only ever sees text.
 
+## Asking several things at once
+
+Keep talking while it works. Each request becomes its own card with live status,
+and up to four run at once.
+
+What happens to the audio depends on how many are in flight:
+
+- **One on its own** streams straight to the speaker as it is synthesised, so a
+  single question still reaches first sound in about two seconds. Nothing about
+  the common case got slower.
+- **Two or more** all buffer silently. When the last one lands, the assistant
+  says *"Your answers on a GPU, quantization, and a token are ready — which
+  would you like to hear first?"* and shows a button per answer. Whichever you
+  pick starts **instantly**, because it finished downloading while you were
+  listening to the question.
+
+Answers are named by what makes them different, not by their opening words —
+three questions that all start "in one sentence, what is…" come out as
+"a GPU", "quantization", "a token".
+
+**Barge-in.** Pressing the mic stops whatever is playing, so you can talk over
+an answer instead of waiting it out. There is also an explicit Stop button while
+audio is playing.
+
+### Two different concurrency limits
+
+They are not the same, and the difference shapes the design:
+
+| | limit | behaviour when exceeded |
+| --- | --- | --- |
+| SambaNova | none at this volume | three concurrent streams finished in 1837 ms |
+| Cartesia | **2** on the current plan | the request fails outright — no queueing |
+
+So language-model calls all start immediately and only *synthesis* waits for a
+free slot. A queued request shows a `queued` chip, and its wait appears on the
+timeline as a long pale Cartesia bar. Raise `CARTESIA_CONCURRENCY` in `.env` if
+the plan is upgraded.
+
+Three questions asked together: 11.1 s of work in 5.0 s of wall clock.
+
 ## Showing it to someone remote
 
 The demo is passphrase-gated: `/` redirects to a login page and the websocket

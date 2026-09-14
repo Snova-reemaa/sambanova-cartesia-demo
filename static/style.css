@@ -185,6 +185,132 @@ body {
 .hint { font-size: 11.5px; color: var(--faint); margin: 0; min-height: 1.4em; }
 .hint.warn { color: var(--bad); }
 
+.stop {
+  flex: none;
+  padding: 0 16px;
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--bad);
+  background: var(--surface);
+  border: 1px solid var(--bad);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.stop:hover { background: var(--bad); color: var(--surface); }
+
+/* ---- "which would you like first?" ---- */
+
+.chooser {
+  background: var(--surface);
+  border: 1px solid var(--tts);
+  border-radius: 4px;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ch-ask { margin: 0; font-size: 15px; font-weight: 500; }
+
+.ch-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.ch-buttons button {
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--ground);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 8px 14px;
+  cursor: pointer;
+  text-align: left;
+  max-width: 300px;
+}
+.ch-buttons button:hover { border-color: var(--tts); color: var(--tts); }
+.ch-buttons button .num {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--faint);
+  margin-right: 7px;
+}
+
+/* ---- request cards ---- */
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.card {
+  background: var(--ground);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  cursor: pointer;
+}
+.card:hover { border-color: var(--muted); }
+.card.selected { border-color: var(--tts); }
+
+.card .cq {
+  font-size: 13px;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.card .crow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.chip {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 9px;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+.chip.thinking { color: var(--llm); }
+.chip.queued   { color: var(--faint); }
+.chip.ready    { color: var(--tts); }
+.chip.playing  { color: var(--play); }
+.chip.played   { color: var(--faint); }
+.chip.failed   { color: var(--bad); }
+
+.card .cmeta {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.card .cbar {
+  height: 3px;
+  background: var(--hairline);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.card .cbar i {
+  display: block;
+  height: 100%;
+  width: 0%;
+  background: var(--tts);
+  transition: width .25s linear;
+}
+@media (prefers-reduced-motion: reduce) { .card .cbar i { transition: none; } }
+
 /* ---- model + voice pickers ---- */
 
 .pickers {
