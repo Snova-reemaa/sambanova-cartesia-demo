@@ -59,6 +59,10 @@
 
 * { box-sizing: border-box; }
 
+/* .panel and .chooser set display:flex, and an author rule beats the browser's
+   own [hidden] { display: none } — so hiding them needs to win explicitly. */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   padding: 28px 22px 64px;
@@ -466,3 +470,53 @@ footer {
 }
 
 :focus-visible { outline: 2px solid var(--tts); outline-offset: 2px; }
+
+/* ---- web search ---- */
+
+.picker.toggle { gap: 6px; cursor: pointer; }
+.picker.toggle input { accent-color: var(--tts); cursor: pointer; margin: 0; }
+
+.searching {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--tts);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 4px 0 0;
+}
+.searching::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--tts);
+  animation: pulse 1s ease-in-out infinite;
+}
+@keyframes pulse { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { .searching::before { animation: none; } }
+
+.sources {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--hairline);
+}
+.sources .sh {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.sources a {
+  font-size: 12.5px;
+  color: var(--muted);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sources a:hover { color: var(--tts); text-decoration: underline; }

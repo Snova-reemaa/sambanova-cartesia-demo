@@ -11,6 +11,7 @@ const ui = {
   send: el('send'), stop: el('stop'),
   hint: el('hint'), canvas: el('timeline'), log: el('log'),
   pickModel: el('pick-model'), pickVoice: el('pick-voice'),
+  pickSearch: el('pick-search'),
   chooser: el('chooser'), chAsk: el('ch-ask'), chButtons: el('ch-buttons'),
   panel: el('requests-panel'), cards: el('cards'),
 };
@@ -46,6 +47,7 @@ function newTurn(id, prompt, model) {
     status: 'thinking',  // thinking | ready | playing | played | failed
     played: false,
     playStart: null,
+    searchQuery: null, sources: null, searchS: null,
     node: null, card: null,
   };
 }
@@ -320,7 +322,19 @@ function drawTimeline() {
     bar(0, 0, now, css('--llm-soft'));
   } else {
     bar(0, 0, turn.firstToken, css('--llm-soft'));
+    // The slice of that wait which was actually inference; the rest was wire.
+    if (turn.inferTtft) {
+      bar(0, Math.max(0, turn.firstToken - turn.inferTtft), turn.firstToken, css('--llm'));
+    }
     bar(0, turn.firstToken, turn.textDone !== null ? turn.textDone : now, css('--llm'));
+
+    if (turn.inferTtft && turn.overhead > 0.05) {
+      const midX = X(Math.max(0, turn.firstToken - turn.inferTtft) / 2);
+      g.fillStyle = css('--muted');
+      g.font = '10px "IBM Plex Mono", monospace';
+      g.textAlign = 'center';
+      g.fillText(`${Math.round(turn.overhead * 1000)} ms network`, midX, TOP + 13);
+    }
   }
 
   if (turn.firstToken !== null) {
@@ -464,18 +478,50 @@ function hideCursor(m) {
   if (m && m.cursor) { m.cursor.remove(); m.cursor = null; }
 }
 
+function renderSources(turn) {
+  const box = document.createElement('div');
+  box.className = 'sources';
+  const h = document.createElement('span');
+  h.className = 'sh';
+  h.textContent = `${turn.sources.length} sources`;
+  box.append(h);
+  turn.sources.forEach((r) => {
+    const a = document.createElement('a');
+    a.href = r.url;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.textContent = r.title || r.url;
+    box.append(a);
+  });
+  turn.node.what.append(box);
+}
+
 /* ------------------------------------------------------------ metrics ui */
 
 const secs = (v) => (v === null || v === undefined) ? '—' : `${v.toFixed(2)}<small>s</small>`;
 
+const ms = (v) => (v === null || v === undefined) ? '—' : `${Math.round(v * 1000)}<small>ms</small>`;
+
 function showMetrics(t) {
-  ui.mToken = ui.mToken || el('m-token');
   el('m-token').innerHTML = secs(t ? t.firstToken : null);
   el('m-audio').innerHTML = secs(t ? t.firstAudio : null);
   el('m-text').innerHTML = secs(t ? t.textDone : null);
   el('m-chars').textContent = t ? `${t.chars} chars` : '—';
   const rt = t && t.audioDone ? t.buffered / t.audioDone : null;
   el('m-rate').innerHTML = rt ? `${rt.toFixed(1)}<small>×</small>` : '—';
+
+  // SambaNova reports its own time-to-first-token with no network in it, so
+  // the gap between the two numbers is what the wire cost.
+  el('m-infer').innerHTML = ms(t ? t.inferTtft : null);
+  const note = el('m-overhead');
+  if (t && t.overhead !== null && t.overhead !== undefined) {
+    const tps = t.server && t.server.completion_tokens_after_first_per_sec;
+    note.textContent = tps
+      ? `${Math.round(t.overhead * 1000)} ms was network · ${Math.round(tps)} tok/s`
+      : `${Math.round(t.overhead * 1000)} ms was network`;
+  } else {
+    note.textContent = "SambaNova's own clock";
+  }
 }
 
 /* --------------------------------------------------------------- pickers */
@@ -522,6 +568,8 @@ ui.pickModel.addEventListener('change', () => {
   ui.llmModel.textContent = shortModel(ui.pickModel.value);
 });
 ui.pickVoice.addEventListener('change', () => remember('voiceloop.voice', ui.pickVoice.value));
+ui.pickSearch.addEventListener('change', () => remember('voiceloop.search', ui.pickSearch.checked ? '1' : '0'));
+if (recall('voiceloop.search') === '0') ui.pickSearch.checked = false;
 
 /* --------------------------------------------------------------- socket */
 
@@ -631,6 +679,32 @@ function onEvent(m) {
       render();
       break;
 
+    case 'searching':
+      if (turn) {
+        turn.searchQuery = m.query;
+        const note = document.createElement('p');
+        note.className = 'searching';
+        note.textContent = `searching the web for "${m.query}"`;
+        turn.node.what.after(note);
+        turn.searchNote = note;
+      }
+      render();
+      break;
+
+    case 'sources':
+      if (turn) {
+        turn.sources = m.results || [];
+        turn.searchS = m.took_s;
+        if (turn.searchNote) {
+          turn.searchNote.className = 'cmeta mono';
+          turn.searchNote.textContent =
+            `searched "${turn.searchQuery}" in ${Math.round(m.took_s * 1000)} ms`;
+        }
+        if (turn.sources.length) renderSources(turn);
+      }
+      render();
+      break;
+
     case 'first_audio':
       if (turn) turn.firstAudio = m.t;
       if (m.turn_id === selectedId) showMetrics(turn);
@@ -640,6 +714,9 @@ function onEvent(m) {
     case 'done':
       if (turn) {
         turn.audioDone = m.metrics.total_s;
+        turn.server = m.metrics.server || null;
+        turn.inferTtft = m.metrics.inference_ttft_s;
+        turn.overhead = m.metrics.network_overhead_s;
         turn.status = (liveId === m.turn_id || playingId === m.turn_id) ? 'playing' : 'ready';
         if (liveId === m.turn_id) turn.played = true;
         hideCursor(turn.node);
@@ -699,6 +776,7 @@ function submit(text) {
     text: value,
     model: ui.pickModel.value,
     voice_id: ui.pickVoice.value,
+    search: ui.pickSearch.checked,
   }));
 }
 

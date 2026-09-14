@@ -19,8 +19,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from sambanova import get_client as get_llm, get_model, stream_chat
+from sambanova import get_client as get_llm, get_model, stream_tools
 from cartesia_tts import get_client as get_tts, output_format
+from search import search, as_context, provider as search_provider
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(HERE, "static")
@@ -41,6 +42,52 @@ SYSTEM_PROMPT = (
     "You are a voice assistant. Reply in two or three short spoken sentences. "
     "Plain words only: no lists, no markdown, no emoji, no stage directions."
 )
+
+# Left to itself the model searches for everything, including definitions it
+# plainly knows, which costs a round trip on every question. Spelling out when
+# NOT to search took this from 5/10 to 9/10 on a small trigger set.
+SEARCH_RULES = (
+    "\nYou already know a great deal. Answer directly from your own knowledge. "
+    "Call web_search ONLY when the answer depends on information that changes "
+    "over time or is newer than your training. Never search to define a term, "
+    "explain a concept, do arithmetic, or answer anything stable. If in doubt, "
+    "answer without searching. Never say anything about tools, functions, "
+    "searching, or your reasoning about whether to search."
+)
+
+SEARCH_TOOL = [{
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": (
+            "Look up information that changes over time: recent events, live prices, "
+            "scores, today's news, anything newer than your training data. Never for "
+            "definitions, concepts, history, arithmetic or general explanations."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+    },
+}]
+
+# Spoken while the search runs, into the same synthesis context as the answer,
+# so the voice carries straight on instead of going quiet.
+def bridge_phrase(query):
+    # Deliberately generic. Naming the query back produces things like "let me
+    # check the latest on latest news SambaNova", and it has to sound right for
+    # every query, not most of them. Two sentences buys about two seconds of
+    # speech, which comfortably covers a search.
+    return "One moment. Let me look that up for you. "
+
+
+def grounded_prompt(results):
+    return (
+        "Web search results:\n\n" + as_context(results) +
+        "\n\nAnswer the user's question using these results. Speak naturally in "
+        "two or three sentences. Do not mention searching, results, or sources."
+    )
 MAX_HISTORY = 8  # user+assistant messages retained for context
 VOICE_LIMIT = 20  # how many Cartesia voices to offer in the picker
 MAX_CONCURRENT = 4  # requests accepted in flight at once on one connection
@@ -94,6 +141,8 @@ class Turn:
         self.first_audio = None
         self.last_audio = None
         self.audio_bytes = 0
+        self.server = {}         # SambaNova's own inference timings
+        self.search_s = None     # seconds spent in web search, if any
 
     def now(self):
         return time.perf_counter() - self.t0
@@ -101,7 +150,18 @@ class Turn:
     def metrics(self):
         audio_seconds = self.audio_bytes / (SAMPLE_RATE * 2)
         total = self.last_audio or self.now()
+
+        # What the wire cost us: our stopwatch minus SambaNova's own.
+        inference = self.server.get("time_to_first_token")
+        overhead = None
+        if inference is not None and self.first_token is not None:
+            overhead = max(0.0, self.first_token - inference)
+
         return {
+            "server": self.server or None,
+            "inference_ttft_s": inference,
+            "search_s": self.search_s,
+            "network_overhead_s": overhead,
             "first_token_s": self.first_token,
             "last_token_s": self.last_token,
             "tts_start_s": self.tts_start,
@@ -169,7 +229,8 @@ async def synthesise(chan, conn, turn_id, text, voice_id):
             raise RuntimeError(res.message or res.title or "Cartesia error")
 
 
-async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=None):
+async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=None,
+                   can_search=True):
     """Stream one prompt through the LLM into its own Cartesia context, relaying
     text events and raw PCM frames to the browser as they arrive."""
     turn = Turn()
@@ -180,7 +241,8 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
 
     # Snapshot history now: a turn started alongside others should not see
     # replies that land while it is still running.
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + list(history) + [
+    system = SYSTEM_PROMPT + (SEARCH_RULES if can_search else "")
+    messages = [{"role": "system", "content": system}] + list(history) + [
         {"role": "user", "content": prompt}
     ]
 
@@ -192,15 +254,62 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
     # The language model runs right away; text waits here for a synthesis slot.
     pending_text = asyncio.Queue()
 
-    async def generate():
+    async def emit(delta):
         nonlocal reply
-        async for delta in stream_chat(llm, messages, model=llm_model):
-            if turn.first_token is None:
-                turn.first_token = turn.now()
-                await chan.event({"type": "first_token", "turn_id": turn_id, "t": turn.first_token})
-            reply += delta
-            await chan.event({"type": "token", "turn_id": turn_id, "text": delta, "t": turn.now()})
-            await pending_text.put(delta)
+        reply += delta
+        await chan.event({"type": "token", "turn_id": turn_id, "text": delta, "t": turn.now()})
+        await pending_text.put(delta)
+
+    async def mark_first():
+        if turn.first_token is None:
+            turn.first_token = turn.now()
+            await chan.event({"type": "first_token", "turn_id": turn_id, "t": turn.first_token})
+
+    async def generate():
+        calls = []
+        async for kind, payload in stream_tools(
+            llm, messages, model=llm_model,
+            tools=SEARCH_TOOL if can_search else None,
+            stats=turn.server,
+        ):
+            if kind == "text":
+                await mark_first()
+                await emit(payload)
+            elif kind == "tool_start":
+                await mark_first()
+            elif kind == "tool":
+                calls.append(payload)
+
+        if calls:
+            try:
+                query = (json.loads(calls[0]["arguments"]) or {}).get("query", "").strip()
+            except ValueError:
+                query = ""
+            if query:
+                await chan.event({"type": "searching", "turn_id": turn_id,
+                                  "query": query, "t": turn.now()})
+
+                # Start talking before the search returns. This text goes into
+                # the same synthesis context as the answer that follows it.
+                await emit(bridge_phrase(query))
+
+                t_search = turn.now()
+                results = await search(query)
+                turn.search_s = turn.now() - t_search
+                await chan.event({
+                    "type": "sources", "turn_id": turn_id, "t": turn.now(),
+                    "took_s": turn.search_s,
+                    "results": [{"title": r["title"], "url": r["url"]} for r in results],
+                })
+
+                grounded = messages + [
+                    {"role": "assistant", "content": bridge_phrase(query)},
+                    {"role": "system", "content": grounded_prompt(results)},
+                ]
+                async for kind, payload in stream_tools(llm, grounded, model=llm_model):
+                    if kind == "text":
+                        await emit(payload)
+
         turn.last_token = turn.now()
         await chan.event({"type": "text_done", "turn_id": turn_id, "t": turn.last_token})
         await pending_text.put(None)
@@ -285,6 +394,7 @@ async def websocket_handler(request):
             "voices": CATALOG["voices"],
             "default_voice": default_voice(),
             "max_concurrent": MAX_CONCURRENT,
+            "search_provider": search_provider(),
         }
     )
 
@@ -327,6 +437,7 @@ async def websocket_handler(request):
                     chan, conn, llm, history, turn_id, prompt,
                     model=data.get("model"),
                     voice=data.get("voice_id"),
+                    can_search=bool(data.get("search", True)),
                 )
                 running[turn_id] = asyncio.ensure_future(supervise(turn_id, coro))
 

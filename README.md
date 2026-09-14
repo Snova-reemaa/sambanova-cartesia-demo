@@ -65,6 +65,59 @@ To move it server-side, replace the `SpeechRecognition` block in
 resulting text as the existing `{"type": "prompt"}` message. Nothing else in the
 pipeline changes — the server only ever sees text.
 
+## Where the latency actually is
+
+SambaNova returns its own inference timings in the usage frame that closes every
+stream — the same choice-less frame that used to crash this demo. The server
+reads them and the UI shows both clocks side by side:
+
+```
+browser first token      1103 ms
+inference (SambaNova)     152 ms
+network overhead          950 ms
+```
+
+**86% of what looks like model latency is the round trip from this laptop.**
+Inference itself is about 150 ms, at roughly 240 tokens/sec after the first.
+The timeline draws the inference slice in solid amber at the right-hand end of
+the waiting bar, so the two are visually separable.
+
+This matters for demos: a bad wifi connection makes SambaNova look slow when it
+is not. Run the demo near the datacentre and the whole thing gets a second
+faster without a line of code changing.
+
+## Web search, without going quiet
+
+Ask something current and the model calls `web_search` instead of answering from
+memory. The interesting part is what happens to the voice while the search runs:
+
+```
+1146 ms  decided to search "latest news SambaNova"
+1964 ms  FIRST SOUND — "One moment. Let me look that up for you."
+2665 ms  4 sources returned
+9805 ms  done
+```
+
+The bridge phrase is pushed into the **same Cartesia context** as the answer
+that follows it, so synthesis simply carries on. There is no gap, no second
+audio stream, and no silence to sit through — the user hears a voice 700 ms
+before the search has returned anything.
+
+Turn it off with the Web search toggle to get the plain one-round-trip path.
+
+**Triggering.** Left alone the model searches for everything, including "what is
+a GPU". The system prompt spells out when *not* to search, which took a small
+trigger set from 5/10 to 6/6. It also has to be told never to narrate its tool
+reasoning: because text streams straight to the speaker, a stray "this is not a
+time-sensitive fact so no web search is needed" gets spoken aloud and cannot be
+taken back.
+
+**Providers.** Set one of `TAVILY_API_KEY`, `BRAVE_API_KEY` or `SERPER_API_KEY`
+and it is picked up automatically. With no key the demo scrapes DuckDuckGo's
+lite endpoint so it runs out of the box — that path parses HTML which can change
+without notice and will rate limit under load, so add a key before showing
+anyone. A failed search never kills a turn; the model just answers without it.
+
 ## Asking several things at once
 
 Keep talking while it works. Each request becomes its own card with live status,

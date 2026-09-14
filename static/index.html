@@ -51,6 +51,10 @@
         <span class="pk-label mono">Voice</span>
         <select id="pick-voice"><option>loading…</option></select>
       </label>
+      <label class="picker toggle">
+        <input type="checkbox" id="pick-search" checked>
+        <span class="pk-label mono">Web search</span>
+      </label>
       <p class="hint mono" id="hint">Press the mic and speak — it sends when you stop.</p>
     </div>
   </section>
@@ -82,7 +86,12 @@
     <div class="cell">
       <span class="k">First token</span>
       <span class="v v-llm" id="m-token">—</span>
-      <span class="n">SambaNova responds</span>
+      <span class="n">measured in this browser</span>
+    </div>
+    <div class="cell">
+      <span class="k">of which inference</span>
+      <span class="v v-llm" id="m-infer">—</span>
+      <span class="n" id="m-overhead">SambaNova's own clock</span>
     </div>
     <div class="cell">
       <span class="k">First sound</span>
