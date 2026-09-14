@@ -42,6 +42,37 @@ SYSTEM_PROMPT = (
     "Plain words only: no lists, no markdown, no emoji, no stage directions."
 )
 MAX_HISTORY = 8  # user+assistant messages retained for context
+VOICE_LIMIT = 20  # how many Cartesia voices to offer in the picker
+
+# Filled once at startup so every browser session shares one lookup.
+CATALOG = {"models": [], "voices": []}
+
+
+async def load_catalog(llm, tts):
+    """Ask both providers what this account can actually use. Failures are not
+    fatal — the picker just falls back to whatever .env specifies."""
+    try:
+        listing = await llm.models.list()
+        CATALOG["models"] = sorted(m.id for m in listing.data)
+    except Exception as exc:
+        print(f"  ! could not list SambaNova models ({exc}); using .env default")
+        CATALOG["models"] = [get_model()]
+
+    try:
+        page = await tts.voices.list(limit=VOICE_LIMIT)
+        items = getattr(page, "data", None) or list(page)
+        CATALOG["voices"] = [
+            {
+                "id": v.id,
+                "name": v.name,
+                "language": getattr(v, "language", "") or "",
+                "description": (getattr(v, "description", "") or "")[:90],
+            }
+            for v in items
+        ]
+    except Exception as exc:
+        print(f"  ! could not list Cartesia voices ({exc}); using .env default")
+        CATALOG["voices"] = []
 
 
 class Turn:
@@ -71,11 +102,30 @@ class Turn:
         }
 
 
-async def run_turn(ws_out, conn, llm, history, prompt):
+def default_voice():
+    return os.getenv("CARTESIA_VOICE_ID", "6ccbfb76-1fc6-48f7-b71d-91ac6298247b")
+
+
+def pick_model(requested):
+    """Only ever hand the API a model this account was told it has."""
+    if requested and (not CATALOG["models"] or requested in CATALOG["models"]):
+        return requested
+    return get_model()
+
+
+def pick_voice(requested):
+    known = {v["id"] for v in CATALOG["voices"]}
+    if requested and (not known or requested in known):
+        return requested
+    return default_voice()
+
+
+async def run_turn(ws_out, conn, llm, history, prompt, model=None, voice=None):
     """Stream one prompt through the LLM into a fresh Cartesia context, relaying
     text events and raw PCM frames to the browser as they arrive."""
     turn = Turn()
-    voice_id = os.getenv("CARTESIA_VOICE_ID", "6ccbfb76-1fc6-48f7-b71d-91ac6298247b")
+    voice_id = pick_voice(voice)
+    llm_model = pick_model(model)
     tts_model = os.getenv("CARTESIA_MODEL", "sonic-2")
 
     ctx = conn.context(
@@ -86,14 +136,16 @@ async def run_turn(ws_out, conn, llm, history, prompt):
     )
     reply = ""
 
-    await ws_out.send_json({"type": "turn_start", "prompt": prompt})
+    await ws_out.send_json(
+        {"type": "turn_start", "prompt": prompt, "model": llm_model, "voice_id": voice_id}
+    )
 
     async def send_text():
         nonlocal reply
         messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history + [
             {"role": "user", "content": prompt}
         ]
-        async for delta in stream_chat(llm, messages):
+        async for delta in stream_chat(llm, messages, model=llm_model):
             if turn.first_token is None:
                 turn.first_token = turn.now()
                 await ws_out.send_json({"type": "first_token", "t": turn.first_token})
@@ -157,6 +209,9 @@ async def websocket_handler(request):
             "llm_model": get_model(),
             "tts_model": os.getenv("CARTESIA_MODEL", "sonic-2"),
             "sample_rate": SAMPLE_RATE,
+            "models": CATALOG["models"],
+            "voices": CATALOG["voices"],
+            "default_voice": default_voice(),
         }
     )
 
@@ -177,7 +232,11 @@ async def websocket_handler(request):
 
             busy = True
             try:
-                await run_turn(ws, conn, llm, history, prompt)
+                await run_turn(
+                    ws, conn, llm, history, prompt,
+                    model=data.get("model"),
+                    voice=data.get("voice_id"),
+                )
             except Exception as exc:
                 await ws.send_json({"type": "error", "message": str(exc)})
             finally:
@@ -248,6 +307,16 @@ async def login(request):
     raise response
 
 
+async def on_startup(app):
+    llm = get_llm()
+    tts = get_tts()
+    try:
+        await load_catalog(llm, tts)
+    finally:
+        await tts.close()
+    print(f"  {len(CATALOG['models'])} models · {len(CATALOG['voices'])} voices available")
+
+
 def main():
     for key in ("SAMBANOVA_API_KEY", "CARTESIA_API_KEY"):
         if not os.getenv(key):
@@ -259,13 +328,13 @@ def main():
     app.router.add_post("/login", login)
     app.router.add_get("/ws", websocket_handler)
     app.router.add_static("/static", STATIC)
+    app.on_startup.append(on_startup)
 
     port = int(os.getenv("PORT", "8080"))
     print(f"\n  listening on http://localhost:{port}")
     print(f"  passphrase: {PASSPHRASE}")
     if GENERATED_PASSPHRASE:
         print("  (generated for this run — set DEMO_PASSPHRASE in .env to fix it)")
-    print()
     web.run_app(app, host="127.0.0.1", port=port, print=None)
 
 

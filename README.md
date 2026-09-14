@@ -37,6 +37,24 @@ Open http://localhost:8080. Type a prompt, or press the mic and speak.
 Shows a live timeline of where the latency goes, and keeps conversation
 context across turns.
 
+**Model and voice pickers.** The server asks both providers what this account
+can use — every SambaNova chat model, the first 20 Cartesia voices — and offers
+them as dropdowns. Switching model between turns and watching the timeline
+change is the most useful thing in the demo. Choices persist per browser; a
+model or voice the account does not have falls back to the `.env` default rather
+than being passed through to the API.
+
+Measured from one warm session, same prompt and voice:
+
+| model | first token | first sound |
+| --- | --- | --- |
+| Meta-Llama-3.3-70B-Instruct | 1162 ms | 1800 ms |
+| gpt-oss-120b | 1554 ms | 1932 ms |
+| gemma-4-31B-it | 1997 ms | 2462 ms |
+
+Note the ordering: the 70B model is the *fastest* of the three. Parameter count
+does not predict latency here — how well a given model is served does.
+
 Speech-to-text is deliberately kept in the browser, using the built-in
 `SpeechRecognition` API (Chrome, Edge, or Safari). That keeps the demo to two
 API keys and puts transcription closest to the microphone, where it costs no

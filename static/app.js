@@ -8,6 +8,7 @@ const ui = {
   llmModel: el('llm-model'), ttsModel: el('tts-model'), socketNote: el('socket-note'),
   mic: el('mic'), micLevel: el('miclevel'), prompt: el('prompt'), send: el('send'),
   hint: el('hint'), canvas: el('timeline'), log: el('log'),
+  pickModel: el('pick-model'), pickVoice: el('pick-voice'),
   mToken: el('m-token'), mAudio: el('m-audio'), mText: el('m-text'),
   mChars: el('m-chars'), mRate: el('m-rate'),
 };
@@ -185,6 +186,11 @@ function drawTimeline() {
     if (lane.key === 'speaker' && turn && turn.buffered > 0) {
       return `${turn.buffered.toFixed(1)}s buffered`;
     }
+    // Name the model that produced this turn, so switching is legible here.
+    if (lane.key === 'llm') {
+      const id = (turn && turn.model) || (ui.pickModel && ui.pickModel.value);
+      if (id) return shortModel(id).slice(0, 18);
+    }
     return lane.sub;
   };
 
@@ -323,6 +329,75 @@ function resetMetrics() {
   ui.mRate.innerHTML = '—';
 }
 
+/* --------------------------------------------------------------- pickers */
+
+// Remembering the choice per browser is a convenience only; losing it is fine.
+const remember = (key, value) => {
+  try { localStorage.setItem(key, value); } catch (e) { /* private mode */ }
+};
+const recall = (key) => {
+  try { return localStorage.getItem(key); } catch (e) { return null; }
+};
+
+// "Meta-Llama-3.3-70B-Instruct" reads as "Llama 3.3 70B" in a 90px lane label.
+function shortModel(id) {
+  return String(id || '')
+    .replace(/^Meta-/, '')
+    .replace(/-Instruct$/, '')
+    .replace(/-it$/, '')
+    .replace(/-/g, ' ');
+}
+
+function fillPickers(m) {
+  const models = m.models && m.models.length ? m.models : [m.llm_model];
+  const wantModel = recall('voiceloop.model');
+  ui.pickModel.innerHTML = '';
+  models.forEach((id) => {
+    const opt = document.createElement('option');
+    opt.value = id;
+    opt.textContent = shortModel(id);
+    ui.pickModel.append(opt);
+  });
+  ui.pickModel.value = models.includes(wantModel) ? wantModel : m.llm_model;
+
+  const voices = m.voices || [];
+  ui.pickVoice.innerHTML = '';
+  if (!voices.length) {
+    const opt = document.createElement('option');
+    opt.value = m.default_voice;
+    opt.textContent = 'default voice';
+    ui.pickVoice.append(opt);
+    ui.pickVoice.disabled = true;
+  } else {
+    voices.forEach((v) => {
+      const opt = document.createElement('option');
+      opt.value = v.id;
+      opt.textContent = v.language && v.language !== 'en'
+        ? `${v.name} (${v.language})`
+        : v.name;
+      opt.title = v.description || '';
+      ui.pickVoice.append(opt);
+    });
+    const wantVoice = recall('voiceloop.voice');
+    const ids = voices.map((v) => v.id);
+    ui.pickVoice.value = ids.includes(wantVoice) ? wantVoice : (
+      ids.includes(m.default_voice) ? m.default_voice : ids[0]
+    );
+  }
+
+  ui.llmModel.textContent = shortModel(ui.pickModel.value);
+}
+
+ui.pickModel.addEventListener('change', () => {
+  remember('voiceloop.model', ui.pickModel.value);
+  ui.llmModel.textContent = shortModel(ui.pickModel.value);
+  drawTimeline();
+});
+
+ui.pickVoice.addEventListener('change', () => {
+  remember('voiceloop.voice', ui.pickVoice.value);
+});
+
 /* --------------------------------------------------------------- socket */
 
 function connect() {
@@ -355,15 +430,16 @@ function connect() {
 function handleEvent(m) {
   switch (m.type) {
     case 'ready':
-      ui.llmModel.textContent = m.llm_model;
       ui.ttsModel.textContent = m.tts_model;
       ui.socketNote.textContent = `socket warm in ${Math.round(m.socket_setup_ms)} ms`;
       ui.connText.textContent = 'ready';
+      fillPickers(m);
       setBusy(false);
       break;
 
     case 'turn_start':
       turn = newTurn();
+      turn.model = m.model;
       playhead = 0;
       carry = null;
       resetMetrics();
@@ -422,6 +498,9 @@ function setBusy(state) {
   busy = state;
   ui.send.disabled = state;
   ui.mic.disabled = state || !SpeechCtor;
+  // Swapping model or voice mid-turn would mislabel the timeline.
+  ui.pickModel.disabled = state;
+  ui.pickVoice.disabled = state || ui.pickVoice.options.length < 2;
 }
 
 function submit(text) {
@@ -430,7 +509,12 @@ function submit(text) {
   ensureAudio();                 // must be created inside a user gesture
   setBusy(true);
   ui.prompt.value = '';
-  ws.send(JSON.stringify({ type: 'prompt', text: value }));
+  ws.send(JSON.stringify({
+    type: 'prompt',
+    text: value,
+    model: ui.pickModel.value,
+    voice_id: ui.pickVoice.value,
+  }));
 }
 
 /* ------------------------------------------------------------------ mic */

@@ -41,7 +41,17 @@
              placeholder="Ask something out loud, or type it here">
       <button id="send" class="send" type="button">Send</button>
     </div>
-    <p class="hint mono" id="hint">Press the mic and speak — it sends when you stop.</p>
+    <div class="pickers">
+      <label class="picker">
+        <span class="pk-label mono">Model</span>
+        <select id="pick-model"><option>loading…</option></select>
+      </label>
+      <label class="picker">
+        <span class="pk-label mono">Voice</span>
+        <select id="pick-voice"><option>loading…</option></select>
+      </label>
+      <p class="hint mono" id="hint">Press the mic and speak — it sends when you stop.</p>
+    </div>
   </section>
 
   <section class="panel">
