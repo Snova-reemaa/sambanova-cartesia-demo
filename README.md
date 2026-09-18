@@ -147,6 +147,19 @@ model on this account accepts video (`video_url` returns a 500).
 | Video | the browser seeks to evenly spaced timestamps and grabs up to 6 stills |
 | Camera | live self-view; capture frames, or just ask and it grabs the current one |
 
+**Camera notes.** No `facingMode` constraint is set — asking a laptop for the
+rear camera asks for one it does not have — so the browser picks, and a device
+dropdown appears when there is more than one (Continuity Camera counts). The
+choice is remembered per browser.
+
+The preview mirrors for a front-facing camera and does not for a rear one. The
+**captured frame is never mirrored either way**: a serial number or error
+message held up to the lens has to reach the model the right way round, even
+though that makes the preview and the capture disagree.
+
+Camera failures name their cause and what to do — permission denied, no device,
+another app holding it, or a non-https origin.
+
 Drag and drop anywhere on the page works, and so does pasting a screenshot.
 
 **The voice does not wait for the image.** Same trick as web search: a bridge

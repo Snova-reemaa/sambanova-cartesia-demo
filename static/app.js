@@ -15,6 +15,7 @@ const ui = {
   attach: el('attach'), camera: el('camera'), file: el('file'),
   stage: el('stage'), selfview: el('selfview'), shots: el('shots'),
   grab: el('grab'), clearShots: el('clear-shots'), stageNote: el('stage-note'),
+  camPick: el('cam-pick'),
   chooser: el('chooser'), chAsk: el('ch-ask'), chButtons: el('ch-buttons'),
   panel: el('requests-panel'), cards: el('cards'),
 };
@@ -737,20 +738,77 @@ async function takeFiles(files) {
   }
 }
 
-async function startCamera() {
+// Why the camera fails, in words that say what to do about it.
+const CAMERA_TROUBLE = {
+  NotAllowedError: 'Camera blocked. Click the camera icon in the address bar and allow it, then press the camera button again.',
+  NotFoundError: 'No camera found on this machine. Attaching a photo works the same way.',
+  NotReadableError: 'Another app is holding the camera — quit Zoom, Teams or Photo Booth and try again.',
+  OverconstrainedError: 'That camera cannot provide a usable size. Pick a different one.',
+  SecurityError: 'The browser will only open a camera over https or on localhost.',
+};
+
+let camMirrored = false;   // front cameras look wrong unless the preview flips
+
+async function listCameras() {
   try {
-    camStream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'environment' },
-    });
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    return devices.filter((d) => d.kind === 'videoinput');
+  } catch (e) {
+    return [];
+  }
+}
+
+async function buildCameraPicker() {
+  const cams = await listCameras();
+  ui.camPick.innerHTML = '';
+  cams.forEach((d, i) => {
+    const o = document.createElement('option');
+    o.value = d.deviceId;
+    o.textContent = d.label || `Camera ${i + 1}`;
+    ui.camPick.append(o);
+  });
+  // Only worth showing when there is actually a choice to make.
+  ui.camPick.hidden = cams.length < 2;
+  const want = recall('voiceloop.camera');
+  if (want && cams.some((d) => d.deviceId === want)) ui.camPick.value = want;
+}
+
+async function startCamera(deviceId) {
+  // No facingMode: asking a laptop for the rear camera is asking for a camera
+  // it does not have. Let the browser pick, or use the device the user chose.
+  const video = deviceId
+    ? { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+    : { width: { ideal: 1280 }, height: { ideal: 720 } };
+
+  try {
+    camStream = await navigator.mediaDevices.getUserMedia({ video });
     ui.selfview.srcObject = camStream;
     await ui.selfview.play();
+
+    const track = camStream.getVideoTracks()[0];
+    const settings = track.getSettings ? track.getSettings() : {};
+    camMirrored = settings.facingMode !== 'environment';
+    ui.selfview.classList.toggle('mirrored', camMirrored);
+
+    // Labels are only readable after permission is granted, so build the
+    // picker now rather than on page load.
+    await buildCameraPicker();
+    if (settings.deviceId) {
+      ui.camPick.value = settings.deviceId;
+      remember('voiceloop.camera', settings.deviceId);
+    }
+
     ui.camera.classList.add('on');
     ui.camera.title = 'Turn the camera off';
+    ui.hint.className = 'hint mono';
+    ui.hint.textContent = `${track.label || 'camera'} · ${settings.width || '?'}×${settings.height || '?'}`;
     updateStage();
   } catch (err) {
     camStream = null;
     ui.hint.className = 'hint mono warn';
-    ui.hint.textContent = 'Camera blocked — allow it in the address bar, or attach a file instead.';
+    ui.hint.textContent = CAMERA_TROUBLE[err.name]
+      || `Camera failed: ${err.name}. Attaching a photo works the same way.`;
+    updateStage();
   }
 }
 
@@ -758,24 +816,39 @@ function stopCamera() {
   if (camStream) camStream.getTracks().forEach((t) => t.stop());
   camStream = null;
   ui.selfview.srcObject = null;
+  ui.selfview.classList.remove('mirrored');
   ui.camera.classList.remove('on');
   ui.camera.title = 'Turn the camera on';
+  ui.camPick.hidden = true;
   updateStage();
 }
 
 function grabFrame() {
   if (!camStream || !ui.selfview.videoWidth) return null;
+  // Captured un-mirrored on purpose, even though the preview is flipped: a
+  // serial number or error message held up to the lens has to reach the model
+  // the right way round.
   const url = drawScaled(ui.selfview, ui.selfview.videoWidth, ui.selfview.videoHeight);
   addFrames([url]);
   return url;
 }
+
+ui.camPick.addEventListener('change', async () => {
+  remember('voiceloop.camera', ui.camPick.value);
+  if (camStream) {
+    camStream.getTracks().forEach((t) => t.stop());
+    camStream = null;
+    await startCamera(ui.camPick.value);
+  }
+});
 
 ui.attach.addEventListener('click', () => ui.file.click());
 ui.file.addEventListener('change', async () => {
   await takeFiles([...ui.file.files]);
   ui.file.value = '';
 });
-ui.camera.addEventListener('click', () => (camStream ? stopCamera() : startCamera()));
+ui.camera.addEventListener('click', () =>
+  (camStream ? stopCamera() : startCamera(recall('voiceloop.camera') || undefined)));
 ui.grab.addEventListener('click', grabFrame);
 ui.clearShots.addEventListener('click', () => { pending = []; renderShots(); });
 
