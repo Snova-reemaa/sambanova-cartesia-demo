@@ -135,6 +135,52 @@ venv/bin/python search.py "who won the 2026 super bowl"
 It prints the provider it chose and confirms the key was read — by length and
 last four characters, never the key itself.
 
+## Photos, video and the camera
+
+Attach a photo, drop a video in, or turn the camera on. All three end up as the
+same thing — still frames handed to a vision model — because neither vision
+model on this account accepts video (`video_url` returns a 500).
+
+| input | what happens |
+| --- | --- |
+| Photo | resized to 768 px, sent as one frame |
+| Video | the browser seeks to evenly spaced timestamps and grabs up to 6 stills |
+| Camera | live self-view; capture frames, or just ask and it grabs the current one |
+
+Drag and drop anywhere on the page works, and so does pasting a screenshot.
+
+**The voice does not wait for the image.** Same trick as web search: a bridge
+phrase goes into the live synthesis context the instant an attachment arrives,
+so the caller hears something while the vision model reads.
+
+```
+   1 ms  turn start, 1 attachment
+ 835 ms  FIRST SOUND — "Let me take a look at that."
+2459 ms  vision finished
+```
+
+First sound lands *faster* than a normal turn (0.85 s against 2.0 s), because
+the bridge phrase needs no language model at all.
+
+### Which model reads the image
+
+`gemma-4-31B-it`, and the choice is not close. Both it and MiniMax-M3 pass a
+single-image test, but on batches:
+
+| frames | gemma-4-31B-it | MiniMax-M3 |
+| --- | --- | --- |
+| 3 solid colours | 3/3, in order | **0/3** — answered "Black, Gray, White" |
+| 6 solid colours | 6/6, in order | 3/6 |
+| prompt tokens, 3 → 6 images | 810 → 1584 | 233 → 266 |
+
+M3's token count barely moves as images are added, which is the tell: it is not
+ingesting the batch. Use it for one image and a long history, never for frames.
+Set `SAMBANOVA_VISION_MODEL` to override.
+
+Given four frames of a line growing across a screen, gemma tracked the change
+across them — and, correctly, pointed out that a perfectly straight line is not
+how glass actually cracks.
+
 ## Asking several things at once
 
 Keep talking while it works. Each request becomes its own card with live status,

@@ -12,6 +12,9 @@ const ui = {
   hint: el('hint'), canvas: el('timeline'), log: el('log'),
   pickModel: el('pick-model'), pickVoice: el('pick-voice'),
   pickSearch: el('pick-search'),
+  attach: el('attach'), camera: el('camera'), file: el('file'),
+  stage: el('stage'), selfview: el('selfview'), shots: el('shots'),
+  grab: el('grab'), clearShots: el('clear-shots'), stageNote: el('stage-note'),
   chooser: el('chooser'), chAsk: el('ch-ask'), chButtons: el('ch-buttons'),
   panel: el('requests-panel'), cards: el('cards'),
 };
@@ -48,6 +51,7 @@ function newTurn(id, prompt, model) {
     played: false,
     playStart: null,
     searchQuery: null, sources: null, searchS: null,
+    attachments: 0, sawThumbs: null,
     node: null, card: null,
   };
 }
@@ -496,6 +500,33 @@ function renderSources(turn) {
   turn.node.what.append(box);
 }
 
+function renderVision(turn, description) {
+  const box = document.createElement('div');
+  box.className = 'vision';
+
+  const h = document.createElement('span');
+  h.className = 'vh';
+  h.textContent = 'what it saw';
+  box.append(h);
+
+  if (turn.sawThumbs && turn.sawThumbs.length) {
+    const strip = document.createElement('div');
+    strip.className = 'thumbs';
+    turn.sawThumbs.forEach((url, i) => {
+      const img = document.createElement('img');
+      img.src = url;
+      img.alt = `frame ${i + 1}`;
+      strip.append(img);
+    });
+    box.append(strip);
+  }
+
+  const p = document.createElement('p');
+  p.textContent = description;
+  box.append(p);
+  turn.node.what.append(box);
+}
+
 /* ------------------------------------------------------------ metrics ui */
 
 const secs = (v) => (v === null || v === undefined) ? '—' : `${v.toFixed(2)}<small>s</small>`;
@@ -571,6 +602,205 @@ ui.pickVoice.addEventListener('change', () => remember('voiceloop.voice', ui.pic
 ui.pickSearch.addEventListener('change', () => remember('voiceloop.search', ui.pickSearch.checked ? '1' : '0'));
 if (recall('voiceloop.search') === '0') ui.pickSearch.checked = false;
 
+
+/* ------------------------------------------------------- attachments */
+
+// Frames are resized before they leave the browser: the vision model sees a
+// fixed token budget regardless, and full-size phone photos would blow past the
+// websocket message limit for no benefit.
+const FRAME_EDGE = 768;
+const FRAME_QUALITY = 0.82;
+let MAX_FRAMES = 8;
+
+let pending = [];        // data URLs queued for the next turn
+let camStream = null;
+
+function drawScaled(source, w, h) {
+  const scale = Math.min(1, FRAME_EDGE / Math.max(w, h));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(w * scale);
+  canvas.height = Math.round(h * scale);
+  canvas.getContext('2d').drawImage(source, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/jpeg', FRAME_QUALITY);
+}
+
+function fromImageFile(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      resolve(drawScaled(img, img.naturalWidth, img.naturalHeight));
+      URL.revokeObjectURL(url);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('unreadable image')); };
+    img.src = url;
+  });
+}
+
+// A video becomes a handful of stills. Neither vision model takes video, and
+// evenly spaced frames are what a support agent would flick through anyway.
+function framesFromVideo(file, count) {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement('video');
+    video.preload = 'metadata';
+    video.muted = true;
+    video.playsInline = true;
+    const url = URL.createObjectURL(file);
+    const out = [];
+
+    const fail = (msg) => { URL.revokeObjectURL(url); reject(new Error(msg)); };
+
+    video.onerror = () => fail('could not read that video');
+    video.onloadedmetadata = () => {
+      const dur = video.duration;
+      if (!isFinite(dur) || dur <= 0) return fail('video has no duration');
+      // Skip the very start and end; first and last frames are often black.
+      const times = Array.from({ length: count },
+        (_, i) => dur * (i + 0.5) / count);
+      let i = 0;
+      video.onseeked = () => {
+        out.push(drawScaled(video, video.videoWidth, video.videoHeight));
+        i++;
+        if (i < times.length) video.currentTime = times[i];
+        else { URL.revokeObjectURL(url); resolve(out); }
+      };
+      video.currentTime = times[0];
+    };
+    video.src = url;
+  });
+}
+
+function renderShots() {
+  ui.shots.innerHTML = '';
+  pending.forEach((url, i) => {
+    const box = document.createElement('div');
+    box.className = 'shot';
+    const img = document.createElement('img');
+    img.src = url;
+    img.alt = `attachment ${i + 1}`;
+    const n = document.createElement('span');
+    n.className = 'n';
+    n.textContent = i + 1;
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.textContent = '×';
+    x.title = 'Remove';
+    x.addEventListener('click', (e) => {
+      e.stopPropagation();
+      pending.splice(i, 1);
+      renderShots();
+    });
+    box.append(img, n, x);
+    ui.shots.append(box);
+  });
+  updateStage();
+}
+
+function updateStage() {
+  const live = !!camStream;
+  ui.stage.hidden = !live && !pending.length;
+  ui.selfview.hidden = !live;
+  ui.grab.hidden = !live;
+  ui.clearShots.hidden = !pending.length;
+  ui.attach.classList.toggle('on', pending.length > 0);
+  ui.stageNote.textContent = pending.length
+    ? `${pending.length} of ${MAX_FRAMES} attached — they go with your next message`
+    : (live ? 'camera on — capture a frame, or just ask and it will grab one' : '');
+}
+
+function addFrames(urls) {
+  const room = MAX_FRAMES - pending.length;
+  if (room <= 0) {
+    ui.hint.className = 'hint mono warn';
+    ui.hint.textContent = `That is the limit — ${MAX_FRAMES} frames per message.`;
+    return;
+  }
+  pending.push(...urls.slice(0, room));
+  renderShots();
+}
+
+async function takeFiles(files) {
+  for (const file of files) {
+    try {
+      if (file.type.startsWith('video/')) {
+        ui.stageNote.textContent = 'pulling frames out of the video…';
+        ui.stage.hidden = false;
+        const room = Math.max(1, Math.min(6, MAX_FRAMES - pending.length));
+        addFrames(await framesFromVideo(file, room));
+      } else if (file.type.startsWith('image/')) {
+        addFrames([await fromImageFile(file)]);
+      }
+    } catch (err) {
+      ui.hint.className = 'hint mono warn';
+      ui.hint.textContent = `${file.name}: ${err.message}`;
+    }
+  }
+}
+
+async function startCamera() {
+  try {
+    camStream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'environment' },
+    });
+    ui.selfview.srcObject = camStream;
+    await ui.selfview.play();
+    ui.camera.classList.add('on');
+    ui.camera.title = 'Turn the camera off';
+    updateStage();
+  } catch (err) {
+    camStream = null;
+    ui.hint.className = 'hint mono warn';
+    ui.hint.textContent = 'Camera blocked — allow it in the address bar, or attach a file instead.';
+  }
+}
+
+function stopCamera() {
+  if (camStream) camStream.getTracks().forEach((t) => t.stop());
+  camStream = null;
+  ui.selfview.srcObject = null;
+  ui.camera.classList.remove('on');
+  ui.camera.title = 'Turn the camera on';
+  updateStage();
+}
+
+function grabFrame() {
+  if (!camStream || !ui.selfview.videoWidth) return null;
+  const url = drawScaled(ui.selfview, ui.selfview.videoWidth, ui.selfview.videoHeight);
+  addFrames([url]);
+  return url;
+}
+
+ui.attach.addEventListener('click', () => ui.file.click());
+ui.file.addEventListener('change', async () => {
+  await takeFiles([...ui.file.files]);
+  ui.file.value = '';
+});
+ui.camera.addEventListener('click', () => (camStream ? stopCamera() : startCamera()));
+ui.grab.addEventListener('click', grabFrame);
+ui.clearShots.addEventListener('click', () => { pending = []; renderShots(); });
+
+// Drag a photo anywhere onto the page.
+['dragenter', 'dragover'].forEach((ev) =>
+  document.addEventListener(ev, (e) => {
+    if (![...(e.dataTransfer?.types || [])].includes('Files')) return;
+    e.preventDefault();
+    document.body.classList.add('dropping');
+  }));
+['dragleave', 'drop'].forEach((ev) =>
+  document.addEventListener(ev, (e) => {
+    if (ev === 'drop') e.preventDefault();
+    document.body.classList.remove('dropping');
+  }));
+document.addEventListener('drop', (e) => {
+  if (e.dataTransfer?.files?.length) takeFiles([...e.dataTransfer.files]);
+});
+
+// Paste a screenshot straight in.
+document.addEventListener('paste', (e) => {
+  const files = [...(e.clipboardData?.files || [])];
+  if (files.length) { e.preventDefault(); takeFiles(files); }
+});
+
 /* --------------------------------------------------------------- socket */
 
 function connect() {
@@ -637,12 +867,16 @@ function onEvent(m) {
       ui.socketNote.textContent = `socket warm in ${Math.round(m.socket_setup_ms)} ms`;
       ui.connText.textContent = 'ready';
       fillPickers(m);
+      if (m.max_frames) MAX_FRAMES = m.max_frames;
+      if (m.vision_model) ui.camera.title = `Camera — read by ${m.vision_model}`;
       ui.send.disabled = false;
       ui.mic.disabled = !SpeechCtor;
       break;
 
     case 'turn_start': {
       const t = newTurn(m.turn_id, m.prompt, m.model);
+      t.attachments = m.attachments || 0;
+      if (t.attachments) { t.sawThumbs = lastSent.slice(); lastSent = []; }
       turns.set(m.turn_id, t);
       addMessage('you', 'you', m.prompt);
       t.node = addMessage('bot', 'reply', '');
@@ -701,6 +935,33 @@ function onEvent(m) {
             `searched "${turn.searchQuery}" in ${Math.round(m.took_s * 1000)} ms`;
         }
         if (turn.sources.length) renderSources(turn);
+      }
+      render();
+      break;
+
+    case 'looking':
+      if (turn) {
+        const note = document.createElement('p');
+        note.className = 'searching';
+        note.textContent = m.count > 1
+          ? `looking through ${m.count} frames…`
+          : 'looking at the photo…';
+        turn.node.what.after(note);
+        turn.lookNote = note;
+      }
+      render();
+      break;
+
+    case 'looked':
+      if (turn) {
+        turn.visionS = m.took_s;
+        if (turn.lookNote) {
+          turn.lookNote.className = 'cmeta mono';
+          turn.lookNote.textContent =
+            `${m.model} read ${turn.attachments > 1 ? turn.attachments + ' frames' : 'the image'} `
+            + `in ${Math.round(m.took_s * 1000)} ms · ${m.prompt_tokens} tokens`;
+        }
+        renderVision(turn, m.description);
       }
       render();
       break;
@@ -768,6 +1029,16 @@ function submit(text) {
   const value = (text || ui.prompt.value).trim();
   if (!value || !connected || ws.readyState !== WebSocket.OPEN) return;
   ensureAudio();                  // needs a user gesture to start
+
+  // Camera on but nothing captured: grab the current frame rather than make
+  // the user press two buttons to ask about what they are already pointing at.
+  if (!pending.length && camStream) grabFrame();
+
+  const images = pending.slice();
+  lastSent = images;
+  pending = [];
+  renderShots();
+
   ui.prompt.value = '';
   ui.hint.className = 'hint mono';
   hideChooser();
@@ -777,8 +1048,11 @@ function submit(text) {
     model: ui.pickModel.value,
     voice_id: ui.pickVoice.value,
     search: ui.pickSearch.checked,
+    images,
   }));
 }
+
+let lastSent = [];
 
 ui.send.addEventListener('click', () => submit());
 ui.prompt.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });

@@ -19,7 +19,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from sambanova import get_client as get_llm, get_model, stream_tools
+from sambanova import (get_client as get_llm, get_model, stream_tools,
+                       describe_images, get_vision_model)
 from cartesia_tts import get_client as get_tts, output_format
 from search import search, as_context, provider as search_provider
 
@@ -80,6 +81,49 @@ def bridge_phrase(query):
     # every query, not most of them. Two sentences buys about two seconds of
     # speech, which comfortably covers a search.
     return "One moment. Let me look that up for you. "
+
+
+MAX_FRAMES = 8        # gemma read 6 frames in order reliably; 8 leaves headroom
+MAX_IMAGE_BYTES = 1_500_000   # per frame, after the browser has resized it
+
+
+def looks_like_image(url):
+    return isinstance(url, str) and url.startswith("data:image/")
+
+
+def clean_attachments(raw):
+    """Keep only well-formed, reasonably sized image data URLs."""
+    if not isinstance(raw, list):
+        return []
+    return [u for u in raw[:MAX_FRAMES]
+            if looks_like_image(u) and len(u) <= MAX_IMAGE_BYTES]
+
+
+def vision_question(prompt, count):
+    if count > 1:
+        return (
+            f"These {count} images are frames from a short video, in order. "
+            f"Describe what happens across them, and anything a customer support "
+            f"agent would need to notice — damage, error messages, model or serial "
+            f"numbers, indicator lights. The caller said: \"{prompt}\""
+        )
+    return (
+        "Describe this image the way a customer support agent would need it "
+        "described: what the object is, its condition, and any text, error "
+        "message, model number or indicator light visible. The caller said: "
+        f"\"{prompt}\""
+    )
+
+
+def seen_prompt(description, count):
+    what = f"{count} frames from a video" if count > 1 else "a photo"
+    return (
+        f"The caller sent {what}. A vision model looked at it and reported:\n\n"
+        f"{description}\n\n"
+        "Answer the caller using this. Speak naturally in two or three sentences. "
+        "Refer to what you can see as if you looked yourself — do not mention a "
+        "vision model, frames, or image analysis."
+    )
 
 
 def grounded_prompt(results):
@@ -143,6 +187,7 @@ class Turn:
         self.audio_bytes = 0
         self.server = {}         # SambaNova's own inference timings
         self.search_s = None     # seconds spent in web search, if any
+        self.vision_s = None     # seconds spent reading attachments, if any
 
     def now(self):
         return time.perf_counter() - self.t0
@@ -161,6 +206,7 @@ class Turn:
             "server": self.server or None,
             "inference_ttft_s": inference,
             "search_s": self.search_s,
+            "vision_s": self.vision_s,
             "network_overhead_s": overhead,
             "first_token_s": self.first_token,
             "last_token_s": self.last_token,
@@ -230,7 +276,7 @@ async def synthesise(chan, conn, turn_id, text, voice_id):
 
 
 async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=None,
-                   can_search=True):
+                   can_search=True, attachments=()):
     """Stream one prompt through the LLM into its own Cartesia context, relaying
     text events and raw PCM frames to the browser as they arrive."""
     turn = Turn()
@@ -249,6 +295,7 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
     await chan.event({
         "type": "turn_start", "turn_id": turn_id, "prompt": prompt,
         "model": llm_model, "voice_id": voice_id,
+        "attachments": len(attachments),
     })
 
     # The language model runs right away; text waits here for a synthesis slot.
@@ -265,7 +312,46 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
             turn.first_token = turn.now()
             await chan.event({"type": "first_token", "turn_id": turn_id, "t": turn.first_token})
 
+    async def look_first():
+        """When the caller attached something, look at it before answering.
+
+        Same shape as the search detour: say something immediately, do the slow
+        thing under cover of speech, then answer from what came back.
+        """
+        count = len(attachments)
+        await chan.event({"type": "looking", "turn_id": turn_id,
+                          "count": count, "t": turn.now()})
+        await emit("Let me take a look at that. " if count == 1
+                   else "Let me look through those. ")
+
+        t_look = time.perf_counter()
+        description, info = await describe_images(
+            llm, attachments, vision_question(prompt, count))
+        turn.vision_s = time.perf_counter() - t_look
+        await chan.event({
+            "type": "looked", "turn_id": turn_id, "t": turn.now(),
+            "took_s": turn.vision_s, "model": info["model"],
+            "prompt_tokens": info["prompt_tokens"],
+            "description": description[:400],
+        })
+
+        grounded = messages + [
+            {"role": "assistant", "content": "Let me take a look at that."},
+            {"role": "system", "content": seen_prompt(description, count)},
+        ]
+        async for kind, payload in stream_tools(llm, grounded, model=llm_model):
+            if kind == "text":
+                await emit(payload)
+
     async def generate():
+        if attachments:
+            await mark_first()
+            await look_first()
+            turn.last_token = turn.now()
+            await chan.event({"type": "text_done", "turn_id": turn_id, "t": turn.last_token})
+            await pending_text.put(None)
+            return
+
         calls = []
         async for kind, payload in stream_tools(
             llm, messages, model=llm_model,
@@ -398,6 +484,8 @@ async def websocket_handler(request):
             "default_voice": default_voice(),
             "max_concurrent": MAX_CONCURRENT,
             "search_provider": search_provider(),
+            "vision_model": get_vision_model(),
+            "max_frames": MAX_FRAMES,
         }
     )
 
@@ -441,6 +529,7 @@ async def websocket_handler(request):
                     model=data.get("model"),
                     voice=data.get("voice_id"),
                     can_search=bool(data.get("search", True)),
+                    attachments=clean_attachments(data.get("images")),
                 )
                 running[turn_id] = asyncio.ensure_future(supervise(turn_id, coro))
 

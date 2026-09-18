@@ -476,6 +476,10 @@ footer {
 .picker.toggle { gap: 6px; cursor: pointer; }
 .picker.toggle input { accent-color: var(--tts); cursor: pointer; margin: 0; }
 
+/* Notes inserted after .what land in the transcript grid's 62px label column
+   unless told otherwise. */
+.msg .searching, .msg .cmeta { grid-column: 2; }
+
 .searching {
   font-family: var(--mono);
   font-size: 11.5px;
@@ -520,3 +524,104 @@ footer {
   white-space: nowrap;
 }
 .sources a:hover { color: var(--tts); text-decoration: underline; }
+
+/* ---- attach / camera ---- */
+
+.icon-btn {
+  flex: none;
+  width: 42px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: color .12s, border-color .12s;
+}
+.icon-btn:hover:not(:disabled) { color: var(--ink); border-color: var(--muted); }
+.icon-btn.on { color: var(--surface); background: var(--tts); border-color: var(--tts); }
+.icon-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+.stage {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+#selfview {
+  width: 100%;
+  max-width: 320px;
+  aspect-ratio: 4 / 3;
+  max-height: 240px;
+  object-fit: cover;
+  border-radius: 3px;
+  background: var(--ground);
+  transform: scaleX(-1);   /* a self-view should mirror, like a mirror does */
+}
+
+.shots { display: flex; flex-wrap: wrap; gap: 7px; }
+
+.shot {
+  position: relative;
+  width: 74px;
+  height: 74px;
+  border-radius: 3px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--ground);
+}
+.shot img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.shot button {
+  position: absolute;
+  top: 2px; right: 2px;
+  width: 17px; height: 17px;
+  border: none; border-radius: 50%;
+  background: rgba(0,0,0,.62);
+  color: #fff; font-size: 11px; line-height: 1;
+  cursor: pointer; padding: 0;
+}
+.shot .n {
+  position: absolute; bottom: 2px; left: 3px;
+  font-family: var(--mono); font-size: 9px;
+  color: #fff; text-shadow: 0 0 3px rgba(0,0,0,.9);
+}
+
+.stage-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+
+.ghost {
+  font-family: var(--sans);
+  font-size: 12.5px;
+  color: var(--ink);
+  background: var(--ground);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+.ghost:hover { border-color: var(--tts); color: var(--tts); }
+
+.stage-note { font-size: 11px; color: var(--faint); }
+
+body.dropping { outline: 2px dashed var(--tts); outline-offset: -8px; }
+
+/* what the model saw, under a reply */
+.vision {
+  display: flex; flex-direction: column; gap: 5px;
+  margin-top: 8px; padding-top: 8px;
+  border-top: 1px solid var(--hairline);
+}
+.vision .vh {
+  font-family: var(--mono); font-size: 9.5px;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint);
+}
+.vision p { font-size: 12.5px; color: var(--muted); margin: 0; font-style: italic; }
+.vision .thumbs { display: flex; gap: 5px; flex-wrap: wrap; }
+.vision .thumbs img {
+  width: 52px; height: 52px; object-fit: cover;
+  border-radius: 3px; border: 1px solid var(--line);
+}

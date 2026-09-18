@@ -1,4 +1,5 @@
 import os
+import re
 
 from openai import AsyncOpenAI
 
@@ -39,6 +40,37 @@ def read_usage(chunk):
     data = usage.model_dump() if hasattr(usage, "model_dump") else dict(usage)
     picked = {k: data[k] for k in SERVER_FIELDS if data.get(k) is not None}
     return picked or None
+
+
+DEFAULT_VISION_MODEL = "gemma-4-31B-it"
+
+
+def get_vision_model():
+    return os.getenv("SAMBANOVA_VISION_MODEL", DEFAULT_VISION_MODEL)
+
+
+async def describe_images(client, data_urls, question, model=None):
+    """Ask the vision model what it sees, and return plain text.
+
+    Only gemma handles several images reliably — MiniMax-M3 reads one image
+    well but mis-reports a batch, so frame sequences must go here.
+    """
+    content = [{"type": "text", "text": question}]
+    content += [{"type": "image_url", "image_url": {"url": u}} for u in data_urls]
+
+    reply = await client.chat.completions.create(
+        model=model or get_vision_model(),
+        max_tokens=400,
+        messages=[{"role": "user", "content": content}],
+    )
+    text = (reply.choices[0].message.content or "").strip()
+    # M3 wraps its reasoning in a tag that must never reach the speaker.
+    text = re.sub(r"<mm:think>.*?</mm:think>", "", text, flags=re.S).strip()
+    usage = getattr(reply, "usage", None)
+    took = getattr(usage, "time_to_first_token", None) if usage else None
+    return text, {"model": model or get_vision_model(),
+                  "prompt_tokens": getattr(usage, "prompt_tokens", None) if usage else None,
+                  "inference_s": took}
 
 
 async def stream_tools(client, messages, model=None, tools=None, stats=None):
