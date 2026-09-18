@@ -39,9 +39,19 @@ if GENERATED_PASSPHRASE:
     PASSPHRASE = secrets.token_urlsafe(9)
 
 SAMPLE_RATE = 44100
+# Written for the ear, not the page. The earlier version ("you are a voice
+# assistant, reply in two or three sentences") produced correct answers that
+# sounded like a manual being read aloud.
 SYSTEM_PROMPT = (
-    "You are a voice assistant. Reply in two or three short spoken sentences. "
-    "Plain words only: no lists, no markdown, no emoji, no stage directions."
+    "You are a support agent on a phone call. You are talking, not writing — "
+    "every word you produce is spoken aloud to a real person.\n"
+    "Talk the way people actually talk: contractions, short sentences, one idea "
+    "at a time. Lead with the answer, not a preamble. Never read out a list, "
+    "never say 'firstly' or 'additionally', never narrate what you are doing, "
+    "and never use markdown, bullets or emoji.\n"
+    "React before you explain — 'ah, I see', 'okay, so', 'right'. Two or three "
+    "sentences, then stop and let them reply. Ending on a question is usually "
+    "better than ending on a lecture."
 )
 
 # Left to itself the model searches for everything, including definitions it
@@ -100,29 +110,41 @@ def clean_attachments(raw):
 
 
 def vision_question(prompt, count):
+    """Ask for observations, not a report.
+
+    Asking for "a description a support agent would need" returns markdown
+    headings — Object:, Condition:, Text/Model Number: — and whatever reads
+    that next ends up paraphrasing a form.
+    """
+    shared = (
+        "Plain sentences only: no headings, no bullet points, no bold. Be "
+        "concrete and brief, and if something is unclear or you cannot tell, "
+        f"say so plainly. The caller said: \"{prompt}\""
+    )
     if count > 1:
         return (
-            f"These {count} images are frames from a short video, in order. "
-            f"Describe what happens across them, and anything a customer support "
-            f"agent would need to notice — damage, error messages, model or serial "
-            f"numbers, indicator lights. The caller said: \"{prompt}\""
+            f"You are the eyes of a support agent on a call. These {count} images "
+            "are frames from a short video, in order. Say what actually changes "
+            "across them and anything that matters here — damage, error messages, "
+            f"model or serial numbers, indicator lights. {shared}"
         )
     return (
-        "Describe this image the way a customer support agent would need it "
-        "described: what the object is, its condition, and any text, error "
-        "message, model number or indicator light visible. The caller said: "
-        f"\"{prompt}\""
+        "You are the eyes of a support agent on a call. Say what you can actually "
+        "see that matters here — what the thing is, anything wrong with it, and "
+        f"any lights, text, error messages or model numbers. {shared}"
     )
 
 
 def seen_prompt(description, count):
-    what = f"{count} frames from a video" if count > 1 else "a photo"
+    what = "the frames" if count > 1 else "the photo"
     return (
-        f"The caller sent {what}. A vision model looked at it and reported:\n\n"
+        f"You just looked at {what} the caller sent. Here is what you saw:\n\n"
         f"{description}\n\n"
-        "Answer the caller using this. Speak naturally in two or three sentences. "
-        "Refer to what you can see as if you looked yourself — do not mention a "
-        "vision model, frames, or image analysis."
+        "Now react out loud, the way you would on the phone: acknowledge what you "
+        "can see, say what it means, and tell them what to do about it. Do not "
+        "describe the image back to them — they know what they photographed. "
+        "Never mention a vision model, frames, or image analysis. Two or three "
+        "sentences."
     )
 
 

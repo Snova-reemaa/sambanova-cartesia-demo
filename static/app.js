@@ -140,10 +140,18 @@ function stopAudio() {
   sources.forEach((s) => { try { s.stop(); } catch (e) { /* already ended */ } });
   sources = [];
   playhead = audioCtx ? audioCtx.currentTime : 0;
-  if (playingId !== null) {
-    const t = turns.get(playingId);
-    if (t && t.status === 'playing') t.status = 'played';
-  }
+
+  // Whatever was audible is finished with, whether it was streaming live or
+  // playing from the buffer. Marking it played is what stops settle() from
+  // picking it back up and resuming an answer the user just talked over.
+  [playingId, liveId].forEach((id) => {
+    if (id === null) return;
+    const t = turns.get(id);
+    if (!t) return;
+    t.played = true;
+    if (t.status === 'playing' || t.status === 'ready') t.status = 'played';
+  });
+
   playingId = null;
   liveId = null;
 }
@@ -926,7 +934,12 @@ function onAudio(buffer) {
 
   // Stream straight to the speaker only when this is the sole request in
   // flight; otherwise hold it so the user gets to choose the order.
-  if (liveId === id || playingId === id) flush(turn);
+  if (liveId === id || playingId === id) {
+    // Claim the speaker. Without this playingId stays null through a live
+    // answer, and the next turn is also judged free to stream over the top.
+    if (playingId === null) playingId = id;
+    flush(turn);
+  }
 
   updateStopButton();
 }
@@ -1048,10 +1061,14 @@ function onEvent(m) {
     case 'done':
       if (turn) {
         turn.audioDone = m.metrics.total_s;
+        if (liveId === m.turn_id) liveId = null;   // generation done; audio may still be draining
         turn.server = m.metrics.server || null;
         turn.inferTtft = m.metrics.inference_ttft_s;
         turn.overhead = m.metrics.network_overhead_s;
-        turn.status = (liveId === m.turn_id || playingId === m.turn_id) ? 'playing' : 'ready';
+        // A turn the user already stopped stays stopped; don't advertise it
+        // as ready to play again.
+        turn.status = turn.played ? 'played'
+          : ((liveId === m.turn_id || playingId === m.turn_id) ? 'playing' : 'ready');
         if (liveId === m.turn_id) turn.played = true;
         hideCursor(turn.node);
       }

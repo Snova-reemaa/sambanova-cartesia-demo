@@ -66,6 +66,11 @@ async def describe_images(client, data_urls, question, model=None):
     text = (reply.choices[0].message.content or "").strip()
     # M3 wraps its reasoning in a tag that must never reach the speaker.
     text = re.sub(r"<mm:think>.*?</mm:think>", "", text, flags=re.S).strip()
+    # Belt and braces on the prompt: any markdown that slips through would be
+    # paraphrased downstream as a report rather than heard as an observation.
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"^\s*[-*+]\s+", "", text, flags=re.M)
+    text = re.sub(r"\n{2,}", " ", text).strip()
     usage = getattr(reply, "usage", None)
     took = getattr(usage, "time_to_first_token", None) if usage else None
     return text, {"model": model or get_vision_model(),
