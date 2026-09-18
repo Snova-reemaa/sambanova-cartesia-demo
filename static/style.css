@@ -114,6 +114,7 @@ body {
 }
 .dot.live { background: var(--play); }
 .dot.dead { background: var(--bad); }
+.dot.warn { background: var(--llm); }
 
 .stackinfo {
   font-size: 11.5px;

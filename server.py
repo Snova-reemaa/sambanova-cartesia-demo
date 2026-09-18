@@ -63,7 +63,10 @@ SEARCH_RULES = (
     "over time or is newer than your training. Never search to define a term, "
     "explain a concept, do arithmetic, or answer anything stable. If in doubt, "
     "answer without searching. Never say anything about tools, functions, "
-    "searching, or your reasoning about whether to search."
+    "searching, or your reasoning about whether to search.\n"
+    "If the caller has shown you something and wants it found, priced, matched "
+    "or bought, search using the details you can see. A photo is a reason to "
+    "search, not a reason to describe."
 )
 
 SEARCH_TOOL = [{
@@ -72,8 +75,10 @@ SEARCH_TOOL = [{
         "name": "web_search",
         "description": (
             "Look up information that changes over time: recent events, live prices, "
-            "scores, today's news, anything newer than your training data. Never for "
-            "definitions, concepts, history, arithmetic or general explanations."
+            "scores, today's news, anything newer than your training data. Also for "
+            "finding, pricing, matching or shopping for a specific item, including one "
+            "the caller has shown you in a photo. Never for definitions, concepts, "
+            "history, arithmetic or general explanations."
         ),
         "parameters": {
             "type": "object",
@@ -85,11 +90,16 @@ SEARCH_TOOL = [{
 
 # Spoken while the search runs, into the same synthesis context as the answer,
 # so the voice carries straight on instead of going quiet.
-def bridge_phrase(query):
+def bridge_phrase(query, already_spoke=False):
     # Deliberately generic. Naming the query back produces things like "let me
     # check the latest on latest news SambaNova", and it has to sound right for
     # every query, not most of them. Two sentences buys about two seconds of
     # speech, which comfortably covers a search.
+    #
+    # After a photo the caller has already heard "let me take a look at that",
+    # and stacking a second full bridge on top reads as stalling.
+    if already_spoke:
+        return "Right, let me find some options. "
     return "One moment. Let me look that up for you. "
 
 
@@ -129,9 +139,14 @@ def vision_question(prompt, count):
             f"model or serial numbers, indicator lights. {shared}"
         )
     return (
-        "You are the eyes of a support agent on a call. Say what you can actually "
-        "see that matters here — what the thing is, anything wrong with it, and "
-        f"any lights, text, error messages or model numbers. {shared}"
+        "You are the eyes of an agent on a call. Say what you can actually see "
+        "that matters for what the caller is asking.\n"
+        "If they want it fixed, that means faults, damage, error messages, "
+        "indicator lights, model or serial numbers.\n"
+        "If they want it found, matched, priced or bought, that means the "
+        "details someone would type into a search: what the object is, its "
+        "material and colour, its style, shape and setting, any stones, "
+        f"patterns, branding or hallmarks. {shared}"
     )
 
 
@@ -140,11 +155,14 @@ def seen_prompt(description, count):
     return (
         f"You just looked at {what} the caller sent. Here is what you saw:\n\n"
         f"{description}\n\n"
-        "Now react out loud, the way you would on the phone: acknowledge what you "
-        "can see, say what it means, and tell them what to do about it. Do not "
-        "describe the image back to them — they know what they photographed. "
-        "Never mention a vision model, frames, or image analysis. Two or three "
-        "sentences."
+        "Now do what they actually asked. Read their message again: if they want "
+        "something found, priced, identified, matched or bought, use web_search "
+        "with a query built from what you just saw — do not answer from memory, "
+        "and do not simply describe the picture back to them. They know what they "
+        "photographed; describing it is never the answer on its own.\n"
+        "Only when they genuinely asked 'what is wrong with this' or 'what is "
+        "this' does saying what you see answer the question. Never mention a "
+        "vision model, frames, or image analysis."
     )
 
 
@@ -334,17 +352,20 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
             turn.first_token = turn.now()
             await chan.event({"type": "first_token", "turn_id": turn_id, "t": turn.first_token})
 
-    async def look_first():
-        """When the caller attached something, look at it before answering.
+    async def look_at_attachments():
+        """Say something, look at what was sent, and report back what was seen.
 
-        Same shape as the search detour: say something immediately, do the slow
-        thing under cover of speech, then answer from what came back.
+        Deliberately does NOT answer. Looking is an input to the turn, not the
+        end of it — the caller may want the thing found, priced or identified,
+        which needs the tools that come after.
         """
         count = len(attachments)
         await chan.event({"type": "looking", "turn_id": turn_id,
                           "count": count, "t": turn.now()})
-        await emit("Let me take a look at that. " if count == 1
-                   else "Let me look through those. ")
+
+        bridge = ("Let me take a look at that. " if count == 1
+                  else "Let me look through those. ")
+        await emit(bridge)
 
         t_look = time.perf_counter()
         description, info = await describe_images(
@@ -356,27 +377,24 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
             "prompt_tokens": info["prompt_tokens"],
             "description": description[:400],
         })
-
-        grounded = messages + [
-            {"role": "assistant", "content": "Let me take a look at that."},
-            {"role": "system", "content": seen_prompt(description, count)},
-        ]
-        async for kind, payload in stream_tools(llm, grounded, model=llm_model):
-            if kind == "text":
-                await emit(payload)
+        return bridge, description
 
     async def generate():
+        # Everything downstream builds on `convo`, so anything seen in an image
+        # is still in context when the model decides whether to search.
+        convo = list(messages)
+
         if attachments:
             await mark_first()
-            await look_first()
-            turn.last_token = turn.now()
-            await chan.event({"type": "text_done", "turn_id": turn_id, "t": turn.last_token})
-            await pending_text.put(None)
-            return
+            bridge, description = await look_at_attachments()
+            convo += [
+                {"role": "assistant", "content": bridge},
+                {"role": "system", "content": seen_prompt(description, len(attachments))},
+            ]
 
         calls = []
         async for kind, payload in stream_tools(
-            llm, messages, model=llm_model,
+            llm, convo, model=llm_model,
             tools=SEARCH_TOOL if can_search else None,
             stats=turn.server,
         ):
@@ -399,7 +417,8 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
 
                 # Start talking before the search returns. This text goes into
                 # the same synthesis context as the answer that follows it.
-                await emit(bridge_phrase(query))
+                spoken = bridge_phrase(query, already_spoke=bool(attachments))
+                await emit(spoken)
 
                 t_search = turn.now()
                 results = await search(query)
@@ -413,8 +432,8 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
                     ],
                 })
 
-                grounded = messages + [
-                    {"role": "assistant", "content": bridge_phrase(query)},
+                grounded = convo + [
+                    {"role": "assistant", "content": spoken},
                     {"role": "system", "content": grounded_prompt(results)},
                 ]
                 async for kind, payload in stream_tools(llm, grounded, model=llm_model):
@@ -426,6 +445,10 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
         await pending_text.put(None)
 
     async def synthesize():
+        if conn is None:
+            while await pending_text.get() is not None:
+                pass                      # consume so generate() is never blocked
+            return
         async with TTS_SLOTS:
             turn.tts_start = turn.now()
             await chan.event({"type": "tts_start", "turn_id": turn_id, "t": turn.tts_start})
@@ -484,14 +507,19 @@ async def websocket_handler(request):
     running = {}       # turn_id -> task
     next_turn_id = 1
 
+    # Losing synthesis should cost the demo its voice, not its existence. The
+    # conversation, vision and search all still work; the caller reads instead
+    # of listening.
     t_setup = time.perf_counter()
     manager = tts.tts.websocket_connect()
+    conn = None
+    audio_trouble = None
     try:
         conn = await manager.__aenter__()
     except Exception as exc:
-        await ws.send_json({"type": "error", "message": f"Cartesia connect failed: {exc}"})
-        await ws.close()
-        return ws
+        audio_trouble = str(exc)
+        detail = "Cartesia is out of credit" if "402" in audio_trouble else audio_trouble[:140]
+        print(f"  ! no synthesis this session: {detail}")
     setup_ms = (time.perf_counter() - t_setup) * 1000
 
     await ws.send_json(
@@ -508,6 +536,12 @@ async def websocket_handler(request):
             "search_provider": search_provider(),
             "vision_model": get_vision_model(),
             "max_frames": MAX_FRAMES,
+            "audio": conn is not None,
+            "audio_trouble": (
+                "Cartesia is out of credit — replies are text only until that is topped up."
+                if audio_trouble and "402" in audio_trouble
+                else (audio_trouble[:160] if audio_trouble else None)
+            ),
         }
     )
 
@@ -556,6 +590,8 @@ async def websocket_handler(request):
                 running[turn_id] = asyncio.ensure_future(supervise(turn_id, coro))
 
             elif kind == "say":
+                if conn is None:
+                    continue
                 # The assistant's own "which would you like first?" question.
                 text = (data.get("text") or "").strip()
                 if not text:
@@ -571,10 +607,11 @@ async def websocket_handler(request):
             task.cancel()
         if running:
             await asyncio.gather(*running.values(), return_exceptions=True)
-        try:
-            await manager.__aexit__(None, None, None)
-        except Exception:
-            pass
+        if conn is not None:
+            try:
+                await manager.__aexit__(None, None, None)
+            except Exception:
+                pass
         await tts.close()
 
     return ws

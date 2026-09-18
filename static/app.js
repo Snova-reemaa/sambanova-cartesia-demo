@@ -953,6 +953,15 @@ function onEvent(m) {
       ui.socketNote.textContent = `socket warm in ${Math.round(m.socket_setup_ms)} ms`;
       ui.connText.textContent = 'ready';
       fillPickers(m);
+      if (m.audio === false) {
+        // Text still works; say so plainly rather than leaving silence
+        // looking like a bug.
+        ui.connDot.className = 'dot warn';
+        ui.connText.textContent = 'ready, text only';
+        ui.hint.className = 'hint mono warn';
+        ui.hint.textContent = m.audio_trouble || 'Speech synthesis is unavailable — replies are text only.';
+        ui.pickVoice.disabled = true;
+      }
       if (m.max_frames) MAX_FRAMES = m.max_frames;
       if (m.vision_model) ui.camera.title = `Camera — read by ${m.vision_model}`;
       ui.send.disabled = false;
