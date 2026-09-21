@@ -18,6 +18,11 @@ const ui = {
   camPick: el('cam-pick'),
   chooser: el('chooser'), chAsk: el('ch-ask'), chButtons: el('ch-buttons'),
   panel: el('requests-panel'), cards: el('cards'),
+  startCall: el('start-call'), call: el('call'), callView: el('callview'),
+  callState: el('call-state'), callStateText: el('call-state-text'),
+  callClock: el('call-clock'), capYou: el('cap-you'), capThem: el('cap-them'),
+  callMic: el('call-mic'), callCam: el('call-cam'), callLook: el('call-look'),
+  endCall: el('end-call'), callTrouble: el('call-trouble'),
 };
 
 const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
@@ -574,6 +579,129 @@ function showMetrics(t) {
   }
 }
 
+
+/* ------------------------------------------------------------ call mode */
+
+// A call is the same pipeline with a different face on it: camera up, mic
+// open, and no button to press between turns.
+let inCall = false;
+let callStartedAt = 0;
+let callTimer = null;
+let muted = false;
+
+// Every utterance carrying a frame would add ~2.5s of vision to every turn.
+// These are the words people use when they mean "look at this".
+// 'it' and 'that' are far too common — "what time is it" is not someone
+// holding something up to the camera.
+const DEICTIC = /\b(this|these|those|here|mine|my)\b/i;
+const LOOKING = /\b(look(s|ing)?|see|show|watch|find|match|similar|identify|read|says?|error|message|screen|light|code|serial|model|colou?r|broken|cracked|damaged|what|which)\b/i;
+
+function wantsEyes(text) {
+  return DEICTIC.test(text) && LOOKING.test(text);
+}
+
+function callState(name, label) {
+  ui.callState.className = `pill ${name}`;
+  ui.callStateText.textContent = label;
+}
+
+function refreshCallState() {
+  if (!inCall) return;
+  if (muted) return callState('muted', 'muted');
+  if (sources.length || playingId !== null) return callState('speaking', 'speaking');
+  if (running().length) return callState('thinking', 'thinking');
+  callState('listening', listening ? 'listening' : 'starting mic');
+}
+
+function callTrouble(message) {
+  ui.callTrouble.hidden = !message;
+  if (message) ui.callTrouble.textContent = message;
+}
+
+async function enterCall() {
+  inCall = true;
+  ui.call.hidden = false;
+  ui.startCall.hidden = true;
+  callTrouble('');
+  callState('thinking', 'connecting');
+
+  callStartedAt = Date.now();
+  callTimer = setInterval(() => {
+    const t = Math.floor((Date.now() - callStartedAt) / 1000);
+    ui.callClock.textContent =
+      `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
+    refreshCallState();
+  }, 1000);
+
+  await startCamera(recall('voiceloop.camera') || undefined);
+  if (camStream) {
+    ui.callView.srcObject = camStream;
+    ui.callView.classList.toggle('mirrored', camMirrored);
+    ui.callView.classList.remove('off');
+    try { await ui.callView.play(); } catch (e) { /* autoplay guard */ }
+  } else {
+    ui.callView.classList.add('off');
+  }
+
+  startListening();
+  refreshCallState();
+}
+
+function leaveCall() {
+  inCall = false;
+  clearInterval(callTimer);
+  callTimer = null;
+  stopListening();
+  stopAudio();
+  stopCamera();
+  ui.callView.srcObject = null;
+  ui.call.hidden = true;
+  ui.startCall.hidden = false;
+  ui.capYou.textContent = '';
+  ui.capThem.textContent = '';
+  updateStopButton();
+  render();
+}
+
+ui.startCall.addEventListener('click', enterCall);
+ui.endCall.addEventListener('click', leaveCall);
+
+ui.callMic.addEventListener('click', () => {
+  muted = !muted;
+  ui.callMic.classList.toggle('off', muted);
+  ui.callMic.title = muted ? 'Unmute' : 'Mute';
+  if (muted) stopListening(); else startListening();
+  refreshCallState();
+});
+
+ui.callCam.addEventListener('click', async () => {
+  if (camStream) {
+    stopCamera();
+    ui.callView.srcObject = null;
+    ui.callView.classList.add('off');
+    ui.callCam.classList.add('off');
+    ui.callCam.title = 'Camera on';
+  } else {
+    await startCamera(recall('voiceloop.camera') || undefined);
+    if (camStream) {
+      ui.callView.srcObject = camStream;
+      ui.callView.classList.toggle('mirrored', camMirrored);
+      ui.callView.classList.remove('off');
+      try { await ui.callView.play(); } catch (e) { /* autoplay guard */ }
+      ui.callCam.classList.remove('off');
+      ui.callCam.title = 'Camera off';
+    }
+  }
+});
+
+// Explicitly hand it the current frame, for when the words did not make it
+// obvious that you are holding something up.
+ui.callLook.addEventListener('click', () => {
+  if (!camStream) return;
+  grabFrame();
+  ui.capYou.textContent = 'showing it what the camera can see…';
+});
+
 /* --------------------------------------------------------------- pickers */
 
 const remember = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
@@ -1004,6 +1132,7 @@ function onEvent(m) {
       if (!turn) break;
       turn.chars += m.text.length;
       turn.node.body.textContent += m.text;
+      if (inCall) ui.capThem.textContent = turn.node.body.textContent;
       if (m.turn_id === selectedId) showMetrics(turn);
       break;
 
@@ -1139,9 +1268,16 @@ function submit(text) {
   if (!value || !connected || ws.readyState !== WebSocket.OPEN) return;
   ensureAudio();                  // needs a user gesture to start
 
-  // Camera on but nothing captured: grab the current frame rather than make
-  // the user press two buttons to ask about what they are already pointing at.
-  if (!pending.length && camStream) grabFrame();
+  // Camera on but nothing captured. Outside a call, asking at all means you
+  // want it looked at. In a call the camera is always up, so attaching every
+  // frame would put ~2.5s of vision on every turn — only grab one when the
+  // words actually point at something.
+  if (!pending.length && camStream && (!inCall || wantsEyes(value))) grabFrame();
+
+  if (inCall) {
+    ui.capYou.textContent = value;
+    ui.capThem.textContent = '';
+  }
 
   const images = pending.slice();
   lastSent = images;
@@ -1247,6 +1383,8 @@ function startListening() {
 
   rec.onstart = () => {
     listening = true;
+    lastMicEvent = Date.now();
+    if (inCall) { callTrouble(''); refreshCallState(); }
     ui.mic.classList.add('on');
     ui.prompt.classList.add('listening');
     ui.hint.className = 'hint mono';
@@ -1277,6 +1415,8 @@ function startListening() {
 
     finalText += fresh;
     ui.prompt.value = (finalText + interim).trim();
+    if (inCall) ui.capYou.textContent = ui.prompt.value;
+    lastMicEvent = Date.now();
 
     // Send once they have actually stopped, not on every pause in a sentence.
     if (sinceSpeech) clearTimeout(sinceSpeech);
@@ -1286,9 +1426,11 @@ function startListening() {
   rec.onerror = (ev) => {
     if (ev.error === 'no-speech' || ev.error === 'aborted') return;  // routine
     ui.hint.className = 'hint mono warn';
-    ui.hint.textContent = ev.error === 'not-allowed'
-      ? 'Microphone blocked — allow it in the address bar, or just type.'
-      : `Speech recognition: ${ev.error}. You can type instead.`;
+    const why = ev.error === 'not-allowed'
+      ? 'Microphone blocked — allow it in the address bar, then press the mic again.'
+      : `Speech recognition: ${ev.error}.`;
+    ui.hint.textContent = why;
+    if (inCall) callTrouble(why);
     if (ev.error === 'not-allowed') stopListening();
   };
 
@@ -1328,10 +1470,24 @@ function scheduleRestart(delay) {
   }, delay);
 }
 
-// Chrome can end a session without firing onend, and a thrown start() leaves
-// nothing listening at all. Check periodically rather than trusting either.
+// Two ways hands-free dies. Nothing listening at all — a thrown start(), or
+// an onend that never came. And worse: a recogniser that still claims to be
+// listening but has silently stopped delivering, which no amount of checking
+// `listening` will catch. Track when it last said anything instead.
+let lastMicEvent = 0;
+const MIC_SILENCE_LIMIT = 12000;
+
 setInterval(() => {
-  if (handsFree && !listening && !restartTimer) scheduleRestart(200);
+  if (!handsFree) return;
+
+  if (!listening && !restartTimer) { scheduleRestart(200); return; }
+
+  if (listening && lastMicEvent && Date.now() - lastMicEvent > MIC_SILENCE_LIMIT) {
+    // Claims to be running, has not reported anything in a long time. Abort
+    // it and let onend bring a fresh one up.
+    lastMicEvent = Date.now();
+    if (rec) { try { rec.abort(); } catch (e) { /* already gone */ } }
+  }
 }, 2000);
 
 function stopListening() {

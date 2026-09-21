@@ -135,6 +135,28 @@ venv/bin/python search.py "who won the 2026 super bowl"
 It prints the provider it chose and confirms the key was read — by length and
 last four characters, never the key itself.
 
+## Call mode
+
+Press **Start a call**. Camera up, mic open, captions on screen, a status pill
+that reads listening / thinking / speaking, and no button to press between
+turns. Talk over it and it stops mid-word.
+
+Four controls: mute, camera, "show it what you are holding", and hang up.
+
+The camera is always on in a call, so attaching every frame would put ~2.5 s of
+vision on every turn. A frame is attached only when the words point at
+something — "what is this", "find one like mine", "is this cracked" — judged by
+a deictic word plus a looking word. Outside a call, having the camera on at all
+is taken as intent, so every turn gets a frame. The camera button in the call
+sends the current frame regardless.
+
+### If a change does not seem to take effect
+
+Static files are served with `Cache-Control: no-store`. aiohttp sends no cache
+headers by default, so browsers hold on to `app.js` and `style.css` — which
+means testing a fix against the previous version of the file and concluding it
+did not work. If you are on an older build, hard-reload once (Cmd-Shift-R).
+
 ## Photos, video and the camera
 
 Attach a photo, drop a video in, or turn the camera on. All three end up as the

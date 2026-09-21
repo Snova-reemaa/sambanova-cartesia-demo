@@ -634,6 +634,21 @@ def authorised(request):
 
 
 @web.middleware
+async def fresh_static(request, handler):
+    """Never let the browser cache the app's own JS and CSS.
+
+    aiohttp's static handler sends no cache headers, so browsers hold on to
+    them — which during development means testing a fix against the previous
+    version of the file and concluding it did not work.
+    """
+    response = await handler(request)
+    if request.path.startswith("/static") or request.path == "/":
+        response.headers["Cache-Control"] = "no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
+
+@web.middleware
 async def gate(request, handler):
     # /static holds no secrets and the login page needs the stylesheet.
     if request.path.startswith("/static") or request.path == "/login":
@@ -692,7 +707,7 @@ def main():
         if not os.getenv(key):
             raise SystemExit(f"{key} is missing from .env")
 
-    app = web.Application(middlewares=[gate])
+    app = web.Application(middlewares=[fresh_static, gate])
     app.router.add_get("/", index)
     app.router.add_get("/login", login)
     app.router.add_post("/login", login)
