@@ -109,7 +109,17 @@ function speak(samples) {
   playhead = at + buf.duration;
 
   sources.push(src);
-  src.onended = () => { sources = sources.filter((s) => s !== src); };
+  src.onended = () => {
+    sources = sources.filter((s) => s !== src);
+    // Nothing left to hear: let go of the speaker. Without this playingId
+    // stays pinned to the finished turn and the echo guard keeps comparing
+    // every later utterance against an answer that stopped long ago.
+    if (!sources.length && liveId === null) {
+      const done = playingId !== null ? turns.get(playingId) : null;
+      if (done && done.status === 'playing') done.status = 'played';
+      playingId = null;
+    }
+  };
   return at;
 }
 
@@ -1288,8 +1298,7 @@ function startListening() {
     // Chrome ends the session on its own every so often. Put it straight back
     // unless the user actually turned it off.
     if (handsFree) {
-      if (restartTimer) clearTimeout(restartTimer);
-      restartTimer = setTimeout(() => { if (handsFree) startListening(); }, 250);
+      scheduleRestart(250);
     } else {
       ui.mic.classList.remove('on');
       ui.prompt.classList.remove('listening');
@@ -1297,8 +1306,33 @@ function startListening() {
     }
   };
 
-  rec.start();
+  try {
+    rec.start();
+  } catch (err) {
+    // InvalidStateError: the previous session had not released yet. Thrown
+    // inside the restart timer this disappears silently and hands-free stops
+    // for good, which is exactly the "works once then never again" symptom.
+    rec = null;
+    listening = false;
+    if (handsFree) scheduleRestart(600);
+  }
 }
+
+// One place that owns getting the recogniser going again, so a failed restart
+// retries instead of ending the session.
+function scheduleRestart(delay) {
+  if (restartTimer) clearTimeout(restartTimer);
+  restartTimer = setTimeout(() => {
+    restartTimer = null;
+    if (handsFree && !listening) startListening();
+  }, delay);
+}
+
+// Chrome can end a session without firing onend, and a thrown start() leaves
+// nothing listening at all. Check periodically rather than trusting either.
+setInterval(() => {
+  if (handsFree && !listening && !restartTimer) scheduleRestart(200);
+}, 2000);
 
 function stopListening() {
   handsFree = false;
