@@ -137,11 +137,17 @@ last four characters, never the key itself.
 
 ## Call mode
 
-Press **Start a call**. Camera up, mic open, captions on screen, a status pill
-that reads listening / thinking / speaking, and no button to press between
-turns. Talk over it and it stops mid-word.
+Press the **video button**. Camera up, mic open, captions on screen, a status
+pill reading listening / thinking / speaking, and no button to press between
+turns. Talk over it and it stops mid-word. Press it again to hang up.
 
-Four controls: mute, camera, "show it what you are holding", and hang up.
+Four controls inside the call: mute, camera on/off, **upload**, and hang up.
+Upload takes photos, screenshots and video — a video is turned into frames the
+same way it is outside a call, and the attachment waits for you to ask
+something about it.
+
+A refused camera or microphone costs the call that one thing, not the call. It
+says which, and the rest keeps working.
 
 The camera is always on in a call, so attaching every frame would put ~2.5 s of
 vision on every turn. A frame is attached only when the words point at

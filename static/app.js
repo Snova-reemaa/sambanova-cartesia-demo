@@ -18,11 +18,11 @@ const ui = {
   camPick: el('cam-pick'),
   chooser: el('chooser'), chAsk: el('ch-ask'), chButtons: el('ch-buttons'),
   panel: el('requests-panel'), cards: el('cards'),
-  startCall: el('start-call'), call: el('call'), callView: el('callview'),
+  call: el('call'), callView: el('callview'),
   callState: el('call-state'), callStateText: el('call-state-text'),
   callClock: el('call-clock'), capYou: el('cap-you'), capThem: el('cap-them'),
-  callMic: el('call-mic'), callCam: el('call-cam'), callLook: el('call-look'),
-  endCall: el('end-call'), callTrouble: el('call-trouble'),
+  callMic: el('call-mic'), callCam: el('call-cam'), callUpload: el('call-upload'),
+  endCall: el('end-call'), callTrouble: el('call-trouble'), nocam: el('nocam'),
 };
 
 const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
@@ -621,7 +621,6 @@ function callTrouble(message) {
 async function enterCall() {
   inCall = true;
   ui.call.hidden = false;
-  ui.startCall.hidden = true;
   callTrouble('');
   callState('thinking', 'connecting');
 
@@ -633,18 +632,38 @@ async function enterCall() {
     refreshCallState();
   }, 1000);
 
+  ui.camera.classList.add('on');
+  ui.camera.title = 'End the call';
+
+  // A refused camera or mic should cost the call that one thing, not the call.
+  const problems = [];
+
   await startCamera(recall('voiceloop.camera') || undefined);
-  if (camStream) {
-    ui.callView.srcObject = camStream;
-    ui.callView.classList.toggle('mirrored', camMirrored);
-    ui.callView.classList.remove('off');
-    try { await ui.callView.play(); } catch (e) { /* autoplay guard */ }
-  } else {
-    ui.callView.classList.add('off');
-  }
+  showCallVideo();
+  if (!camStream) problems.push('camera unavailable');
 
   startListening();
+  // startListening resolves before onstart; give the permission prompt a beat
+  // before deciding the mic is a problem.
+  setTimeout(() => {
+    if (inCall && !listening && !handsFree) {
+      callTrouble('Microphone unavailable — you can still type below.');
+    }
+  }, 2500);
+
+  if (problems.length) callTrouble(`${problems.join(' and ')} — the rest of the call still works.`);
   refreshCallState();
+}
+
+function showCallVideo() {
+  const live = !!camStream;
+  ui.callView.srcObject = live ? camStream : null;
+  ui.callView.classList.toggle('mirrored', live && camMirrored);
+  ui.callView.classList.toggle('off', !live);
+  ui.nocam.hidden = live;
+  ui.callCam.classList.toggle('off', !live);
+  ui.callCam.title = live ? 'Camera off' : 'Camera on';
+  if (live) ui.callView.play().catch(() => { /* autoplay guard */ });
 }
 
 function leaveCall() {
@@ -656,14 +675,15 @@ function leaveCall() {
   stopCamera();
   ui.callView.srcObject = null;
   ui.call.hidden = true;
-  ui.startCall.hidden = false;
+  ui.camera.classList.remove('on');
+  ui.camera.title = 'Start a video call';
+  callTrouble('');
   ui.capYou.textContent = '';
   ui.capThem.textContent = '';
   updateStopButton();
   render();
 }
 
-ui.startCall.addEventListener('click', enterCall);
 ui.endCall.addEventListener('click', leaveCall);
 
 ui.callMic.addEventListener('click', () => {
@@ -675,32 +695,14 @@ ui.callMic.addEventListener('click', () => {
 });
 
 ui.callCam.addEventListener('click', async () => {
-  if (camStream) {
-    stopCamera();
-    ui.callView.srcObject = null;
-    ui.callView.classList.add('off');
-    ui.callCam.classList.add('off');
-    ui.callCam.title = 'Camera on';
-  } else {
-    await startCamera(recall('voiceloop.camera') || undefined);
-    if (camStream) {
-      ui.callView.srcObject = camStream;
-      ui.callView.classList.toggle('mirrored', camMirrored);
-      ui.callView.classList.remove('off');
-      try { await ui.callView.play(); } catch (e) { /* autoplay guard */ }
-      ui.callCam.classList.remove('off');
-      ui.callCam.title = 'Camera off';
-    }
-  }
+  if (camStream) stopCamera();
+  else await startCamera(recall('voiceloop.camera') || undefined);
+  showCallVideo();
 });
 
-// Explicitly hand it the current frame, for when the words did not make it
-// obvious that you are holding something up.
-ui.callLook.addEventListener('click', () => {
-  if (!camStream) return;
-  grabFrame();
-  ui.capYou.textContent = 'showing it what the camera can see…';
-});
+// Upload from inside the call — a photo, a video, a screenshot of an error.
+// Videos become frames the same way they do outside a call.
+ui.callUpload.addEventListener('click', () => ui.file.click());
 
 /* --------------------------------------------------------------- pickers */
 
@@ -864,6 +866,14 @@ function addFrames(urls) {
   }
   pending.push(...urls.slice(0, room));
   renderShots();
+
+  // In a call there is no attachment strip in view, so say what was taken and
+  // that it is waiting on you to ask something about it.
+  if (inCall) {
+    const n = pending.length;
+    ui.capYou.textContent =
+      `${n} ${n === 1 ? 'file' : 'files'} attached — now ask about ${n === 1 ? 'it' : 'them'}`;
+  }
 }
 
 async function takeFiles(files) {
@@ -871,7 +881,8 @@ async function takeFiles(files) {
     try {
       if (file.type.startsWith('video/')) {
         ui.stageNote.textContent = 'pulling frames out of the video…';
-        ui.stage.hidden = false;
+        if (inCall) ui.capYou.textContent = 'pulling frames out of the video…';
+        else ui.stage.hidden = false;
         const room = Math.max(1, Math.min(6, MAX_FRAMES - pending.length));
         addFrames(await framesFromVideo(file, room));
       } else if (file.type.startsWith('image/')) {
@@ -993,8 +1004,9 @@ ui.file.addEventListener('change', async () => {
   await takeFiles([...ui.file.files]);
   ui.file.value = '';
 });
-ui.camera.addEventListener('click', () =>
-  (camStream ? stopCamera() : startCamera(recall('voiceloop.camera') || undefined)));
+// The camera button is the call button. Pressing video should get you a video
+// call, not a preview pane you then have to do something else with.
+ui.camera.addEventListener('click', () => (inCall ? leaveCall() : enterCall()));
 ui.grab.addEventListener('click', grabFrame);
 ui.clearShots.addEventListener('click', () => { pending = []; renderShots(); });
 
