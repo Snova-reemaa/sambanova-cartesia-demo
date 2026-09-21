@@ -214,9 +214,19 @@ Answers are named by what makes them different, not by their opening words —
 three questions that all start "in one sentence, what is…" come out as
 "a GPU", "quantization", "a token".
 
-**Barge-in.** Pressing the mic stops whatever is playing, so you can talk over
-an answer instead of waiting it out. There is also an explicit Stop button while
-audio is playing.
+**Hands-free and barge-in.** Press the mic once and it stays open. Talk and it
+sends when you stop; talk over an answer and it stops mid-word and listens.
+Press again to turn it off. A single-shot mic defeats the point of barge-in —
+by the time you have reached for the button, the answer has finished.
+
+Chrome ends a recognition session on its own every so often, so it is restarted
+automatically until you switch it off.
+
+The mic hears the speaker, so a transcript that is mostly the words we are
+currently saying is discarded as echo. That test only applies to utterances of
+four words or more, deliberately: mistaking echo for speech just stops audio the
+user can restart, while mistaking speech for echo means they cannot interrupt at
+all. Short interruptions — "stop", "no, blue" — always count.
 
 ### Two different concurrency limits
 

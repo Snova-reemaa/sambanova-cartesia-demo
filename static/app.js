@@ -1163,8 +1163,13 @@ const SpeechCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
 let rec = null, listening = false, micStream = null, meterRaf = null;
 
 async function startMeter() {
+  if (micStream) return;        // hands-free restarts must not stack streams
   try {
-    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // Echo cancellation matters more here than anywhere else: without it the
+    // mic hears our own answer through the speakers and treats it as speech.
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
     const ctx = ensureAudio();
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 512;
@@ -1189,65 +1194,127 @@ function stopMeter() {
   micStream = null;
 }
 
+// Hands-free. The mic stays open between turns: having to press a button
+// before each utterance is exactly what makes barge-in pointless, since by the
+// time you have reached for the mouse the answer has finished anyway.
+let handsFree = false;
+let restartTimer = null;
+let sinceSpeech = null;      // debounce timer for "they have stopped talking"
+let finalText = '';
+
+const SETTLE_MS = 900;       // silence after a final result before sending
+
+// The mic hears our own speaker. Echo cancellation catches most of it, but a
+// transcript that is just our own words coming back must not count as speech.
+function soundsLikeUs(text) {
+  const turn = playingId !== null ? turns.get(playingId) : null;
+  const mine = (turn && turn.node ? turn.node.body.textContent : '').toLowerCase();
+  if (!mine) return false;
+  const words = text.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
+  // Bias hard towards believing the human. Mistaking echo for speech only
+  // stops audio the user can restart; mistaking speech for echo means they
+  // cannot interrupt at all, which is the whole point of hands-free.
+  if (words.length < 4) return false;
+  const echoed = words.filter((w) => mine.includes(w)).length;
+  return echoed / words.length > 0.7;
+}
+
+function sendWhatWasSaid() {
+  const said = finalText.trim();
+  finalText = '';
+  ui.prompt.value = '';
+  if (said) submit(said);
+}
+
 function startListening() {
   if (listening || !SpeechCtor) return;
-
-  // Barge-in: talking over the assistant stops it.
-  stopAudio();
-  updateStopButton();
-  render();
 
   rec = new SpeechCtor();
   rec.lang = 'en-US';
   rec.interimResults = true;
-  rec.continuous = false;
-  let finalText = '';
+  rec.continuous = true;        // stay open; do not stop after one utterance
+  handsFree = true;
 
   rec.onstart = () => {
     listening = true;
     ui.mic.classList.add('on');
     ui.prompt.classList.add('listening');
-    ui.prompt.value = '';
     ui.hint.className = 'hint mono';
-    ui.hint.textContent = 'listening…';
+    ui.hint.textContent = 'listening — just talk, and talk over it to interrupt';
     startMeter();
   };
 
   rec.onresult = (ev) => {
     let interim = '';
+    let fresh = '';
     for (let i = ev.resultIndex; i < ev.results.length; i++) {
       const chunk = ev.results[i][0].transcript;
-      if (ev.results[i].isFinal) finalText += chunk; else interim += chunk;
+      if (ev.results[i].isFinal) fresh += chunk; else interim += chunk;
     }
+
+    const heard = (fresh + interim).trim();
+    if (!heard) return;
+
+    // Our own voice bouncing back is not an interruption.
+    if (soundsLikeUs(heard)) return;
+
+    // Real speech while it is talking: stop, immediately, on the first word.
+    if (sources.length || playingId !== null) {
+      stopAudio();
+      updateStopButton();
+      render();
+    }
+
+    finalText += fresh;
     ui.prompt.value = (finalText + interim).trim();
+
+    // Send once they have actually stopped, not on every pause in a sentence.
+    if (sinceSpeech) clearTimeout(sinceSpeech);
+    if (finalText.trim()) sinceSpeech = setTimeout(sendWhatWasSaid, SETTLE_MS);
   };
 
   rec.onerror = (ev) => {
+    if (ev.error === 'no-speech' || ev.error === 'aborted') return;  // routine
     ui.hint.className = 'hint mono warn';
     ui.hint.textContent = ev.error === 'not-allowed'
       ? 'Microphone blocked — allow it in the address bar, or just type.'
       : `Speech recognition: ${ev.error}. You can type instead.`;
+    if (ev.error === 'not-allowed') stopListening();
   };
 
   rec.onend = () => {
     listening = false;
     rec = null;
-    ui.mic.classList.remove('on');
-    ui.prompt.classList.remove('listening');
-    stopMeter();
-    const said = finalText.trim();
-    if (said) {
-      ui.hint.textContent = 'Press the mic and speak — it sends when you stop.';
-      submit(said);
-    } else if (!ui.hint.classList.contains('warn')) {
-      ui.hint.textContent = 'Heard nothing. Try again, or type it.';
+    // Chrome ends the session on its own every so often. Put it straight back
+    // unless the user actually turned it off.
+    if (handsFree) {
+      if (restartTimer) clearTimeout(restartTimer);
+      restartTimer = setTimeout(() => { if (handsFree) startListening(); }, 250);
+    } else {
+      ui.mic.classList.remove('on');
+      ui.prompt.classList.remove('listening');
+      stopMeter();
     }
   };
 
   rec.start();
 }
 
-ui.mic.addEventListener('click', () => { listening ? rec && rec.stop() : startListening(); });
+function stopListening() {
+  handsFree = false;
+  if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
+  if (sinceSpeech) { clearTimeout(sinceSpeech); sinceSpeech = null; }
+  finalText = '';
+  if (rec) { try { rec.stop(); } catch (e) { /* already stopping */ } }
+  listening = false;
+  ui.mic.classList.remove('on');
+  ui.prompt.classList.remove('listening');
+  ui.hint.className = 'hint mono';
+  ui.hint.textContent = 'Press the mic to go hands-free, or type.';
+  stopMeter();
+}
+
+ui.mic.addEventListener('click', () => (handsFree ? stopListening() : startListening()));
 
 if (!SpeechCtor) {
   ui.mic.disabled = true;
