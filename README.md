@@ -30,8 +30,17 @@ into chat or email should be considered burned.
 ## Live demo — mic or typing
 
 ```bash
-venv/bin/python server.py
+./run.sh
 ```
+
+Creates the venv and installs dependencies if they are missing, checks your
+keys are filled in, frees the port if an old server is still holding it, starts
+the server and opens the browser.
+
+**`python server.py` will not work.** There is no `python` on PATH on this
+machine, only `python3`, and the system `python3` has none of the dependencies
+— they live in `./venv`. If you would rather not use the script, the long form
+is `venv/bin/python server.py`.
 
 Open http://localhost:8080. Type a prompt, or press the mic and speak.
 Shows a live timeline of where the latency goes, and keeps conversation
