@@ -54,6 +54,17 @@ SYSTEM_PROMPT = (
     "better than ending on a lecture."
 )
 
+# On a video call the phone-agent framing makes it deny having eyes — "I'm just
+# a voice on the phone, so no, I can't see you" — which is false the moment the
+# camera is up, and reads as broken.
+CALL_PROMPT = (
+    "You are on a video call with the caller. You can see them and anything "
+    "they hold up to the camera: when they show you something you will be told "
+    "what is in view.\n"
+    "Never claim you cannot see. If you have not been shown anything yet, ask "
+    "them to hold it up to the camera — do not say you are only a voice."
+)
+
 # Left to itself the model searches for everything, including definitions it
 # plainly knows, which costs a round trip on every question. Spelling out when
 # NOT to search took this from 5/10 to 9/10 on a small trigger set.
@@ -316,7 +327,7 @@ async def synthesise(chan, conn, turn_id, text, voice_id):
 
 
 async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=None,
-                   can_search=True, attachments=()):
+                   can_search=True, attachments=(), on_call=False):
     """Stream one prompt through the LLM into its own Cartesia context, relaying
     text events and raw PCM frames to the browser as they arrive."""
     turn = Turn()
@@ -327,7 +338,11 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
 
     # Snapshot history now: a turn started alongside others should not see
     # replies that land while it is still running.
-    system = SYSTEM_PROMPT + (SEARCH_RULES if can_search else "")
+    system = SYSTEM_PROMPT
+    if on_call:
+        system += "\n" + CALL_PROMPT
+    if can_search:
+        system += SEARCH_RULES
     messages = [{"role": "system", "content": system}] + list(history) + [
         {"role": "user", "content": prompt}
     ]
@@ -586,6 +601,7 @@ async def websocket_handler(request):
                     voice=data.get("voice_id"),
                     can_search=bool(data.get("search", True)),
                     attachments=clean_attachments(data.get("images")),
+                    on_call=bool(data.get("call")),
                 )
                 running[turn_id] = asyncio.ensure_future(supervise(turn_id, coro))
 

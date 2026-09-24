@@ -596,8 +596,12 @@ let muted = false;
 const DEICTIC = /\b(this|these|those|here|mine|my)\b/i;
 const LOOKING = /\b(look(s|ing)?|see|show|watch|find|match|similar|identify|read|says?|error|message|screen|light|code|serial|model|colou?r|broken|cracked|damaged|what|which)\b/i;
 
+// Asking whether it can see you is itself a request to be looked at, and
+// carries no pointing word — "can you see me" has nothing in DEICTIC.
+const SEEING = /\b(see|look|watch|showing|holding|view)\b/i;
+
 function wantsEyes(text) {
-  return DEICTIC.test(text) && LOOKING.test(text);
+  return SEEING.test(text) || (DEICTIC.test(text) && LOOKING.test(text));
 }
 
 function callState(name, label) {
@@ -1305,6 +1309,7 @@ function submit(text) {
     model: ui.pickModel.value,
     voice_id: ui.pickVoice.value,
     search: ui.pickSearch.checked,
+    call: inCall,
     images,
   }));
 }

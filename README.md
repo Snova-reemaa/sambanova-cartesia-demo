@@ -158,10 +158,19 @@ something about it.
 A refused camera or microphone costs the call that one thing, not the call. It
 says which, and the rest keeps working.
 
+**It knows it is on a video call.** Without being told, the phone-agent framing
+made it answer "hi can you see me" with "I'm just a voice on the phone, so no,
+I can't see you" — false the moment the camera is up, and it reads as broken.
+Call turns carry a different system prompt, so it now says "yeah, I can see you
+just fine — can you hold up what you're having trouble with?" Voice-only turns
+still correctly say they cannot see.
+
 The camera is always on in a call, so attaching every frame would put ~2.5 s of
 vision on every turn. A frame is attached only when the words point at
 something — "what is this", "find one like mine", "is this cracked" — judged by
-a deictic word plus a looking word. Outside a call, having the camera on at all
+a deictic word plus a looking word, or by a seeing word on its own. That last
+part matters: "can you see me" contains nothing that points, so it used to send
+no frame at all. Outside a call, having the camera on at all
 is taken as intent, so every turn gets a frame. The camera button in the call
 sends the current frame regardless.
 
