@@ -761,7 +761,10 @@ if (recall('voiceloop.search') === '0') ui.pickSearch.checked = false;
 // Frames are resized before they leave the browser: the vision model sees a
 // fixed token budget regardless, and full-size phone photos would blow past the
 // websocket message limit for no benefit.
-const FRAME_EDGE = 768;
+// 768 and 384 both cost gemma exactly 413 prompt tokens — the image is
+// normalised either way — so the only thing a bigger frame buys is upload
+// time, which is real over a phone connection.
+const FRAME_EDGE = 512;
 const FRAME_QUALITY = 0.82;
 let MAX_FRAMES = 8;
 
@@ -984,6 +987,12 @@ function stopCamera() {
   updateStage();
 }
 
+function captureFrame(video) {
+  const v = video || ui.selfview;
+  if (!camStream || !v.videoWidth) return null;
+  return drawScaled(v, v.videoWidth, v.videoHeight);
+}
+
 function grabFrame() {
   if (!camStream || !ui.selfview.videoWidth) return null;
   // Captured un-mirrored on purpose, even though the preview is flipped: a
@@ -1126,6 +1135,7 @@ function onEvent(m) {
       const t = newTurn(m.turn_id, m.prompt, m.model);
       t.attachments = m.attachments || 0;
       if (t.attachments) { t.sawThumbs = lastSent.slice(); lastSent = []; }
+      if (m.speculative) t.speculative = true;
       turns.set(m.turn_id, t);
       addMessage('you', 'you', m.prompt);
       t.node = addMessage('bot', 'reply', '');
@@ -1191,6 +1201,7 @@ function onEvent(m) {
 
     case 'looking':
       if (turn) {
+        turn.speculative = !!m.speculative;
         const note = document.createElement('p');
         note.className = 'searching';
         note.textContent = m.count > 1
@@ -1207,9 +1218,10 @@ function onEvent(m) {
         turn.visionS = m.took_s;
         if (turn.lookNote) {
           turn.lookNote.className = 'cmeta mono';
-          turn.lookNote.textContent =
-            `${m.model} read ${turn.attachments > 1 ? turn.attachments + ' frames' : 'the image'} `
-            + `in ${Math.round(m.took_s * 1000)} ms · ${m.prompt_tokens} tokens`;
+          const what = turn.attachments > 1 ? `${turn.attachments} frames` : 'the image';
+          turn.lookNote.textContent = turn.speculative
+            ? `${m.model} had already read ${what} — ${Math.round(m.took_s * 1000)} ms wait · ${m.prompt_tokens} tokens`
+            : `${m.model} read ${what} in ${Math.round(m.took_s * 1000)} ms · ${m.prompt_tokens} tokens`;
         }
         renderVision(turn, m.description);
       }
@@ -1288,7 +1300,14 @@ function submit(text) {
   // want it looked at. In a call the camera is always up, so attaching every
   // frame would put ~2.5s of vision on every turn — only grab one when the
   // words actually point at something.
-  if (!pending.length && camStream && (!inCall || wantsEyes(value))) grabFrame();
+  let prelook = null;
+  if (pendingLook && inCall && !pending.length && wantsEyes(value)) {
+    prelook = pendingLook.id;
+    lastSent = [pendingLook.url];       // for the "what it saw" thumbnail
+  } else if (!pending.length && camStream && (!inCall || wantsEyes(value))) {
+    grabFrame();
+  }
+  pendingLook = null;
 
   if (inCall) {
     ui.capYou.textContent = value;
@@ -1310,6 +1329,7 @@ function submit(text) {
     voice_id: ui.pickVoice.value,
     search: ui.pickSearch.checked,
     call: inCall,
+    prelook,
     images,
   }));
 }
@@ -1382,6 +1402,17 @@ function soundsLikeUs(text) {
   return echoed / words.length > 0.7;
 }
 
+let prelookSeq = 0;
+let pendingLook = null;      // { id, url } already being described server-side
+
+function startPrelook() {
+  const url = captureFrame(ui.callView.srcObject ? ui.callView : ui.selfview);
+  if (!url || !ws || ws.readyState !== WebSocket.OPEN) return;
+  const id = ++prelookSeq;
+  pendingLook = { id, url };
+  ws.send(JSON.stringify({ type: 'prelook', id, images: [url] }));
+}
+
 function sendWhatWasSaid() {
   const said = finalText.trim();
   finalText = '';
@@ -1429,6 +1460,11 @@ function startListening() {
       updateStopButton();
       render();
     }
+
+    // Start looking now, while they are still mid-sentence. By the time the
+    // utterance lands the description is usually already back, which takes
+    // the whole vision round trip off the clock.
+    if (inCall && camStream && pendingLook === null) startPrelook();
 
     finalText += fresh;
     ui.prompt.value = (finalText + interim).trim();

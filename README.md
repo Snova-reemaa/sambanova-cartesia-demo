@@ -165,6 +165,31 @@ Call turns carry a different system prompt, so it now says "yeah, I can see you
 just fine — can you hold up what you're having trouble with?" Voice-only turns
 still correctly say they cannot see.
 
+### It starts looking before you finish talking
+
+On a call the camera already shows whatever you are holding up, so there is no
+reason to wait until you stop speaking to start reading it. The first word of an
+utterance fires a look; by the time the sentence lands the description is
+usually back.
+
+Same image, same question, 1.6 s of speaking:
+
+| | vision wait | search starts | total |
+| --- | --- | --- | --- |
+| wait until they finish | 3181 / 2291 ms | 3716 / 2795 ms | 14.4 / 13.8 s |
+| start on the first word | **577 / 597 ms** | 2313 / 1092 ms | **10.2 / 11.0 s** |
+
+About two seconds off the vision wait and three and a half off the turn. The
+cost is a vision call on utterances that turn out not to need one, at roughly
+$0.0002 each.
+
+Two smaller wins came from measuring rather than guessing. The vision prompt
+was 413 tokens and returned nine — "I see a pair of black oval glasses" — and a
+terse version costs 312 and describes more. And a 768 px frame costs gemma
+exactly the same 413 prompt tokens as a 384 px one, because the image is
+normalised either way, so frames are sent at 512 px now: identical inference
+cost, a third of the upload.
+
 The camera is always on in a call, so attaching every frame would put ~2.5 s of
 vision on every turn. A frame is attached only when the words point at
 something — "what is this", "find one like mine", "is this cracked" — judged by

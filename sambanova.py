@@ -60,7 +60,7 @@ async def describe_images(client, data_urls, question, model=None):
 
     reply = await client.chat.completions.create(
         model=model or get_vision_model(),
-        max_tokens=400,
+        max_tokens=180,   # descriptions run ~30 tokens; 400 was never reached
         messages=[{"role": "user", "content": content}],
     )
     text = (reply.choices[0].message.content or "").strip()

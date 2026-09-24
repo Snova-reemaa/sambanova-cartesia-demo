@@ -114,6 +114,12 @@ def bridge_phrase(query, already_spoke=False):
     return "One moment. Let me look that up for you. "
 
 
+GENERIC_LOOK = (
+    "Say what you see, concretely: the object, its colour, material and style, "
+    "any damage, text, error message, lights or markings. One or two plain "
+    "sentences, no headings. Say so if you cannot tell."
+)
+
 MAX_FRAMES = 8        # gemma read 6 frames in order reliably; 8 leaves headroom
 MAX_IMAGE_BYTES = 1_500_000   # per frame, after the browser has resized it
 
@@ -131,33 +137,23 @@ def clean_attachments(raw):
 
 
 def vision_question(prompt, count):
-    """Ask for observations, not a report.
+    """Ask for observations, not a report — and keep the asking short.
 
-    Asking for "a description a support agent would need" returns markdown
-    headings — Object:, Condition:, Text/Model Number: — and whatever reads
-    that next ends up paraphrasing a form.
+    The long version of this prompt cost 413 prompt tokens and returned nine:
+    "I see a pair of black oval glasses." The short version costs 312 and
+    returns more detail. Instructions are prompt tokens too, and the model was
+    spending its attention on the brief rather than the picture.
     """
-    shared = (
-        "Plain sentences only: no headings, no bullet points, no bold. Be "
-        "concrete and brief, and if something is unclear or you cannot tell, "
-        f"say so plainly. The caller said: \"{prompt}\""
-    )
     if count > 1:
         return (
-            f"You are the eyes of a support agent on a call. These {count} images "
-            "are frames from a short video, in order. Say what actually changes "
-            "across them and anything that matters here — damage, error messages, "
-            f"model or serial numbers, indicator lights. {shared}"
+            f"{count} frames from a video, in order. Say what changes across them "
+            "and anything that matters: damage, error text, lights, model numbers. "
+            f"Two or three plain sentences, no headings. Caller said: \"{prompt}\""
         )
     return (
-        "You are the eyes of an agent on a call. Say what you can actually see "
-        "that matters for what the caller is asking.\n"
-        "If they want it fixed, that means faults, damage, error messages, "
-        "indicator lights, model or serial numbers.\n"
-        "If they want it found, matched, priced or bought, that means the "
-        "details someone would type into a search: what the object is, its "
-        "material and colour, its style, shape and setting, any stones, "
-        f"patterns, branding or hallmarks. {shared}"
+        "Say what you see, concretely: the object, its colour, material and style, "
+        "any damage, text, error message, lights or markings. One or two plain "
+        f"sentences, no headings. Say so if you cannot tell. Caller said: \"{prompt}\""
     )
 
 
@@ -327,7 +323,7 @@ async def synthesise(chan, conn, turn_id, text, voice_id):
 
 
 async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=None,
-                   can_search=True, attachments=(), on_call=False):
+                   can_search=True, attachments=(), on_call=False, prelook=None):
     """Stream one prompt through the LLM into its own Cartesia context, relaying
     text events and raw PCM frames to the browser as they arrive."""
     turn = Turn()
@@ -350,7 +346,7 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
     await chan.event({
         "type": "turn_start", "turn_id": turn_id, "prompt": prompt,
         "model": llm_model, "voice_id": voice_id,
-        "attachments": len(attachments),
+        "attachments": prelook["count"] if prelook else len(attachments),
     })
 
     # The language model runs right away; text waits here for a synthesis slot.
@@ -374,17 +370,23 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
         end of it — the caller may want the thing found, priced or identified,
         which needs the tools that come after.
         """
-        count = len(attachments)
+        count = prelook["count"] if prelook else len(attachments)
         await chan.event({"type": "looking", "turn_id": turn_id,
-                          "count": count, "t": turn.now()})
+                          "count": count, "t": turn.now(),
+                          "speculative": bool(prelook)})
 
         bridge = ("Let me take a look at that. " if count == 1
                   else "Let me look through those. ")
         await emit(bridge)
 
         t_look = time.perf_counter()
-        description, info = await describe_images(
-            llm, attachments, vision_question(prompt, count))
+        if prelook:
+            # Started the moment they began speaking, so by now it is usually
+            # finished and this returns immediately.
+            description, info = await prelook["task"]
+        else:
+            description, info = await describe_images(
+                llm, attachments, vision_question(prompt, count))
         turn.vision_s = time.perf_counter() - t_look
         await chan.event({
             "type": "looked", "turn_id": turn_id, "t": turn.now(),
@@ -399,12 +401,14 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
         # is still in context when the model decides whether to search.
         convo = list(messages)
 
-        if attachments:
+        if attachments or prelook:
             await mark_first()
             bridge, description = await look_at_attachments()
             convo += [
                 {"role": "assistant", "content": bridge},
-                {"role": "system", "content": seen_prompt(description, len(attachments))},
+                {"role": "system",
+             "content": seen_prompt(description,
+                                    prelook["count"] if prelook else len(attachments))},
             ]
 
         calls = []
@@ -521,6 +525,9 @@ async def websocket_handler(request):
     chan = Channel(ws)
     running = {}       # turn_id -> task
     next_turn_id = 1
+    # Looks started while the caller was still talking, keyed by the id the
+    # browser gave them.
+    prelooks = {}
 
     # Losing synthesis should cost the demo its voice, not its existence. The
     # conversation, vision and search all still work; the caller reads instead
@@ -582,6 +589,23 @@ async def websocket_handler(request):
 
             kind = data.get("type")
 
+            if kind == "prelook":
+                # The camera already shows whatever they are holding up, so
+                # start reading it now rather than when they stop speaking.
+                pid = data.get("id")
+                frames = clean_attachments(data.get("images"))
+                if pid is None or not frames:
+                    continue
+                for old in [k for k in prelooks if k < pid - 2]:
+                    task = prelooks.pop(old)["task"]
+                    task.cancel()
+                prelooks[pid] = {
+                    "count": len(frames),
+                    "task": asyncio.ensure_future(
+                        describe_images(llm, frames, GENERIC_LOOK)),
+                }
+                continue
+
             if kind == "prompt":
                 prompt = (data.get("text") or "").strip()
                 if not prompt:
@@ -602,6 +626,8 @@ async def websocket_handler(request):
                     can_search=bool(data.get("search", True)),
                     attachments=clean_attachments(data.get("images")),
                     on_call=bool(data.get("call")),
+                    prelook=prelooks.pop(data["prelook"], None)
+                    if data.get("prelook") in prelooks else None,
                 )
                 running[turn_id] = asyncio.ensure_future(supervise(turn_id, coro))
 
@@ -619,6 +645,8 @@ async def websocket_handler(request):
                 except Exception as exc:
                     await chan.event({"type": "error", "turn_id": 0, "message": str(exc)})
     finally:
+        for entry in prelooks.values():
+            entry["task"].cancel()
         for task in list(running.values()):
             task.cancel()
         if running:
