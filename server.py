@@ -11,6 +11,7 @@ import asyncio
 import hmac
 import json
 import os
+import random
 import secrets
 import time
 
@@ -61,8 +62,9 @@ CALL_PROMPT = (
     "You are on a video call with the caller. You can see them and anything "
     "they hold up to the camera: when they show you something you will be told "
     "what is in view.\n"
-    "Never claim you cannot see. If you have not been shown anything yet, ask "
-    "them to hold it up to the camera — do not say you are only a voice."
+    "Never claim you cannot see, and never say you are only a voice. Otherwise "
+    "do not go on about the camera — mention it only when looking at something "
+    "would genuinely help, and answer normally the rest of the time."
 )
 
 # Left to itself the model searches for everything, including definitions it
@@ -112,6 +114,25 @@ def bridge_phrase(query, already_spoke=False):
     if already_spoke:
         return "Right, let me find some options. "
     return "One moment. Let me look that up for you. "
+
+
+# Half the two seconds before a caller hears anything is the round trip to
+# SambaNova, and none of it is inference. A person would not sit in silence for
+# that; they would say "right" and then answer. Synthesis starts on this the
+# moment the prompt lands, so first sound stops waiting on the model at all.
+BACKCHANNEL = (
+    "Right, let me see. ",
+    "Okay, one second. ",
+    "Sure, let me think. ",
+    "Mm-hm, hang on. ",
+    "Got it, just a moment. ",
+)
+
+
+def backchannel(recent):
+    """Pick an acknowledgement, avoiding the last couple used."""
+    fresh = [w for w in BACKCHANNEL if w not in recent]
+    return random.choice(fresh or list(BACKCHANNEL))
 
 
 GENERIC_LOOK = (
@@ -235,6 +256,7 @@ class Turn:
         self.server = {}         # SambaNova's own inference timings
         self.search_s = None     # seconds spent in web search, if any
         self.vision_s = None     # seconds spent reading attachments, if any
+        self.filler_s = None     # when the holding phrase went to synthesis
 
     def now(self):
         return time.perf_counter() - self.t0
@@ -254,6 +276,7 @@ class Turn:
             "inference_ttft_s": inference,
             "search_s": self.search_s,
             "vision_s": self.vision_s,
+            "filler_s": self.filler_s,
             "network_overhead_s": overhead,
             "first_token_s": self.first_token,
             "last_token_s": self.last_token,
@@ -323,10 +346,12 @@ async def synthesise(chan, conn, turn_id, text, voice_id):
 
 
 async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=None,
-                   can_search=True, attachments=(), on_call=False, prelook=None):
+                   can_search=True, attachments=(), on_call=False, prelook=None,
+                   recent_fillers=None):
     """Stream one prompt through the LLM into its own Cartesia context, relaying
     text events and raw PCM frames to the browser as they arrive."""
     turn = Turn()
+    recent_fillers = recent_fillers if recent_fillers is not None else []
     voice_id = pick_voice(voice)
     llm_model = pick_model(model)
     tts_model = os.getenv("CARTESIA_MODEL", "sonic-2")
@@ -400,6 +425,24 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
         # Everything downstream builds on `convo`, so anything seen in an image
         # is still in context when the model decides whether to search.
         convo = list(messages)
+
+        # Nothing to look at, so nothing else is covering the wait. Skip it for
+        # very short turns: "hi there" does not need "right, let me see" in
+        # front of it, and those answers come back quickly regardless.
+        worth_covering = len(prompt.split()) > 3
+        if on_call and worth_covering and not attachments and not prelook:
+            filler = backchannel(recent_fillers)
+            recent_fillers.append(filler)
+            del recent_fillers[:-2]
+            turn.filler_s = turn.now()
+            await emit(filler)
+            convo = convo + [
+                {"role": "assistant", "content": filler.strip()},
+                {"role": "system", "content":
+                    f"You have already said \"{filler.strip()}\" out loud. Carry "
+                    "straight on into the answer. Do not greet, acknowledge or "
+                    "say okay again — that has happened."},
+            ]
 
         if attachments or prelook:
             await mark_first()
@@ -528,6 +571,7 @@ async def websocket_handler(request):
     # Looks started while the caller was still talking, keyed by the id the
     # browser gave them.
     prelooks = {}
+    recent_fillers = []   # so the same acknowledgement is not used twice running
 
     # Losing synthesis should cost the demo its voice, not its existence. The
     # conversation, vision and search all still work; the caller reads instead
@@ -626,6 +670,7 @@ async def websocket_handler(request):
                     can_search=bool(data.get("search", True)),
                     attachments=clean_attachments(data.get("images")),
                     on_call=bool(data.get("call")),
+                    recent_fillers=recent_fillers,
                     prelook=prelooks.pop(data["prelook"], None)
                     if data.get("prelook") in prelooks else None,
                 )

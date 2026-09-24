@@ -165,6 +165,41 @@ Call turns carry a different system prompt, so it now says "yeah, I can see you
 just fine — can you hold up what you're having trouble with?" Voice-only turns
 still correctly say they cannot see.
 
+### It answers before the model has answered
+
+A plain turn took about two seconds to make any sound, and almost none of that
+was the model:
+
+```
+SambaNova inference     152 ms    9%
+network round trip      980 ms   49%
+Cartesia first audio    700 ms   35%
+```
+
+A person asked a question does not sit in silence for two seconds; they say
+"right, let me see" and then answer. On a call, synthesis now starts on a
+holding phrase the instant the prompt lands, so first sound stops waiting on
+the model at all.
+
+| | first sound |
+| --- | --- |
+| before | 2018 / 2154 / 1682 ms |
+| after | **855 / 570 / 600 ms** |
+
+Three details make it bearable rather than irritating. Turns of three words or
+fewer skip it, because "right, let me see" in front of "hi there" is absurd and
+those answers arrive quickly anyway. The phrase already spoken is added to the
+conversation with an instruction not to acknowledge twice, which stopped "Okay,
+one second. Okay, so you're looking for a refund." And the phrases rotate,
+never repeating within two turns.
+
+The holding phrases are two beats rather than one deliberately: "Right." is
+about half a second of speech against a round trip of one, which left an
+audible gap. "Right, let me see." covers it, and playback measures continuous.
+
+Switching Cartesia model does not help — sonic-3 came back at 1.08 s against
+sonic-2's 1.11 s, and sonic-turbo was slower at 1.51 s.
+
 ### It starts looking before you finish talking
 
 On a call the camera already shows whatever you are holding up, so there is no
