@@ -234,6 +234,18 @@ no frame at all. Outside a call, having the camera on at all
 is taken as intent, so every turn gets a frame. The camera button in the call
 sends the current frame regardless.
 
+### Errors
+
+Nothing from a provider exception reaches the browser verbatim. They quote the
+credential that failed — "Incorrect API key provided: ba630f*****3cca" — along
+with request ids and internal JSON, and a browser is the last place any of that
+belongs.
+
+The caller gets a sentence about what to do: credentials rejected, out of
+credit, service busy, timed out, or a generic "the server log has the detail".
+The console keeps the full exception, with anything key-shaped replaced by
+`[redacted]` in case a provider puts a secret somewhere new.
+
 ### If a change does not seem to take effect
 
 Static files are served with `Cache-Control: no-store`. aiohttp sends no cache

@@ -12,6 +12,7 @@ import hmac
 import json
 import os
 import random
+import re
 import secrets
 import time
 
@@ -133,6 +134,46 @@ def backchannel(recent):
     """Pick an acknowledgement, avoiding the last couple used."""
     fresh = [w for w in BACKCHANNEL if w not in recent]
     return random.choice(fresh or list(BACKCHANNEL))
+
+
+# Provider errors quote the credential that failed — "Incorrect API key
+# provided: ba630f*****3cca" — and a browser is the last place that belongs.
+# Nothing from an exception is ever forwarded verbatim; the console keeps the
+# detail, the caller gets a sentence about what to do.
+SECRETISH = re.compile(
+    r"(sk-[A-Za-z0-9_\-]{6,}|tvly-[A-Za-z0-9_\-]{6,}|"
+    r"[A-Za-z0-9]{6}\*{3,}[A-Za-z0-9]{3,}|"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+    re.I,
+)
+
+TROUBLE = (
+    ("invalid_api_key", "authentication_error", "401", "incorrect api key"),
+    ("payment_method_required", "402", "credits limit", "balance_units"),
+    ("429", "rate limit", "high demand", "concurrency limit"),
+    ("timeout", "timed out"),
+)
+
+SAYS = (
+    "The AI service rejected our credentials. Check the API key in .env.",
+    "The AI service is out of credit. Top up the account to carry on.",
+    "The AI service is busy right now. Try that again in a moment.",
+    "That took too long and timed out. Try again.",
+)
+
+
+def safe_error(exc, where="that"):
+    """A sentence for the browser, with the provider's wording left behind."""
+    text = str(exc).lower()
+    for phrases, says in zip(TROUBLE, SAYS):
+        if any(p in text for p in phrases):
+            return says
+    return f"Something went wrong with {where}. The server log has the detail."
+
+
+def log_error(exc, context):
+    """Full detail, console only — but still never the credential itself."""
+    print(f"  ! {context}: {SECRETISH.sub('[redacted]', str(exc))[:400]}")
 
 
 GENERIC_LOOK = (
@@ -583,9 +624,8 @@ async def websocket_handler(request):
     try:
         conn = await manager.__aenter__()
     except Exception as exc:
-        audio_trouble = str(exc)
-        detail = "Cartesia is out of credit" if "402" in audio_trouble else audio_trouble[:140]
-        print(f"  ! no synthesis this session: {detail}")
+        log_error(exc, "no synthesis this session")
+        audio_trouble = safe_error(exc, "speech")
     setup_ms = (time.perf_counter() - t_setup) * 1000
 
     await ws.send_json(
@@ -604,9 +644,8 @@ async def websocket_handler(request):
             "max_frames": MAX_FRAMES,
             "audio": conn is not None,
             "audio_trouble": (
-                "Cartesia is out of credit — replies are text only until that is topped up."
-                if audio_trouble and "402" in audio_trouble
-                else (audio_trouble[:160] if audio_trouble else None)
+                f"{audio_trouble} Replies are text only until then."
+                if audio_trouble else None
             ),
         }
     )
@@ -617,7 +656,9 @@ async def websocket_handler(request):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            await chan.event({"type": "error", "turn_id": turn_id, "message": str(exc)})
+            log_error(exc, f"turn {turn_id}")
+            await chan.event({"type": "error", "turn_id": turn_id,
+                              "message": safe_error(exc, "that request")})
         finally:
             running.pop(turn_id, None)
             await chan.event({"type": "idle", "turn_id": turn_id, "running": len(running)})
@@ -688,7 +729,9 @@ async def websocket_handler(request):
                     await synthesise(chan, conn, 0, text, pick_voice(data.get("voice_id")))
                     await chan.event({"type": "say_done", "turn_id": 0})
                 except Exception as exc:
-                    await chan.event({"type": "error", "turn_id": 0, "message": str(exc)})
+                    log_error(exc, "spoken prompt")
+                    await chan.event({"type": "error", "turn_id": 0,
+                                      "message": safe_error(exc, "speaking")})
     finally:
         for entry in prelooks.values():
             entry["task"].cancel()
