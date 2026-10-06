@@ -25,6 +25,7 @@ from sambanova import (get_client as get_llm, get_model, stream_tools,
                        describe_images, get_vision_model)
 from cartesia_tts import get_client as get_tts, output_format
 from search import search, as_context, provider as search_provider
+from knowledge_base import Knowledge, as_context as kb_context
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(HERE, "static")
@@ -176,6 +177,46 @@ def log_error(exc, context):
     print(f"  ! {context}: {SECRETISH.sub('[redacted]', str(exc))[:400]}")
 
 
+KB = Knowledge()
+
+
+def policy_prompt(hits):
+    """Ground policy answers in the documents, and make silence the fallback.
+
+    Before this the agent invented opening hours and a refund policy, fluently
+    and in the voice of someone who knew. That is harmless in a tech demo and
+    fatal in front of a customer.
+    """
+    return (
+        "Company documentation relevant to what they asked:\n\n"
+        + kb_context(hits) +
+        "\n\nThese are the real policies. Answer from them and nothing else: do "
+        "not round the numbers, soften the conditions, or add exceptions that are "
+        "not written above.\n"
+        "Read the question again and check it is actually answered above. These "
+        "sections were picked by keyword and may be about something adjacent "
+        "rather than what was asked. If the specific thing they want is not "
+        "stated, say you will check and come back to them — do not reason from "
+        "the nearest related policy to a plausible answer.\n"
+        "Where a section names the specific thing they asked about, it beats the "
+        "general rule — an exclusion list applies even when a broader policy "
+        "would have allowed it. Quoting the general policy over a stated "
+        "exclusion is the worst thing you can do here.\n"
+        "If the policy turns on a condition they have not told you, ask about "
+        "that condition rather than assuming the answer that suits them.\n"
+        "Still speak naturally, two or three sentences; do not read the document "
+        "aloud or cite it."
+    )
+
+
+NO_POLICY = (
+    "\nNothing in the company documentation covers what they just asked. Do not "
+    "invent an answer about company policy, hours, prices, delivery or warranty "
+    "— say you will find out and come back to them. Ordinary conversation and "
+    "general knowledge are still fine."
+)
+
+
 GENERIC_LOOK = (
     "Say what you see, concretely: the object, its colour, material and style, "
     "any damage, text, error message, lights or markings. One or two plain "
@@ -298,6 +339,7 @@ class Turn:
         self.search_s = None     # seconds spent in web search, if any
         self.vision_s = None     # seconds spent reading attachments, if any
         self.filler_s = None     # when the holding phrase went to synthesis
+        self.kb_hits = []        # documentation sections used, if any
 
     def now(self):
         return time.perf_counter() - self.t0
@@ -318,6 +360,7 @@ class Turn:
             "search_s": self.search_s,
             "vision_s": self.vision_s,
             "filler_s": self.filler_s,
+            "kb_hits": self.kb_hits,
             "network_overhead_s": overhead,
             "first_token_s": self.first_token,
             "last_token_s": self.last_token,
@@ -401,6 +444,8 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
     # Snapshot history now: a turn started alongside others should not see
     # replies that land while it is still running.
     system = SYSTEM_PROMPT
+    if KB and not KB.find(prompt):
+        system += NO_POLICY
     if on_call:
         system += "\n" + CALL_PROMPT
     if can_search:
@@ -494,6 +539,15 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
              "content": seen_prompt(description,
                                     prelook["count"] if prelook else len(attachments))},
             ]
+
+        # Retrieval is local and costs microseconds, so it happens on every
+        # turn rather than behind a tool call the model has to remember to use.
+        hits = KB.find(prompt)
+        turn.kb_hits = [f"{sec.doc} — {sec.heading}" for _, sec in hits]
+        if hits:
+            convo = convo + [{"role": "system", "content": policy_prompt(hits)}]
+            await chan.event({"type": "knowledge", "turn_id": turn_id,
+                              "sections": turn.kb_hits, "t": turn.now()})
 
         calls = []
         async for kind, payload in stream_tools(
@@ -842,6 +896,8 @@ async def on_startup(app):
         print(f"  ! {get_vision_model()} is unreliable with several images at once;"
               " video frames will suffer. gemma-4-31B-it is the safe choice.")
     print(f"  up to {MAX_CONCURRENT} requests in flight, {TTS_CONCURRENCY} synthesising at once")
+    print(f"  {len(KB)} knowledge sections loaded"
+          + ("" if len(KB) else " — answers about policy will be refused, not invented"))
 
 
 def main():
