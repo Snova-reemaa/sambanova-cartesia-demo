@@ -306,7 +306,16 @@ single-image test, but on batches:
 
 M3's token count barely moves as images are added, which is the tell: it is not
 ingesting the batch. Use it for one image and a long history, never for frames.
-Set `SAMBANOVA_VISION_MODEL` to override.
+Set `SAMBANOVA_VISION_MODEL` to override — the server warns at startup if it is
+pointed at a MiniMax model, since video frames degrade silently rather than
+failing.
+
+**If you pick a MiniMax model as the conversational model**, note that they
+narrate their reasoning inside `<mm:think>` tags. The vision call strips those
+from finished text, but a streamed reply goes straight to the speaker, where
+"the user wants me to describe the glasses" cannot be taken back. Both streaming
+paths now filter the tags as they arrive, holding back any trailing fragment
+that could still become one — tags split across deltas as `<mm`, `:thi`, `nk>`.
 
 Given four frames of a line growing across a screen, gemma tracked the change
 across them — and, correctly, pointed out that a perfectly straight line is not

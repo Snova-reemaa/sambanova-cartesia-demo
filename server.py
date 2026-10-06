@@ -831,6 +831,13 @@ async def on_startup(app):
     finally:
         await tts.close()
     print(f"  {len(CATALOG['models'])} models · {len(CATALOG['voices'])} voices available")
+
+    # M3 reads one image well but mis-reports a batch — given three solid
+    # colours it answered "Black, Gray, White" — so video frames silently
+    # degrade if someone points the vision model at it.
+    if "minimax" in get_vision_model().lower():
+        print(f"  ! {get_vision_model()} is unreliable with several images at once;"
+              " video frames will suffer. gemma-4-31B-it is the safe choice.")
     print(f"  up to {MAX_CONCURRENT} requests in flight, {TTS_CONCURRENCY} synthesising at once")
 
 

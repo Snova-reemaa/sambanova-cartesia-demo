@@ -78,6 +78,65 @@ async def describe_images(client, data_urls, question, model=None):
                   "inference_s": took}
 
 
+class ThinkFilter:
+    """Strip <mm:think> blocks out of a token stream.
+
+    MiniMax models narrate their reasoning inside these tags. In the vision
+    call a regex over the finished text is enough, but a streamed reply goes
+    straight to the speaker — once "the user wants me to describe" has been
+    spoken it cannot be taken back. Tags also arrive split across deltas
+    ("<mm", ":thi", "nk>"), so this holds back any trailing fragment that could
+    still turn into one.
+    """
+
+    OPEN = "<mm:think>"
+    CLOSE = "</mm:think>"
+
+    def __init__(self):
+        self.buf = ""
+        self.inside = False
+
+    @staticmethod
+    def _partial(buf, tag):
+        """Longest suffix of buf that could be the start of tag."""
+        for n in range(min(len(tag) - 1, len(buf)), 0, -1):
+            if buf.endswith(tag[:n]):
+                return buf[-n:]
+        return ""
+
+    def feed(self, delta):
+        self.buf += delta
+        out = []
+        while self.buf:
+            if self.inside:
+                at = self.buf.find(self.CLOSE)
+                if at == -1:
+                    self.buf = self._partial(self.buf, self.CLOSE)
+                    break
+                self.buf = self.buf[at + len(self.CLOSE):]
+                self.inside = False
+            else:
+                at = self.buf.find(self.OPEN)
+                if at == -1:
+                    hold = self._partial(self.buf, self.OPEN)
+                    ready = self.buf[:len(self.buf) - len(hold)]
+                    if ready:
+                        out.append(ready)
+                    self.buf = hold
+                    break
+                if at:
+                    out.append(self.buf[:at])
+                self.buf = self.buf[at + len(self.OPEN):]
+                self.inside = True
+        return "".join(out)
+
+    def flush(self):
+        """Whatever is left that was never part of a tag."""
+        rest = "" if self.inside else self.buf
+        self.buf = ""
+        return rest
+
+
 async def stream_tools(client, messages, model=None, tools=None, stats=None):
     """Like stream_chat, but the model may answer with a tool call instead.
 
@@ -95,6 +154,7 @@ async def stream_tools(client, messages, model=None, tools=None, stats=None):
 
     calls = {}
     announced = False
+    think = ThinkFilter()
 
     async for chunk in stream:
         if not chunk.choices:
@@ -118,7 +178,13 @@ async def stream_tools(client, messages, model=None, tools=None, stats=None):
                     if part.function.arguments:
                         slot["arguments"] += part.function.arguments
         elif delta.content:
-            yield ("text", delta.content)
+            clean = think.feed(delta.content)
+            if clean:
+                yield ("text", clean)
+
+    tail = think.flush()
+    if tail:
+        yield ("text", tail)
 
     for slot in calls.values():
         yield ("tool", slot)
@@ -137,6 +203,7 @@ async def stream_chat(client, messages, model=None, stats=None):
         stream=True,
     )
 
+    think = ThinkFilter()
     async for chunk in stream:
         # SambaNova closes the stream with a usage frame that carries no choices
         # — the one that used to crash this demo. It holds the inference timings.
@@ -148,7 +215,12 @@ async def stream_chat(client, messages, model=None, stats=None):
             continue
         delta = chunk.choices[0].delta.content
         if delta:
-            yield delta
+            clean = think.feed(delta)
+            if clean:
+                yield clean
+    tail = think.flush()
+    if tail:
+        yield tail
 
 
 async def stream_reply(prompt, system_prompt="Answer clearly and concisely."):
