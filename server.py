@@ -26,6 +26,7 @@ from sambanova import (get_client as get_llm, get_model, stream_tools,
 from cartesia_tts import get_client as get_tts, output_format
 from search import search, as_context, provider as search_provider
 from knowledge_base import Knowledge, as_context as kb_context
+import languages
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(HERE, "static")
@@ -105,7 +106,7 @@ SEARCH_TOOL = [{
 
 # Spoken while the search runs, into the same synthesis context as the answer,
 # so the voice carries straight on instead of going quiet.
-def bridge_phrase(query, already_spoke=False):
+def bridge_phrase(query, already_spoke=False, code="en"):
     # Deliberately generic. Naming the query back produces things like "let me
     # check the latest on latest news SambaNova", and it has to sound right for
     # every query, not most of them. Two sentences buys about two seconds of
@@ -113,28 +114,51 @@ def bridge_phrase(query, already_spoke=False):
     #
     # After a photo the caller has already heard "let me take a look at that",
     # and stacking a second full bridge on top reads as stalling.
-    if already_spoke:
-        return "Right, let me find some options. "
-    return "One moment. Let me look that up for you. "
+    first, second = SEARCHING_PHRASE.get(code, SEARCHING_PHRASE["en"])
+    return second if already_spoke else first
 
 
 # Half the two seconds before a caller hears anything is the round trip to
 # SambaNova, and none of it is inference. A person would not sit in silence for
 # that; they would say "right" and then answer. Synthesis starts on this the
 # moment the prompt lands, so first sound stops waiting on the model at all.
-BACKCHANNEL = (
-    "Right, let me see. ",
-    "Okay, one second. ",
-    "Sure, let me think. ",
-    "Mm-hm, hang on. ",
-    "Got it, just a moment. ",
-)
+BACKCHANNEL = {
+    "en": ("Right, let me see. ", "Okay, one second. ", "Sure, let me think. ",
+           "Mm-hm, hang on. ", "Got it, just a moment. "),
+    "es": ("Vale, un momento. ", "Claro, déjame ver. ", "Muy bien, un segundo. "),
+    "fr": ("D'accord, un instant. ", "Bien sûr, voyons voir. ", "Très bien, une seconde. "),
+    "de": ("Gut, einen Moment. ", "Klar, lassen Sie mich sehen. ", "In Ordnung, eine Sekunde. "),
+    "it": ("Va bene, un momento. ", "Certo, fammi vedere. ", "Perfetto, un secondo. "),
+    "pt": ("Certo, um momento. ", "Claro, deixe-me ver. ", "Muito bem, um segundo. "),
+    "nl": ("Goed, een moment. ", "Zeker, even kijken. ", "Prima, een seconde. "),
+}
+
+LOOKING_PHRASE = {
+    "en": ("Let me take a look at that. ", "Let me look through those. "),
+    "es": ("Déjame echar un vistazo. ", "Déjame revisarlas. "),
+    "fr": ("Laissez-moi regarder ça. ", "Laissez-moi les regarder. "),
+    "de": ("Lassen Sie mich das ansehen. ", "Lassen Sie mich die ansehen. "),
+    "it": ("Fammi dare un'occhiata. ", "Fammi guardare queste. "),
+    "pt": ("Deixe-me dar uma olhada. ", "Deixe-me ver essas. "),
+    "nl": ("Laat me daar even naar kijken. ", "Laat me die even bekijken. "),
+}
+
+SEARCHING_PHRASE = {
+    "en": ("One moment. Let me look that up for you. ", "Right, let me find some options. "),
+    "es": ("Un momento, voy a buscarlo. ", "Vale, déjame buscar opciones. "),
+    "fr": ("Un instant, je cherche ça. ", "Bien, je vais trouver des options. "),
+    "de": ("Einen Moment, ich schaue nach. ", "Gut, ich suche ein paar Optionen. "),
+    "it": ("Un momento, lo cerco subito. ", "Bene, cerco qualche opzione. "),
+    "pt": ("Um momento, vou procurar. ", "Certo, vou encontrar opções. "),
+    "nl": ("Een moment, ik zoek het op. ", "Goed, ik zoek wat opties. "),
+}
 
 
-def backchannel(recent):
+def backchannel(recent, code="en"):
     """Pick an acknowledgement, avoiding the last couple used."""
-    fresh = [w for w in BACKCHANNEL if w not in recent]
-    return random.choice(fresh or list(BACKCHANNEL))
+    pool = BACKCHANNEL.get(code, BACKCHANNEL["en"])
+    fresh = [w for w in pool if w not in recent]
+    return random.choice(fresh or list(pool))
 
 
 # Provider errors quote the credential that failed — "Incorrect API key
@@ -178,6 +202,44 @@ def log_error(exc, context):
 
 
 KB = Knowledge()
+
+# The documents are English and retrieval is lexical, so a Spanish question
+# matches nothing and the agent invents a shipping policy. Translating the
+# question first is a round trip, but only on non-English turns, and the
+# holding phrase is already covering that second anyway. Uses the cheapest
+# model on the account.
+# Not gpt-oss-120b despite being cheapest: it reasons before answering, and a
+# 60 token budget was consumed by the reasoning, so "¿hacéis envíos a España?"
+# came back as "Do". Llama answers directly.
+TRANSLATOR = os.getenv("SAMBANOVA_TRANSLATE_MODEL", "Meta-Llama-3.3-70B-Instruct")
+
+
+async def in_english(llm, text, code):
+    if code == "en":
+        return text
+    try:
+        reply = await llm.chat.completions.create(
+            model=TRANSLATOR, max_tokens=120,
+            messages=[{"role": "user", "content":
+                       "Translate this customer support question into English. "
+                       "Reply with only the English translation, no preamble, no "
+                       f"quotes.\n\n{text}"}])
+        out = (reply.choices[0].message.content or "").strip()
+        return out or text
+    except Exception as exc:
+        log_error(exc, "translating for retrieval")
+        return text
+
+
+
+def language_rule(code):
+    """Follow the caller. Switching language mid-call is the normal case in a
+    contact centre, not an edge case."""
+    return (
+        f"\nThe caller is speaking {languages.name(code)}. Reply in "
+        f"{languages.name(code)} and nothing else — not a translation, not a "
+        "mixture. If they switch language again, switch with them."
+    )
 
 
 def policy_prompt(hits):
@@ -340,6 +402,7 @@ class Turn:
         self.vision_s = None     # seconds spent reading attachments, if any
         self.filler_s = None     # when the holding phrase went to synthesis
         self.kb_hits = []        # documentation sections used, if any
+        self.language = 'en'
 
     def now(self):
         return time.perf_counter() - self.t0
@@ -361,6 +424,7 @@ class Turn:
             "vision_s": self.vision_s,
             "filler_s": self.filler_s,
             "kb_hits": self.kb_hits,
+            "language": self.language,
             "network_overhead_s": overhead,
             "first_token_s": self.first_token,
             "last_token_s": self.last_token,
@@ -431,11 +495,15 @@ async def synthesise(chan, conn, turn_id, text, voice_id):
 
 async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=None,
                    can_search=True, attachments=(), on_call=False, prelook=None,
-                   recent_fillers=None):
+                   recent_fillers=None, speaking=None):
     """Stream one prompt through the LLM into its own Cartesia context, relaying
     text events and raw PCM frames to the browser as they arrive."""
     turn = Turn()
     recent_fillers = recent_fillers if recent_fillers is not None else []
+    speaking = speaking if speaking is not None else {"code": "en"}
+    was = speaking["code"]
+    speaking["code"] = languages.detect(prompt, was)
+    turn.language = speaking["code"]
     voice_id = pick_voice(voice)
     llm_model = pick_model(model)
     tts_model = os.getenv("CARTESIA_MODEL", "sonic-2")
@@ -443,9 +511,7 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
 
     # Snapshot history now: a turn started alongside others should not see
     # replies that land while it is still running.
-    system = SYSTEM_PROMPT
-    if KB and not KB.find(prompt):
-        system += NO_POLICY
+    system = SYSTEM_PROMPT + language_rule(speaking["code"])
     if on_call:
         system += "\n" + CALL_PROMPT
     if can_search:
@@ -458,6 +524,8 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
         "type": "turn_start", "turn_id": turn_id, "prompt": prompt,
         "model": llm_model, "voice_id": voice_id,
         "attachments": prelook["count"] if prelook else len(attachments),
+        "language": speaking["code"],
+        "language_changed": speaking["code"] != was,
     })
 
     # The language model runs right away; text waits here for a synthesis slot.
@@ -486,8 +554,9 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
                           "count": count, "t": turn.now(),
                           "speculative": bool(prelook)})
 
-        bridge = ("Let me take a look at that. " if count == 1
-                  else "Let me look through those. ")
+        one_phrase, many_phrase = LOOKING_PHRASE.get(
+            speaking["code"], LOOKING_PHRASE["en"])
+        bridge = one_phrase if count == 1 else many_phrase
         await emit(bridge)
 
         t_look = time.perf_counter()
@@ -517,7 +586,7 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
         # front of it, and those answers come back quickly regardless.
         worth_covering = len(prompt.split()) > 3
         if on_call and worth_covering and not attachments and not prelook:
-            filler = backchannel(recent_fillers)
+            filler = backchannel(recent_fillers, speaking["code"])
             recent_fillers.append(filler)
             del recent_fillers[:-2]
             turn.filler_s = turn.now()
@@ -542,12 +611,23 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
 
         # Retrieval is local and costs microseconds, so it happens on every
         # turn rather than behind a tool call the model has to remember to use.
+        # Detection is driven by the reply language and needs real evidence, so
+        # it calls a short "livrez-vous en France?" English and skips the
+        # translation. Let retrieval decide instead: if nothing matched, try it
+        # in English before concluding the documents do not cover it. The cost
+        # lands only on turns that found nothing, under the holding phrase.
         hits = KB.find(prompt)
+        if not hits:
+            lookup = await in_english(llm, prompt, "translate")
+            if lookup and lookup.lower() != prompt.lower():
+                hits = KB.find(lookup)
         turn.kb_hits = [f"{sec.doc} — {sec.heading}" for _, sec in hits]
         if hits:
             convo = convo + [{"role": "system", "content": policy_prompt(hits)}]
             await chan.event({"type": "knowledge", "turn_id": turn_id,
                               "sections": turn.kb_hits, "t": turn.now()})
+        else:
+            convo = convo + [{"role": "system", "content": NO_POLICY}]
 
         calls = []
         async for kind, payload in stream_tools(
@@ -577,7 +657,8 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
                 # A speculative look leaves `attachments` empty while still
                 # having spoken "let me take a look at that", which stacked
                 # three holding phrases in a row.
-                spoken = bridge_phrase(query, already_spoke=bool(attachments or prelook))
+                spoken = bridge_phrase(query, already_spoke=bool(attachments or prelook),
+                                       code=speaking["code"])
                 await emit(spoken)
 
                 t_search = turn.now()
@@ -617,7 +698,7 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
                 model_id=tts_model,
                 voice={"mode": "id", "id": voice_id},
                 output_format=output_format(),
-                language="en",
+                language=speaking["code"],
             )
 
             async def pump():
@@ -670,6 +751,7 @@ async def websocket_handler(request):
     # browser gave them.
     prelooks = {}
     recent_fillers = []   # so the same acknowledgement is not used twice running
+    speaking = {"code": "en"}   # the language this call is being held in
 
     # Losing synthesis should cost the demo its voice, not its existence. The
     # conversation, vision and search all still work; the caller reads instead
@@ -769,6 +851,7 @@ async def websocket_handler(request):
                     attachments=clean_attachments(data.get("images")),
                     on_call=bool(data.get("call")),
                     recent_fillers=recent_fillers,
+                    speaking=speaking,
                     prelook=prelooks.pop(data["prelook"], None)
                     if data.get("prelook") in prelooks else None,
                 )
