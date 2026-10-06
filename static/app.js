@@ -23,6 +23,7 @@ const ui = {
   callClock: el('call-clock'), capYou: el('cap-you'), capThem: el('cap-them'),
   callMic: el('call-mic'), callCam: el('call-cam'), callUpload: el('call-upload'),
   endCall: el('end-call'), callTrouble: el('call-trouble'), nocam: el('nocam'),
+  wrapPanel: el('wrapup-panel'), wrapup: el('wrapup'), wrapMeta: el('wrapup-meta'),
 };
 
 const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
@@ -524,6 +525,43 @@ function renderSources(turn) {
   turn.node.what.append(box);
 }
 
+function banner(text) {
+  let box = el('session-banner');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'session-banner';
+    box.className = 'banner';
+    ui.log.parentElement.before(box);
+  }
+  box.textContent = text;
+}
+
+const WRAP_KEYS = ['SUMMARY', 'OUTCOME', 'ACTIONS', 'SENTIMENT', 'QUALITY'];
+
+function showWrapup(note) {
+  if (!note || !note.text) { ui.wrapPanel.hidden = true; return; }
+  ui.wrapup.innerHTML = '';
+  note.text.split('\n').forEach((line) => {
+    const key = WRAP_KEYS.find((k) => line.toUpperCase().startsWith(k));
+    if (!key) return;
+    const row = document.createElement('div');
+    row.className = 'row';
+    const k = document.createElement('span');
+    k.className = 'k';
+    k.textContent = key.toLowerCase();
+    const v = document.createElement('span');
+    const value = line.slice(line.indexOf(':') + 1).trim();
+    v.className = 'v ' + (key === 'OUTCOME' ? value.toLowerCase().split(/\W/)[0] : '');
+    v.textContent = value;
+    row.append(k, v);
+    ui.wrapup.append(row);
+  });
+  ui.wrapMeta.textContent =
+    `${note.model} read ${note.turns} question${note.turns === 1 ? '' : 's'}`
+    + (note.prompt_tokens ? ` · ${note.prompt_tokens} tokens` : '');
+  ui.wrapPanel.hidden = false;
+}
+
 function renderVision(turn, description) {
   const box = document.createElement('div');
   box.className = 'vision';
@@ -671,6 +709,9 @@ function showCallVideo() {
 }
 
 function leaveCall() {
+  if (ws && ws.readyState === WebSocket.OPEN && turns.size) {
+    ws.send(JSON.stringify({ type: 'wrapup' }));
+  }
   inCall = false;
   clearInterval(callTimer);
   callTimer = null;
@@ -1055,6 +1096,37 @@ document.addEventListener('paste', (e) => {
 
 /* --------------------------------------------------------------- socket */
 
+let reconnectAttempt = 0;
+let reconnectTimer = null;
+let givingUp = false;
+
+const RELOAD_AFTER = 5;
+
+function scheduleReconnect() {
+  if (reconnectTimer) return;
+  reconnectAttempt += 1;
+
+  // A brief network drop reconnects on the same session. A restarted server
+  // has thrown the session away, so the socket will keep returning 401 for
+  // ever — reloading either comes straight back in or shows the login, both
+  // of which beat retrying silently.
+  if (reconnectAttempt > RELOAD_AFTER) {
+    ui.connText.textContent = 'reconnecting — reloading the page';
+    setTimeout(() => location.reload(), 600);
+    return;
+  }
+  // Back off, but never so far that it looks dead: 1s, 2s, 4s, then every 8s.
+  const wait = Math.min(1000 * 2 ** (reconnectAttempt - 1), 8000);
+  ui.connDot.className = 'dot warn';
+  ui.connText.textContent = `reconnecting in ${Math.round(wait / 1000)}s…`;
+  if (inCall) callTrouble('Connection lost — reconnecting…');
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    ui.connText.textContent = 'reconnecting…';
+    connect();
+  }, wait);
+}
+
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}/ws`);
@@ -1062,15 +1134,23 @@ function connect() {
 
   ws.onopen = () => {
     connected = true;
+    const returning = reconnectAttempt > 0;
+    reconnectAttempt = 0;
     ui.connDot.className = 'dot live';
-    ui.connText.textContent = 'connected';
+    ui.connText.textContent = returning ? 'reconnected' : 'connected';
+    if (returning) {
+      // A new socket is a new conversation server-side; say so rather than
+      // letting it look like the agent forgot.
+      addMessage('err', 'note', 'Connection dropped and came back. The agent has lost the thread of the conversation.');
+      if (inCall) callTrouble('');
+    }
   };
   ws.onclose = () => {
     connected = false;
-    ui.connDot.className = 'dot dead';
-    ui.connText.textContent = 'disconnected — restart the server and reload';
     ui.send.disabled = true;
-    ui.mic.disabled = true;
+    // Hotel wifi drops. Losing the connection should cost a few seconds, not
+    // the demo — and it took the buffered answers with it before.
+    if (!givingUp) scheduleReconnect();
   };
   ws.onerror = () => {
     ui.connDot.className = 'dot dead';
@@ -1273,6 +1353,16 @@ function onEvent(m) {
 
     case 'say_done':
       ui.hint.textContent = 'Pick one above, or press the mic to ask something else.';
+      break;
+
+    case 'spent':
+      banner(m.message);
+      ui.send.disabled = true;
+      stopListening();
+      break;
+
+    case 'wrapup':
+      showWrapup(m.note);
       break;
 
     case 'rejected':

@@ -174,7 +174,8 @@ SECRETISH = re.compile(
 
 TROUBLE = (
     ("invalid_api_key", "authentication_error", "401", "incorrect api key"),
-    ("payment_method_required", "402", "credits limit", "balance_units"),
+    ("payment_method_required", "402", "credits limit", "balance_units",
+     "ran out of credits", "upgrade your subscription", "credit limit"),
     ("429", "rate limit", "high demand", "concurrency limit"),
     ("timeout", "timed out"),
 )
@@ -279,6 +280,48 @@ NO_POLICY = (
 )
 
 
+# M3 holds 1.05M tokens, the standout number on this account, and is the wrong
+# model for the live turn — it ignores what the camera saw. Wrap-up is the job
+# it is actually suited to: the whole call at once, after the caller has gone,
+# where latency does not matter.
+SUMMARY_MODEL = os.getenv("SAMBANOVA_SUMMARY_MODEL", "MiniMax-M3")
+
+SUMMARY_PROMPT = (
+    "You are writing up a support call that has just ended. Reply with exactly "
+    "these five lines and nothing else:\n"
+    "SUMMARY: one sentence on what the customer wanted.\n"
+    "OUTCOME: resolved, pending, or escalated.\n"
+    "ACTIONS: what was promised, or none.\n"
+    "SENTIMENT: how the customer sounded, in two or three words.\n"
+    "QUALITY: one sentence on how the agent handled it, including anything "
+    "they got wrong or should have asked."
+)
+
+
+async def write_up(llm, history):
+    """Summary, disposition and a QA note once the call is over."""
+    transcript = "\n".join(
+        f"{'Customer' if m['role'] == 'user' else 'Agent'}: {m['content']}"
+        for m in history if m["role"] in ("user", "assistant")
+    )
+    if not transcript.strip():
+        return None
+    reply = await llm.chat.completions.create(
+        model=SUMMARY_MODEL, max_tokens=400,
+        messages=[{"role": "system", "content": SUMMARY_PROMPT},
+                  {"role": "user", "content": transcript}],
+    )
+    text = (reply.choices[0].message.content or "").strip()
+    text = re.sub(r"<mm:think>.*?</mm:think>", "", text, flags=re.S).strip()
+    usage = getattr(reply, "usage", None)
+    return {
+        "text": text,
+        "model": SUMMARY_MODEL,
+        "prompt_tokens": getattr(usage, "prompt_tokens", None) if usage else None,
+        "turns": len([m for m in history if m["role"] == "user"]),
+    }
+
+
 GENERIC_LOOK = (
     "Say what you see, concretely: the object, its colour, material and style, "
     "any damage, text, error message, lights or markings. One or two plain "
@@ -347,6 +390,11 @@ def grounded_prompt(results):
 MAX_HISTORY = 8  # user+assistant messages retained for context
 VOICE_LIMIT = 20  # how many Cartesia voices to offer in the picker
 MAX_CONCURRENT = 4  # requests accepted in flight at once on one connection
+
+# One passphrase shared on a call, and a link that outlives it, is somebody
+# else spending your credits. These are per browser session.
+MAX_TURNS = int(os.getenv("MAX_TURNS_PER_SESSION", "60"))
+MAX_MINUTES = int(os.getenv("MAX_SESSION_MINUTES", "45"))
 
 # Cartesia caps concurrent synthesis per subscription (2 on the current plan);
 # exceeding it fails the whole context rather than queueing. SambaNova has no
@@ -751,6 +799,7 @@ async def websocket_handler(request):
     # browser gave them.
     prelooks = {}
     recent_fillers = []   # so the same acknowledgement is not used twice running
+    opened_at = time.perf_counter()
     speaking = {"code": "en"}   # the language this call is being held in
 
     # Losing synthesis should cost the demo its voice, not its existence. The
@@ -778,6 +827,9 @@ async def websocket_handler(request):
             "voices": CATALOG["voices"],
             "default_voice": default_voice(),
             "max_concurrent": MAX_CONCURRENT,
+            "max_turns": MAX_TURNS,
+            "max_minutes": MAX_MINUTES,
+            "summary_model": SUMMARY_MODEL,
             "search_provider": search_provider(),
             "vision_model": get_vision_model(),
             "max_frames": MAX_FRAMES,
@@ -834,6 +886,19 @@ async def websocket_handler(request):
                 prompt = (data.get("text") or "").strip()
                 if not prompt:
                     continue
+
+                spent = len(history) // 2
+                minutes = (time.perf_counter() - opened_at) / 60
+                if spent >= MAX_TURNS or minutes >= MAX_MINUTES:
+                    await chan.event({
+                        "type": "spent",
+                        "message": (
+                            f"This session has reached its limit of {MAX_TURNS} "
+                            f"questions." if spent >= MAX_TURNS else
+                            f"This session has been open {MAX_MINUTES} minutes."
+                        ) + " Reload the page to start a new one.",
+                    })
+                    continue
                 if len(running) >= MAX_CONCURRENT:
                     await chan.event({
                         "type": "rejected",
@@ -856,6 +921,15 @@ async def websocket_handler(request):
                     if data.get("prelook") in prelooks else None,
                 )
                 running[turn_id] = asyncio.ensure_future(supervise(turn_id, coro))
+
+            elif kind == "wrapup":
+                try:
+                    note = await write_up(llm, history)
+                except Exception as exc:
+                    log_error(exc, "call write-up")
+                    note = None
+                await chan.event({"type": "wrapup", "note": note})
+                continue
 
             elif kind == "say":
                 if conn is None:

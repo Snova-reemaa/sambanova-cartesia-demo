@@ -382,6 +382,33 @@ the plan is upgraded.
 
 Three questions asked together: 11.1 s of work in 5.0 s of wall clock.
 
+## After the call
+
+Hanging up sends the transcript to MiniMax-M3 for a summary, an outcome, the
+actions promised, the customer's sentiment and a QA note on how the agent
+handled it. M3 is the wrong model for the live turn — it ignores what the
+camera saw — but it holds 1.05M tokens and latency does not matter once the
+caller has gone, so wrap-up is the job it suits.
+
+It is not a rubber stamp. On a three-turn test call it wrote: "the agent was
+polite and empathetic but prematurely promised a delivery charge refund before
+verifying the order status."
+
+## Staying up
+
+A dropped socket used to end the session and take the buffered answers with it.
+It now reconnects with backoff — 1s, 2s, 4s, then every 8s — and says plainly
+that the agent has lost the thread, because a new socket is a new conversation
+server-side. After five failed attempts it reloads instead: a brief network
+drop reconnects on the same session, but a restarted server has thrown the
+session away and the socket will keep returning 401 for ever.
+
+## Limits
+
+`MAX_TURNS_PER_SESSION` (60) and `MAX_SESSION_MINUTES` (45) bound what one
+browser session can spend. One passphrase shared on a call, and a link that
+outlives it, is otherwise somebody else spending your credits.
+
 ## Showing it to someone remote
 
 The demo is passphrase-gated: `/` redirects to a login page and the websocket

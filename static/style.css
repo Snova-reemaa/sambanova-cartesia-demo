@@ -760,3 +760,26 @@ body.dropping { outline: 2px dashed var(--tts); outline-offset: -8px; }
   letter-spacing: 0.08em; text-transform: uppercase;
   pointer-events: none;
 }
+
+/* ---- after the call ---- */
+
+.wrapup { display: flex; flex-direction: column; gap: 7px; font-size: 13px; }
+.wrapup .row { display: grid; grid-template-columns: 92px 1fr; gap: 12px; }
+.wrapup .k {
+  font-size: 9.5px; letter-spacing: 0.09em; text-transform: uppercase;
+  color: var(--faint); padding-top: 3px;
+}
+.wrapup .v { color: var(--ink); font-family: var(--sans); font-size: 13.5px; }
+.wrapup .v.resolved  { color: var(--play); }
+.wrapup .v.escalated { color: var(--bad); }
+.wrapup .v.pending   { color: var(--llm); }
+.wrapup-meta { font-size: 11px; color: var(--faint); margin: 8px 0 0; }
+
+.banner {
+  background: var(--llm-soft);
+  border: 1px solid var(--llm);
+  border-radius: 4px;
+  padding: 11px 15px;
+  font-size: 13.5px;
+  color: var(--ink);
+}
