@@ -310,8 +310,19 @@ Set `SAMBANOVA_VISION_MODEL` to override — the server warns at startup if it i
 pointed at a MiniMax model, since video frames degrade silently rather than
 failing.
 
-**If you pick a MiniMax model as the conversational model**, note that they
-narrate their reasoning inside `<mm:think>` tags. The vision call strips those
+**Do not pick a MiniMax model as the conversational model for anything
+visual.** Given the same photo and the same description from gemma, Llama used
+it 3 times out of 3 — "one of the lights on your box is red" — and M3 used it 0
+times out of 3, answering "I can't quite see it from this angle, can you hold it
+up to the camera" with the description sitting in its context. It discards the
+system message carrying what was seen. The model picker labels them.
+
+M3 also confabulated once when the grounding was poor: handed a vague
+description and an unhelpful search, it answered "those look like vintage Pyrex
+Cinderella bowls". Llama, given the same bad input, said it could not find a
+value. For voice-only turns M3 is fine.
+
+MiniMax models also narrate their reasoning inside `<mm:think>` tags. The vision call strips those
 from finished text, but a streamed reply goes straight to the speaker, where
 "the user wants me to describe the glasses" cannot be taken back. Both streaming
 paths now filter the tags as they arrive, holding back any trailing fragment

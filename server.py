@@ -520,7 +520,10 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
 
                 # Start talking before the search returns. This text goes into
                 # the same synthesis context as the answer that follows it.
-                spoken = bridge_phrase(query, already_spoke=bool(attachments))
+                # A speculative look leaves `attachments` empty while still
+                # having spoken "let me take a look at that", which stacked
+                # three holding phrases in a row.
+                spoken = bridge_phrase(query, already_spoke=bool(attachments or prelook))
                 await emit(spoken)
 
                 t_search = turn.now()

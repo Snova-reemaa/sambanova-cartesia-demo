@@ -719,7 +719,15 @@ function fillPickers(m) {
   ui.pickModel.innerHTML = '';
   models.forEach((id) => {
     const o = document.createElement('option');
-    o.value = id; o.textContent = shortModel(id);
+    o.value = id;
+    // MiniMax ignores the description the vision model hands it — 0/3 against
+    // Llama's 3/3 on the same image — and answers "I can't quite see it from
+    // this angle" with a perfectly good description sitting in its context.
+    const blind = /minimax/i.test(id);
+    o.textContent = shortModel(id) + (blind ? ' — ignores photos' : '');
+    o.title = blind
+      ? 'Fine for voice, but discards what the camera saw. Use Llama for anything visual.'
+      : '';
     ui.pickModel.append(o);
   });
   ui.pickModel.value = models.includes(wantModel) ? wantModel : m.llm_model;
