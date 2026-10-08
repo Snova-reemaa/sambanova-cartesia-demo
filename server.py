@@ -27,6 +27,7 @@ from cartesia_tts import get_client as get_tts, output_format
 from search import search, as_context, provider as search_provider
 from knowledge_base import Knowledge, as_context as kb_context
 import languages
+import orders
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(HERE, "static")
@@ -83,6 +84,33 @@ SEARCH_RULES = (
     "If the caller has shown you something and wants it found, priced, matched "
     "or bought, search using the details you can see. A photo is a reason to "
     "search, not a reason to describe."
+)
+
+ORDER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "lookup_order",
+        "description": (
+            "Look up a customer's order by its number. Returns the real status, "
+            "items, dates, carrier, tracking and how many working days late it "
+            "is. Call this whenever an order number is mentioned, or whenever "
+            "you are about to say you will check on an order."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"order_number": {"type": "string"}},
+            "required": ["order_number"],
+        },
+    },
+}
+
+ORDER_RULES = (
+    "\nYou can look up orders. When a caller gives an order number, or asks "
+    "where their order is, call lookup_order — never say you are checking "
+    "unless you have. If you do not have a number yet, ask for it.\n"
+    "Everything the lookup returns is true; everything it does not return, you "
+    "do not know. Do not invent a delivery date, a courier, or a refund that is "
+    "not in the result."
 )
 
 SEARCH_TOOL = [{
@@ -451,6 +479,7 @@ class Turn:
         self.filler_s = None     # when the holding phrase went to synthesis
         self.kb_hits = []        # documentation sections used, if any
         self.language = 'en'
+        self.order = None        # order number looked up, if any
 
     def now(self):
         return time.perf_counter() - self.t0
@@ -473,6 +502,7 @@ class Turn:
             "filler_s": self.filler_s,
             "kb_hits": self.kb_hits,
             "language": self.language,
+            "order": self.order,
             "network_overhead_s": overhead,
             "first_token_s": self.first_token,
             "last_token_s": self.last_token,
@@ -559,7 +589,7 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
 
     # Snapshot history now: a turn started alongside others should not see
     # replies that land while it is still running.
-    system = SYSTEM_PROMPT + language_rule(speaking["code"])
+    system = SYSTEM_PROMPT + language_rule(speaking["code"]) + ORDER_RULES
     if on_call:
         system += "\n" + CALL_PROMPT
     if can_search:
@@ -680,7 +710,7 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
         calls = []
         async for kind, payload in stream_tools(
             llm, convo, model=llm_model,
-            tools=SEARCH_TOOL if can_search else None,
+            tools=(SEARCH_TOOL if can_search else []) + [ORDER_TOOL],
             stats=turn.server,
         ):
             if kind == "text":
@@ -691,9 +721,44 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
             elif kind == "tool":
                 calls.append(payload)
 
-        if calls:
+        # An order lookup is local and instant, so it needs no holding phrase
+        # and no second round trip to decide whether to make one.
+        looked = [c for c in calls if c.get("name") == "lookup_order"]
+        if looked:
             try:
-                query = (json.loads(calls[0]["arguments"]) or {}).get("query", "").strip()
+                asked = (json.loads(looked[0]["arguments"]) or {}).get("order_number", "")
+            except ValueError:
+                asked = ""
+            number = orders.find_number(asked) or orders.find_number(prompt)
+            # It sometimes calls the tool before asking for a number. Say
+            # nothing rather than reporting a lookup that never happened.
+            record = orders.look_up(number) if number else None
+            if record:
+                turn.order = record["number"] if record.get("found") else None
+                await chan.event({
+                    "type": "order", "turn_id": turn_id, "t": turn.now(),
+                    "number": record.get("number"), "found": record.get("found"),
+                    "status": record.get("status"),
+                    "days_late": record.get("days_late"),
+                })
+                detail = ("Order lookup result. This is the real record — answer "
+                          "from it and do not add anything it does not say.\n\n"
+                          + orders.describe(record))
+            else:
+                detail = ("You called the order lookup without a number. Ask the "
+                          "caller for their order number — do not claim to have "
+                          "checked anything.")
+            convo = convo + [{"role": "system", "content": detail}]
+            async for kind, payload in stream_tools(
+                llm, convo, model=llm_model,
+                tools=SEARCH_TOOL if can_search else None):
+                if kind == "text":
+                    await emit(payload)
+
+        searched = [c for c in calls if c.get("name") != "lookup_order"]
+        if searched:
+            try:
+                query = (json.loads(searched[0]["arguments"]) or {}).get("query", "").strip()
             except ValueError:
                 query = ""
             if query:
@@ -1053,6 +1118,7 @@ async def on_startup(app):
         print(f"  ! {get_vision_model()} is unreliable with several images at once;"
               " video frames will suffer. gemma-4-31B-it is the safe choice.")
     print(f"  up to {MAX_CONCURRENT} requests in flight, {TTS_CONCURRENCY} synthesising at once")
+    print(f"  {len(orders.ORDERS)} orders loaded from {os.path.basename(orders.PATH)}")
     print(f"  {len(KB)} knowledge sections loaded"
           + ("" if len(KB) else " — answers about policy will be refused, not invented"))
 

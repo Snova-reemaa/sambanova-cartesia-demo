@@ -382,6 +382,29 @@ the plan is upgraded.
 
 Three questions asked together: 11.1 s of work in 5.0 s of wall clock.
 
+## Looking up orders
+
+The agent used to say "I'm checking on the status" and then invent one. It now
+has a `lookup_order` tool over `orders.json`, a stand-in for a CRM. Swap
+`look_up` in orders.py for a real API call and nothing above it changes.
+
+Lateness is worked out in the lookup, in working days, rather than left for the
+model to derive mid-sentence — the policy documents turn on 2 days for late and
+10 for lost, and getting that wrong out loud is worse than not answering.
+
+Order numbers are pulled out of what the caller said, so "my order number is
+4 4 9 0 1" works as well as "order 44901". An unknown number is reported as
+unknown rather than guessed at.
+
+Four lookups, all answered from the record: carrier and last scan, the actual
+delivery date, spoken digits, and a number that does not exist. 4/4.
+
+Where it gets interesting is the two features together. Order 44812 is 11
+working days past its promised date, so the lookup flags it past the 10 day
+threshold, the documents say an order that late is treated as lost, and the
+agent offers a replacement or a refund — then quotes the real refund timing, 5
+working days plus 3 to 5 for the bank, from the documents.
+
 ## After the call
 
 Hanging up sends the transcript to MiniMax-M3 for a summary, an outcome, the

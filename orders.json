@@ -1,0 +1,58 @@
+{
+  "44812": {
+    "placed": "2026-09-18", "promised": "2026-09-23", "status": "in transit",
+    "items": [{"name": "Aurex X3 wireless headphones", "qty": 1, "price": 89.99}],
+    "delivery": "standard", "paid": 89.99, "carrier": "Evri",
+    "tracking": "EV9930412771", "last_scan": "2026-09-21 depot, Warrington",
+    "email": "r.patel@example.com", "opened": true
+  },
+  "44815": {
+    "placed": "2026-09-02", "promised": "2026-09-05", "status": "delivered",
+    "items": [{"name": "Kelo travel kettle", "qty": 1, "price": 32.50}],
+    "delivery": "standard", "paid": 36.45, "carrier": "Royal Mail",
+    "tracking": "RM4471120GB", "delivered_on": "2026-09-04",
+    "email": "j.okafor@example.com", "opened": false
+  },
+  "44901": {
+    "placed": "2026-09-14", "promised": "2026-09-17", "status": "in transit",
+    "items": [{"name": "Marlo desk lamp", "qty": 2, "price": 24.00}],
+    "delivery": "standard", "paid": 48.00, "carrier": "Evri",
+    "tracking": "EV9930338104", "last_scan": "2026-09-16 depot, Leeds",
+    "email": "s.bergstrom@example.com", "opened": false
+  },
+  "45010": {
+    "placed": "2026-09-29", "promised": "2026-09-30", "status": "in transit",
+    "items": [{"name": "Thorne 65W charger", "qty": 1, "price": 29.00}],
+    "delivery": "express", "paid": 35.95, "carrier": "DPD",
+    "tracking": "DPD88213904", "last_scan": "2026-09-30 out for delivery, Bristol",
+    "email": "m.lindqvist@example.com", "opened": false
+  },
+  "44770": {
+    "placed": "2026-08-20", "promised": "2026-08-25", "status": "refunded",
+    "items": [{"name": "Aurex X1 earbuds", "qty": 1, "price": 54.00}],
+    "delivery": "standard", "paid": 57.95, "refunded": 57.95,
+    "refunded_on": "2026-09-08", "reason": "faulty on arrival",
+    "email": "a.novak@example.com", "opened": true
+  },
+  "45102": {
+    "placed": "2026-10-02", "promised": "2026-10-07", "status": "preparing",
+    "items": [{"name": "Kelo stand mixer", "qty": 1, "price": 189.00},
+              {"name": "Kelo mixing bowl set", "qty": 1, "price": 34.00}],
+    "delivery": "standard", "paid": 223.00,
+    "email": "d.ferreira@example.com", "opened": false
+  },
+  "44688": {
+    "placed": "2026-08-11", "promised": "2026-08-14", "status": "cancelled",
+    "items": [{"name": "Marlo floor lamp", "qty": 1, "price": 78.00}],
+    "delivery": "standard", "paid": 0.00, "cancelled_on": "2026-08-12",
+    "reason": "cancelled by customer before dispatch",
+    "email": "l.haddad@example.com", "opened": false
+  },
+  "45044": {
+    "placed": "2026-09-25", "promised": "2026-09-30", "status": "returning",
+    "items": [{"name": "Thorne power bank", "qty": 1, "price": 42.00}],
+    "delivery": "standard", "paid": 45.95, "carrier": "Royal Mail",
+    "tracking": "RM5520981GB", "return_started": "2026-10-03",
+    "email": "k.yamamoto@example.com", "opened": true
+  }
+}
