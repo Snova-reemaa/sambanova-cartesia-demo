@@ -1576,6 +1576,22 @@ function onEvent(m) {
       }
       break;
 
+    case 'recovered':
+      if (turn) {
+        note(turn, m.ok
+          ? `Rewrote ${m.held === 1 ? 'that' : 'those'} from the records instead`
+          : 'Still not in the records after a rewrite, so it said it would check', 'check');
+      }
+      break;
+
+    case 'recovered':
+      if (turn) {
+        note(turn, m.ok
+          ? `Rewrote ${m.held === 1 ? 'that' : 'those'} from the records instead`
+          : 'Still not in the records after a rewrite, so it said it would check', 'check');
+      }
+      break;
+
     case 'checked':
       if (turn) {
         note(turn, m.held

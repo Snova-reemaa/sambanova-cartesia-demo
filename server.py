@@ -875,12 +875,25 @@ async def remember_call(llm, session, note=None):
 CHECK_MODEL = os.getenv("SAMBANOVA_CHECK_MODEL") or "Meta-Llama-3.3-70B-Instruct"
 
 CHECK_PROMPT = (
-    "You check one sentence a support agent is about to say out loud against the "
-    "records. Records:\n\n{sources}\n\nAlready said: {before}\n\nSentence: {sentence}\n\n"
-    "If every factual claim in the sentence — numbers, dates, durations, statuses, "
-    "prices, policies, promises — is stated in the records or follows directly from "
-    "them, reply exactly OK. Otherwise reply HOLD: followed by what is unsupported, "
-    "in under twelve words. Greetings, questions, offers to help and empathy are OK."
+    "You check one sentence a phone support agent is about to say out loud, "
+    "against the records below.\n\nRecords:\n\n{sources}\n\nAlready said: {before}\n\n"
+    "Sentence: {sentence}\n\n"
+    "Reply HOLD only if the sentence contradicts the records, or states a specific "
+    "number, date, price, time limit or policy that the records do not contain. "
+    "These are all OK: paraphrase, numbers written as words, summaries of the "
+    "records, offers the records allow, questions, greetings and empathy. "
+    "Reply exactly OK, or HOLD: followed by what is unsupported, in under twelve words."
+)
+
+# When something is held back, the model gets one chance to say it again from
+# the records before the agent falls back to "let me double-check".
+RETRY_RULE = (
+    "Some of what you were about to say was not supported by the records, so it "
+    "was not spoken:\n{held}\n\nCarry straight on from what you have already "
+    "said and give the caller the answer, using only what the records and "
+    "documents above actually state. If they do not cover something, say you "
+    "will check it. Do not apologise, and never mention checking, records or "
+    "anything being held back."
 )
 
 REPAIR = {
@@ -1280,7 +1293,8 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
         await pending_text.put(text)
 
     async def on_held(sentence, reason):
-        held_any.append(sentence)
+        held_any.append((sentence.strip(), reason))
+        print(f"  ~ held back: {sentence.strip()[:120]!r} ({reason})")
         await chan.event({"type": "held", "turn_id": turn_id, "sentence": sentence.strip(),
                           "reason": reason, "t": turn.now()})
 
@@ -1340,6 +1354,8 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
             await mark_first()
             await emit(delta)
         turn.meter.add_usage(TRANSLATOR, turn.server)
+
+    last = {}            # the conversation and model the reply was last written from
 
     async def generate_answer():
         prepared = None
@@ -1410,6 +1426,7 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
                               "t": max(0.0, prepared.started - turn.t0)})
 
         convo = prepared.convo
+        last.update(convo=convo, model=prepared.route["model"])
         calls = []
         async for kind, payload in prepared.talk.read():
             if kind == "text":
@@ -1476,6 +1493,13 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
                 sources.append(orders.describe(record))
                 notes.append(f"Earlier order lookup ({record.get('number')}):\n"
                              + orders.describe(record))
+                applies = [(sc, sec) for sc, sec in order_policy(record)
+                           if f"{sec.doc} — {sec.heading}" not in turn.kb_hits]
+                if applies:
+                    policy_text = kb_context(applies)
+                    sources.append(policy_text)
+                    detail += ("\n\nThe policy that applies to this order:\n\n" + policy_text)
+                    turn.kb_hits += [f"{sec.doc} — {sec.heading}" for _, sec in applies]
 
                 # Whose order it is decides whose memory this is — once they
                 # confirm the email on it.
@@ -1492,6 +1516,7 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
                           "caller for their order number — do not claim to have "
                           "checked anything.")
             convo = convo + [{"role": "system", "content": detail}]
+            last.update(convo=convo)
             follow = {}
             async for kind, payload in stream_tools(
                     llm, convo, model=prepared.route["model"],
@@ -1504,6 +1529,7 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
         if acted:
             detail = await carry_out(acted[0], prompt, session, turn, turn_id, chan, sources, notes)
             convo = convo + [{"role": "system", "content": detail}]
+            last.update(convo=convo)
             follow = {}
             async for kind, payload in stream_tools(llm, convo, model=prepared.route["model"],
                                                     stats=follow):
@@ -1559,6 +1585,7 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
                     {"role": "assistant", "content": spoken},
                     {"role": "system", "content": grounded_prompt(results)},
                 ]
+                last.update(convo=grounded)
                 follow = {}
                 async for kind, payload in stream_tools(llm, grounded, model=prepared.route["model"],
                                                         stats=follow):
@@ -1573,8 +1600,34 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
             else:
                 await generate_answer()
             await gate.close()
+            if held_any and last.get("convo") and not interpreting:
+                # Try once more from the records, checked the same way, rather
+                # than leave the caller with only "let me double-check".
+                first_round = list(held_any)
+                held_any.clear()
+                retry = Gate(llm, sources, release, on_held, enabled=opts["check"], turn=turn)
+                said_so_far = reply.strip() or "(nothing yet)"
+                listing = "\n".join(f"- {s} ({why})" for s, why in first_round)
+                again = last["convo"] + [
+                    {"role": "assistant", "content": said_so_far},
+                    {"role": "system", "content": RETRY_RULE.format(held=listing)},
+                ]
+                follow = {}
+                try:
+                    async for kind, payload in stream_tools(llm, again, model=last["model"],
+                                                            stats=follow):
+                        if kind == "text":
+                            await retry.feed(payload)
+                    await retry.close()
+                except Exception as exc:
+                    retry.cancel()
+                    log_error(exc, "rewriting held sentences")
+                    held_any.append(("", "rewrite failed"))
+                turn.meter.add_usage(last["model"], follow)
+                await chan.event({"type": "recovered", "turn_id": turn_id,
+                                  "ok": not held_any, "held": len(first_round)})
             if held_any:
-                # Something was held back: say so rather than leave a gap.
+                # Still unsupported after a rewrite: say so rather than leave a gap.
                 await release(REPAIR.get(code, REPAIR["en"]))
             if turn.checks["checked"]:
                 await chan.event({"type": "checked", "turn_id": turn_id, **turn.checks})
@@ -1701,6 +1754,36 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
                           "reason": handoff["reason"]})
         return {"handoff": handoff}
     return None
+
+
+ORDER_POLICY_QUERY = {
+    "lost": "order late lost replacement refund",
+    "late": "order late delivery charge refunded",
+    "delivered": "return window refund faulty",
+    "returning": "how long refund takes return",
+    "refunded": "how long refund takes",
+    "cancelled": "how long refund takes",
+    "preparing": "standard delivery dispatch",
+    "in transit": "tracking delivery late",
+}
+
+
+def order_policy(record):
+    """The policy sections that decide what can happen to this order next.
+
+    The question itself ("where's my order?") rarely names the policy, so the
+    lookup brings it, and the model and the fact-checker both see it.
+    """
+    if not record or not record.get("found"):
+        return []
+    if record.get("counts_as_lost"):
+        key = "lost"
+    elif record.get("counts_as_late"):
+        key = "late"
+    else:
+        key = record.get("status") or "in transit"
+    query = ORDER_POLICY_QUERY.get(key) or ORDER_POLICY_QUERY["in transit"]
+    return KB.find(query, k=2)
 
 
 def call_cost(session):
