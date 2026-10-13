@@ -1,0 +1,13 @@
+{
+  "_read_me": "Estimates in US dollars, used for the live cost meter. They are placeholders: check cloud.sambanova.ai pricing and your Cartesia plan, and edit these. Per-model prices are [input, output] per million tokens.",
+  "sambanova_per_million_tokens": {
+    "Meta-Llama-3.3-70B-Instruct": [0.60, 1.20],
+    "Meta-Llama-3.1-8B-Instruct": [0.10, 0.20],
+    "gpt-oss-120b": [0.22, 0.59],
+    "gemma-4-31B-it": [0.30, 0.60],
+    "MiniMax-M3": [0.40, 1.60],
+    "default": [0.60, 1.20]
+  },
+  "cartesia_per_character": 0.00004,
+  "human_agent_cost_per_call": null
+}

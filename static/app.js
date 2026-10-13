@@ -11,7 +11,7 @@ const ui = {
   send: el('send'), stop: el('stop'),
   hint: el('hint'), canvas: el('timeline'), log: el('log'),
   pickModel: el('pick-model'), pickVoice: el('pick-voice'),
-  pickSearch: el('pick-search'),
+  pickSearch: el('pick-search'), pickLang: el('pick-lang'),
   attach: el('attach'), camera: el('camera'), file: el('file'),
   stage: el('stage'), selfview: el('selfview'), shots: el('shots'),
   grab: el('grab'), clearShots: el('clear-shots'), stageNote: el('stage-note'),
@@ -24,6 +24,17 @@ const ui = {
   callMic: el('call-mic'), callCam: el('call-cam'), callUpload: el('call-upload'),
   endCall: el('end-call'), callTrouble: el('call-trouble'), nocam: el('nocam'),
   wrapPanel: el('wrapup-panel'), wrapup: el('wrapup'), wrapMeta: el('wrapup-meta'),
+  intro: el('intro'), live: el('live'), liveYou: el('live-you'), liveThem: el('live-them'),
+  orb: el('orb'), orbState: el('orb-state'),
+  pickCheck: el('pick-check'), pickEarly: el('pick-early'), pickInterp: el('pick-interp'),
+  interpSwap: el('interp-swap'), share: el('share'), callShare: el('call-share'),
+  shareBar: el('share-bar'), shareStop: el('share-stop'), audioNote: el('m-audio-note'),
+  callerPanel: el('caller-panel'), callerTitle: el('caller-title'),
+  callerStatus: el('caller-status'), callerCalls: el('caller-calls'),
+  memoryReset: el('memory-reset'),
+  visuals: el('visuals'), replayCall: el('replay-call'),
+  costTurn: el('cost-turn'), costCall: el('cost-call'), costTokens: el('cost-tokens'),
+  costChars: el('cost-chars'), costHuman: el('cost-human'),
 };
 
 const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
@@ -59,6 +70,8 @@ function newTurn(id, prompt, model) {
     playStart: null,
     searchQuery: null, sources: null, searchS: null,
     attachments: 0, sawThumbs: null,
+    thinkStart: null, thinkEnd: null, draftLead: null, thinker: null,
+    cards: [], speaker: null, replaying: false,
     node: null, card: null,
   };
 }
@@ -71,10 +84,20 @@ let audioCtx = null;
 let playhead = 0;
 let sources = [];            // live BufferSourceNodes, so barge-in can stop them
 
+let outNode = null;           // everything we play goes through here...
+let outAnalyser = null;      // ...so the voice field can see what is being said
+let inAnalyser = null;       // and this one hears the caller
+
 function ensureAudio() {
   if (!audioCtx) {
     const Ctx = window.AudioContext || window.webkitAudioContext;
     audioCtx = new Ctx();
+    outNode = audioCtx.createGain();
+    outAnalyser = audioCtx.createAnalyser();
+    outAnalyser.fftSize = 512;
+    outAnalyser.smoothingTimeConstant = 0.72;
+    outNode.connect(outAnalyser);
+    outAnalyser.connect(audioCtx.destination);
   }
   if (audioCtx.state === 'suspended') audioCtx.resume();
   return audioCtx;
@@ -108,7 +131,7 @@ function speak(samples) {
 
   const src = ctx.createBufferSource();
   src.buffer = buf;
-  src.connect(ctx.destination);
+  src.connect(outNode || ctx.destination);
 
   const at = Math.max(playhead, ctx.currentTime + 0.08);
   src.start(at);
@@ -124,6 +147,7 @@ function speak(samples) {
       const done = playingId !== null ? turns.get(playingId) : null;
       if (done && done.status === 'playing') done.status = 'played';
       playingId = null;
+      if (settleLater) { settleLater = false; settle(); }
     }
   };
   return at;
@@ -144,6 +168,7 @@ function playTurn(id) {
   stopAudio();                       // one answer at a time
   ensureAudio();
   playingId = id;
+  showLive(id, turn.prompt, turn.node ? turn.node.body.textContent : '');
   turn.played = true;
   if (turn.status === 'ready') turn.status = 'playing';
   flush(turn);
@@ -152,7 +177,36 @@ function playTurn(id) {
   render();
 }
 
+// Roughly how much of a turn's text the caller heard before playback stopped.
+// Exact once the whole reply is synthesised (chars per audio-second of this
+// very reply); before that, an ordinary speaking rate.
+const SPOKEN_CPS = 14;
+
+function heardChars(t) {
+  if (t.playStart === null || !audioCtx) return 0;
+  const heard = Math.min(Math.max(0, audioCtx.currentTime - t.playStart), t.buffered);
+  const cps = (t.textDone !== null && t.audioDone !== null && t.buffered > 0)
+    ? t.chars / t.buffered : SPOKEN_CPS;
+  return Math.round(heard * cps);
+}
+
+// Stopping the speaker used to be browser-only: the server kept generating
+// and synthesising, held one of the two Cartesia slots until it finished, and
+// recorded the whole reply as if it had been heard.
+function cutShort(t) {
+  if (!t || !ws || ws.readyState !== WebSocket.OPEN) return;
+  if (t.replaying) { t.replaying = false; return; }   // stopping a replay changes nothing
+  const stillRunning = t.status === 'thinking';
+  const unheard = t.playStart === null || !audioCtx
+    || (audioCtx.currentTime - t.playStart) < t.buffered - 0.25;
+  if (!stillRunning && !unheard) return;          // it finished; nothing to cut
+  ws.send(JSON.stringify({ type: 'cancel', turn_id: t.id, heard_chars: heardChars(t) }));
+}
+
 function stopAudio() {
+  new Set([playingId, liveId]).forEach((id) => {
+    if (id !== null) cutShort(turns.get(id));
+  });
   sources.forEach((s) => { try { s.stop(); } catch (e) { /* already ended */ } });
   sources = [];
   playhead = audioCtx ? audioCtx.currentTime : 0;
@@ -237,8 +291,12 @@ function hideChooser() {
 }
 
 // Called whenever a turn finishes: decide what, if anything, to play.
+let settleLater = false;
 function settle() {
   if (running().length) return;         // still work in flight
+  // Something is still audible (a handoff line, say): play what is waiting
+  // once it finishes, rather than cutting it off.
+  if (sources.length || playingId !== null) { settleLater = true; return; }
   const waiting = awaiting();
   if (!waiting.length) return;
   if (waiting.length === 1) {
@@ -252,13 +310,17 @@ function settle() {
 
 const LANES = [
   { key: 'llm',     label: 'SambaNova', sub: 'text' },
+  { key: 'think',   label: 'Reasoning', sub: 'when needed' },
   { key: 'tts',     label: 'Cartesia',  sub: 'audio' },
   { key: 'speaker', label: 'Speaker',   sub: 'playing' },
 ];
 
 const PAD_L = 104, PAD_R = 12, LANE_H = 20, LANE_GAP = 12, TOP = 14;
 const AXIS_Y = TOP + LANES.length * (LANE_H + LANE_GAP) + 6;
-const VIEW_W = 880, VIEW_H = 150;
+// The width follows the panel it sits in, so the timeline is drawn crisp at
+// whatever size the layout gives it instead of being scaled or scrolled.
+let VIEW_W = 880;
+const VIEW_H = 178;
 
 function niceStep(span) {
   const raw = span / 6;
@@ -277,7 +339,11 @@ function drawTimeline() {
 
   const c = ui.canvas;
   const dpr = window.devicePixelRatio || 1;
-  if (c.width !== VIEW_W * dpr) { c.width = VIEW_W * dpr; c.height = VIEW_H * dpr; }
+  VIEW_W = Math.max(320, Math.floor((c.parentElement && c.parentElement.clientWidth) || 880));
+  if (c.width !== VIEW_W * dpr || c.height !== VIEW_H * dpr) {
+    c.width = VIEW_W * dpr; c.height = VIEW_H * dpr;
+    c.style.width = `${VIEW_W}px`; c.style.height = `${VIEW_H}px`;
+  }
   const g = c.getContext('2d');
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   g.clearRect(0, 0, VIEW_W, VIEW_H);
@@ -289,7 +355,7 @@ function drawTimeline() {
   const X = (t) => PAD_L + Math.min(t / domain, 1) * plotW;
 
   const ink = css('--ink'), faint = css('--faint');
-  g.font = '10.5px "IBM Plex Mono", monospace';
+  g.font = '10.5px "Schibsted Grotesk", system-ui, sans-serif';
 
   const step = niceStep(domain);
   g.strokeStyle = css('--hairline');
@@ -325,23 +391,24 @@ function drawTimeline() {
     }
     if (lane.key === 'llm') {
       const id = (turn && turn.model) || (ui.pickModel && ui.pickModel.value);
-      if (id) return shortModel(id).slice(0, 18);
+      if (id && id !== 'auto') return shortModel(id).slice(0, 18);
     }
+    if (lane.key === 'think' && turn && turn.thinker) return shortModel(turn.thinker).slice(0, 18);
     return lane.sub;
   };
 
   LANES.forEach((lane, row) => {
     const y = TOP + row * (LANE_H + LANE_GAP);
     g.textAlign = 'right';
-    g.fillStyle = ink; g.font = '11.5px "IBM Plex Mono", monospace';
+    g.fillStyle = ink; g.font = '11.5px "Schibsted Grotesk", system-ui, sans-serif';
     g.fillText(lane.label, PAD_L - 12, y + 10);
-    g.fillStyle = faint; g.font = '10px "IBM Plex Mono", monospace';
+    g.fillStyle = faint; g.font = '10px "Schibsted Grotesk", system-ui, sans-serif';
     g.fillText(subFor(lane), PAD_L - 12, y + 21);
   });
 
   if (!turn) {
     g.fillStyle = faint;
-    g.font = '11.5px "IBM Plex Mono", monospace';
+    g.font = '11.5px "Schibsted Grotesk", system-ui, sans-serif';
     g.textAlign = 'left';
     g.fillText('idle — waiting for a prompt', PAD_L + 10, TOP + 12);
     return;
@@ -358,33 +425,43 @@ function drawTimeline() {
     bar(0, turn.firstToken, turn.textDone !== null ? turn.textDone : now, css('--llm'));
 
     if (turn.inferTtft && turn.overhead > 0.05) {
-      const midX = X(Math.max(0, turn.firstToken - turn.inferTtft) / 2);
-      g.fillStyle = css('--muted');
-      g.font = '10px "IBM Plex Mono", monospace';
-      g.textAlign = 'center';
-      g.fillText(`${Math.round(turn.overhead * 1000)} ms network`, midX, TOP + 13);
+      // Label the wire's share of the wait only when the bar is wide enough
+      // to hold it; otherwise it spills over the lane labels.
+      const wireEnd = X(Math.max(0, turn.firstToken - turn.inferTtft));
+      const label = `${Math.round(turn.overhead * 1000)} ms network`;
+      g.font = '10px "Schibsted Grotesk", system-ui, sans-serif';
+      if (wireEnd - PAD_L > g.measureText(label).width + 10) {
+        g.fillStyle = css('--ink');
+        g.textAlign = 'center';
+        g.fillText(label, (PAD_L + wireEnd) / 2, TOP + 13);
+      }
     }
+  }
+
+  // The reasoning model works alongside the talker, not after it.
+  if (turn.thinkStart !== null) {
+    bar(1, turn.thinkStart, turn.thinkEnd !== null ? turn.thinkEnd : now, css('--think'));
   }
 
   if (turn.firstToken !== null) {
     const ttsEnd = turn.firstAudio !== null ? turn.firstAudio : now;
-    bar(1, turn.firstToken, ttsEnd, css('--tts-soft'));
+    bar(2, turn.firstToken, ttsEnd, css('--tts-soft'));
     if (turn.firstAudio !== null) {
-      bar(1, turn.firstAudio, turn.audioDone !== null ? turn.audioDone : now, css('--tts'));
+      bar(2, turn.firstAudio, turn.audioDone !== null ? turn.audioDone : now, css('--tts'));
     }
   }
 
   if (turn.firstAudio !== null) {
     const bufEnd = turn.firstAudio + turn.buffered;
-    bar(2, turn.firstAudio, bufEnd, css('--tts-soft'));
+    bar(3, turn.firstAudio, bufEnd, css('--tts-soft'));
     if (turn.playStart !== null && audioCtx) {
       const heard = turn.firstAudio + Math.max(0, audioCtx.currentTime - turn.playStart);
-      bar(2, turn.firstAudio, Math.min(heard, bufEnd), css('--play'));
+      bar(3, turn.firstAudio, Math.min(heard, bufEnd), css('--play'));
     }
     if (bufEnd > domain) {
-      const y = TOP + 2 * (LANE_H + LANE_GAP);
+      const y = TOP + 3 * (LANE_H + LANE_GAP);
       g.fillStyle = css('--ground');
-      g.font = '600 11px "IBM Plex Mono", monospace';
+      g.font = '600 11px "Schibsted Grotesk", system-ui, sans-serif';
       g.textAlign = 'right';
       g.fillText('▸', VIEW_W - PAD_R - 4, y + 14);
     }
@@ -489,11 +566,21 @@ function addMessage(cls, who, text) {
   const what = document.createElement('div');
   what.className = 'what';
   const body = document.createElement('span');
+  body.dir = 'auto';            // Arabic replies read right to left
   body.textContent = text;
   what.append(body);
   row.append(w, what);
   ui.log.append(row);
+  followLog(true);
   return { row, what, body, cursor: null };
+}
+
+// Keep the newest line in view, unless the reader has scrolled up to look at
+// something earlier — yanking them back down mid-read is worse than lagging.
+function followLog(force) {
+  const box = ui.log;
+  const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
+  if (force || nearBottom) box.scrollTop = box.scrollHeight;
 }
 
 function showCursor(m) {
@@ -506,6 +593,54 @@ function showCursor(m) {
 function hideCursor(m) {
   if (m && m.cursor) { m.cursor.remove(); m.cursor = null; }
 }
+
+// One quiet line under a reply, saying what happened behind it.
+function note(turn, text, kind) {
+  if (!turn || !turn.node) return;
+  const p = document.createElement('p');
+  p.className = `cmeta note-${kind || 'x'}`;
+  p.textContent = text;
+  turn.node.row.append(p);
+  followLog(false);
+}
+
+function showCaller(m) {
+  ui.callerPanel.hidden = false;
+  ui.callerCalls.innerHTML = '';
+  ui.callerPanel.dataset.status = m.status;
+  if (m.status === 'verified') {
+    ui.callerTitle.textContent = m.name || 'Caller';
+    ui.callerStatus.textContent = m.calls.length
+      ? `Recognised from order ${m.order}. ${m.calls.length} earlier call${m.calls.length === 1 ? '' : 's'} in memory:`
+      : `Recognised from order ${m.order}. First call on record.`;
+    m.calls.forEach((c) => {
+      const li = document.createElement('li');
+      const when = document.createElement('span');
+      when.className = 'when';
+      when.textContent = c.at.slice(0, 10) + (c.seeded ? '' : ', saved by this demo');
+      const what = document.createElement('span');
+      what.textContent = c.summary;
+      li.append(when, what);
+      if (c.actions && c.actions !== 'none') {
+        const a = document.createElement('span');
+        a.className = 'agreed';
+        a.textContent = `Agreed: ${c.actions}`;
+        li.append(a);
+      }
+      ui.callerCalls.append(li);
+    });
+  } else if (m.status === 'mismatch') {
+    ui.callerTitle.textContent = 'Caller not verified';
+    ui.callerStatus.textContent = `That email does not match order ${m.order}. Nothing from their history is shared.`;
+  } else {
+    ui.callerTitle.textContent = 'Caller';
+    ui.callerStatus.textContent = `Order ${m.order} belongs to ${m.email}. Waiting for the caller to confirm that email before their history is used.`;
+  }
+}
+
+ui.memoryReset.addEventListener('click', () => {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'memory_reset' }));
+});
 
 function renderSources(turn) {
   const box = document.createElement('div');
@@ -598,6 +733,9 @@ const ms = (v) => (v === null || v === undefined) ? '—' : `${Math.round(v * 10
 function showMetrics(t) {
   el('m-token').innerHTML = secs(t ? t.firstToken : null);
   el('m-audio').innerHTML = secs(t ? t.firstAudio : null);
+  ui.audioNote.textContent = t && t.draftLead
+    ? `Answer started ${t.draftLead.toFixed(1)} s before you finished`
+    : 'From sending the question to hearing the reply';
   el('m-text').innerHTML = secs(t ? t.textDone : null);
   el('m-chars').textContent = t ? `${t.chars} chars` : '—';
   const rt = t && t.audioDone ? t.buffered / t.audioDone : null;
@@ -639,6 +777,7 @@ const LOOKING = /\b(look(s|ing)?|see|show|watch|find|match|similar|identify|read
 const SEEING = /\b(see|look|watch|showing|holding|view)\b/i;
 
 function wantsEyes(text) {
+  if (sharingScreen) return true;      // a shared window is shared for a reason
   return SEEING.test(text) || (DEICTIC.test(text) && LOOKING.test(text));
 }
 
@@ -695,6 +834,8 @@ async function enterCall() {
 
   if (problems.length) callTrouble(`${problems.join(' and ')} — the rest of the call still works.`);
   refreshCallState();
+  // The call takes most of the column; keep the latest exchange in view.
+  requestAnimationFrame(() => followLog(true));
 }
 
 function showCallVideo() {
@@ -771,7 +912,15 @@ function fillPickers(m) {
       : '';
     ui.pickModel.append(o);
   });
-  ui.pickModel.value = models.includes(wantModel) ? wantModel : m.llm_model;
+  // Auto routes each turn: small talk to the smallest model, hard questions
+  // to a reasoning model working alongside the talker.
+  const auto = document.createElement('option');
+  auto.value = 'auto';
+  auto.textContent = 'Auto, per turn';
+  auto.title = `Small talk: ${m.quick_model || 'smallest model'}. Hard questions: ${m.think_model || 'reasoning model'} thinks while ${m.llm_model} talks.`;
+  ui.pickModel.prepend(auto);
+  ui.pickModel.value = (wantModel === 'auto' || !wantModel) ? 'auto'
+    : (models.includes(wantModel) ? wantModel : 'auto');
 
   const voices = m.voices || [];
   ui.pickVoice.innerHTML = '';
@@ -793,16 +942,20 @@ function fillPickers(m) {
     ui.pickVoice.value = ids.includes(want) ? want
       : (ids.includes(m.default_voice) ? m.default_voice : ids[0]);
   }
-  ui.llmModel.textContent = shortModel(ui.pickModel.value);
+  ui.llmModel.textContent = ui.pickModel.value === 'auto' ? 'Auto' : shortModel(ui.pickModel.value);
 }
 
 ui.pickModel.addEventListener('change', () => {
   remember('voiceloop.model', ui.pickModel.value);
-  ui.llmModel.textContent = shortModel(ui.pickModel.value);
+  ui.llmModel.textContent = ui.pickModel.value === 'auto' ? 'Auto' : shortModel(ui.pickModel.value);
 });
 ui.pickVoice.addEventListener('change', () => remember('voiceloop.voice', ui.pickVoice.value));
 ui.pickSearch.addEventListener('change', () => remember('voiceloop.search', ui.pickSearch.checked ? '1' : '0'));
 if (recall('voiceloop.search') === '0') ui.pickSearch.checked = false;
+ui.pickCheck.addEventListener('change', () => remember('voiceloop.check', ui.pickCheck.checked ? '1' : '0'));
+ui.pickEarly.addEventListener('change', () => remember('voiceloop.early', ui.pickEarly.checked ? '1' : '0'));
+if (recall('voiceloop.check') === '0') ui.pickCheck.checked = false;
+if (recall('voiceloop.early') === '0') ui.pickEarly.checked = false;
 
 
 /* ------------------------------------------------------- attachments */
@@ -820,8 +973,13 @@ let MAX_FRAMES = 8;
 let pending = [];        // data URLs queued for the next turn
 let camStream = null;
 
+// Text in a dialog box does not survive 512 px; a screen frame is sent at
+// the size it needs to stay readable.
+const SCREEN_EDGE = 1440;
+
 function drawScaled(source, w, h) {
-  const scale = Math.min(1, FRAME_EDGE / Math.max(w, h));
+  const edge = (sharingScreen && (source === ui.selfview || source === ui.callView)) ? SCREEN_EDGE : FRAME_EDGE;
+  const scale = Math.min(1, edge / Math.max(w, h));
   const canvas = document.createElement('canvas');
   canvas.width = Math.round(w * scale);
   canvas.height = Math.round(h * scale);
@@ -910,7 +1068,9 @@ function updateStage() {
   ui.attach.classList.toggle('on', pending.length > 0);
   ui.stageNote.textContent = pending.length
     ? `${pending.length} of ${MAX_FRAMES} attached — they go with your next message`
-    : (live ? 'camera on — capture a frame, or just ask and it will grab one' : '');
+    : (live ? (sharingScreen
+      ? 'Sharing a window. Ask about it and the agent reads a frame of it.'
+      : 'Camera on. Capture a frame, or just ask and it grabs one.') : '');
 }
 
 function addFrames(urls) {
@@ -1026,6 +1186,7 @@ async function startCamera(deviceId) {
 }
 
 function stopCamera() {
+  if (sharingScreen) { stopScreen(); return; }
   if (camStream) camStream.getTracks().forEach((t) => t.stop());
   camStream = null;
   ui.selfview.srcObject = null;
@@ -1214,19 +1375,34 @@ function onEvent(m) {
         ui.pickVoice.disabled = true;
       }
       if (m.max_frames) MAX_FRAMES = m.max_frames;
+      humanCost = typeof m.human_cost === 'number' ? m.human_cost : null;
       if (m.vision_model) ui.camera.title = `Camera — read by ${m.vision_model}`;
       ui.send.disabled = false;
       ui.mic.disabled = !SpeechCtor;
       break;
 
     case 'turn_start': {
+      if (m.interpreting) {
+        // The other person answers in the language they just heard.
+        setRecLang(m.interpreting.to);
+        updateSwap();
+      } else if (m.language) {
+        followLanguage(m.language);
+      }
       const t = newTurn(m.turn_id, m.prompt, m.model);
+      t.speaker = m.speaker || null;
       t.attachments = m.attachments || 0;
       if (t.attachments) { t.sawThumbs = lastSent.slice(); lastSent = []; }
       if (m.speculative) t.speculative = true;
       turns.set(m.turn_id, t);
-      addMessage('you', 'you', m.prompt);
-      t.node = addMessage('bot', 'reply', '');
+      if (m.intro && m.speaker) {
+        // A specialist taking over speaks first; nobody asked anything new.
+        showLive(m.turn_id, `${m.speaker.name} from ${m.speaker.team} joined`, '', true);
+      } else {
+        showLive(m.turn_id, m.prompt, '');
+        addMessage('you', 'you', m.prompt);
+      }
+      t.node = addMessage('bot', m.speaker ? m.speaker.name : 'reply', '');
       showCursor(t.node);
       // Only a lone request may play as it streams.
       liveId = (running().length === 1 && !awaiting().length && playingId === null)
@@ -1245,7 +1421,9 @@ function onEvent(m) {
     case 'token':
       if (!turn) break;
       turn.chars += m.text.length;
-      turn.node.body.textContent += m.text;
+      turn.node.body.append(document.createTextNode(m.text));
+      followLog(false);
+      if (m.turn_id === liveTurn) ui.liveThem.append(document.createTextNode(m.text));
       if (inCall) ui.capThem.textContent = turn.node.body.textContent;
       if (m.turn_id === selectedId) showMetrics(turn);
       break;
@@ -1306,10 +1484,11 @@ function onEvent(m) {
         turn.visionS = m.took_s;
         if (turn.lookNote) {
           turn.lookNote.className = 'cmeta mono';
-          const what = turn.attachments > 1 ? `${turn.attachments} frames` : 'the image';
+          const what = m.screen ? 'your screen'
+            : (turn.attachments > 1 ? `${turn.attachments} frames` : 'the image');
           turn.lookNote.textContent = turn.speculative
-            ? `${m.model} had already read ${what} — ${Math.round(m.took_s * 1000)} ms wait · ${m.prompt_tokens} tokens`
-            : `${m.model} read ${what} in ${Math.round(m.took_s * 1000)} ms · ${m.prompt_tokens} tokens`;
+            ? `${m.model} had already read ${what}, so the wait was ${Math.round(m.took_s * 1000)} ms`
+            : `${m.model} read ${what} in ${Math.round(m.took_s * 1000)} ms`;
         }
         renderVision(turn, m.description);
       }
@@ -1335,8 +1514,120 @@ function onEvent(m) {
           : ((liveId === m.turn_id || playingId === m.turn_id) ? 'playing' : 'ready');
         if (liveId === m.turn_id) turn.played = true;
         hideCursor(turn.node);
+        if (m.metrics.cost) showCost(m.metrics.cost, m.metrics.cost_call);
+        addReplay(turn);
       }
       if (m.turn_id === selectedId) showMetrics(turn);
+      render();
+      break;
+
+    case 'route':
+      if (turn) {
+        turn.model = m.model;
+        turn.thinker = m.thinker || null;
+        if (m.tier === 'deep') {
+          note(turn, `Needs working out: ${shortModel(m.thinker)} reasoned while ${shortModel(m.model)} talked`, 'route');
+        } else if (m.tier === 'interpret') {
+          note(turn, `Interpreted ${m.reason} by ${shortModel(m.model)}`, 'route');
+        } else {
+          const why = m.tier === 'quick' ? 'small talk, so the smallest model'
+            : (m.reason === 'chosen in the picker' ? 'the model you picked' : m.reason);
+          note(turn, `Answered by ${shortModel(m.model)}: ${why}`, 'route');
+        }
+      }
+      break;
+
+    case 'draft_used':
+      if (turn) {
+        turn.draftLead = m.lead_s;
+        note(turn, `Started answering ${m.lead_s.toFixed(1)} s before you finished`, 'early');
+        if (m.turn_id === selectedId) showMetrics(turn);
+      }
+      break;
+
+    case 'mood':
+      if (turn && m.mood !== 'neutral') {
+        const said = { frustrated: 'You sound frustrated', settling: 'Calming down',
+          confused: 'You sound unsure', hurried: 'You sound in a hurry' }[m.mood] || m.mood;
+        note(turn, `${said}: ${m.says}`, 'mood');
+      }
+      break;
+
+    case 'thinking':
+      if (turn) turn.thinkStart = m.t;
+      break;
+
+    case 'thought':
+      if (turn) {
+        turn.thinkEnd = m.t;
+        note(turn, m.ok
+          ? `${shortModel(m.model)} reasoned for ${m.took_s.toFixed(1)} s`
+          : `${shortModel(m.model)} did not answer; the talker finished instead`, 'think');
+      }
+      break;
+
+    case 'held':
+      if (turn) {
+        const del = document.createElement('del');
+        del.title = `Held back: ${m.reason}`;
+        del.textContent = m.sentence + ' ';
+        turn.node.body.append(del);
+        note(turn, `Held back before speaking: ${m.reason}`, 'held');
+      }
+      break;
+
+    case 'checked':
+      if (turn) {
+        note(turn, m.held
+          ? `Fact-checked ${m.checked} sentence${m.checked === 1 ? '' : 's'} against the records, held back ${m.held}`
+          : `Fact-checked ${m.checked} sentence${m.checked === 1 ? '' : 's'} against the records`, 'check');
+      }
+      break;
+
+    case 'caller':
+      showCaller(m);
+      break;
+
+    case 'order':
+      if (turn && m.found) addCard(turn, { ...m, kind: 'order' });
+      break;
+
+    case 'knowledge':
+      if (turn && m.excerpts && m.excerpts.length) addCard(turn, { kind: 'policy', excerpts: m.excerpts });
+      break;
+
+    case 'action':
+      if (turn) {
+        addCard(turn, { ...m, kind: 'action', action: m.kind });
+        note(turn, `Done: ${ACTION_TITLE[m.kind] || m.kind}, reference ${m.ref}`, 'action');
+      }
+      break;
+
+    case 'handoff':
+      if (turn) {
+        addCard(turn, { ...m, kind: 'handoff' });
+        note(turn, `Transferred to ${m.name} (${m.label})`, 'handoff');
+      }
+      break;
+
+    case 'memory':
+      ui.callerPanel.hidden = true;
+      ui.hint.className = 'hint';
+      ui.hint.textContent = 'Memory reset. The seeded customers are back, and every call since is forgotten.';
+      break;
+
+    case 'cancelled':
+      if (turn) {
+        hideCursor(turn.node);
+        turn.played = true;
+        turn.status = 'played';
+        if (turn.audioDone === null) turn.audioDone = since(turn);
+        const note = document.createElement('p');
+        note.className = 'cmeta mono';
+        note.textContent = 'interrupted — stopped on the server too';
+        turn.node.what.after(note);
+      }
+      if (liveId === m.turn_id) liveId = null;
       render();
       break;
 
@@ -1363,6 +1654,10 @@ function onEvent(m) {
 
     case 'wrapup':
       showWrapup(m.note);
+      if (m.cost_call) showCost(null, m.cost_call);
+      if (m.remembered) {
+        ui.wrapMeta.textContent += `. Saved to ${m.caller || 'the caller'}'s history.`;
+      }
       break;
 
     case 'rejected':
@@ -1420,21 +1715,84 @@ function submit(text) {
   ui.prompt.value = '';
   ui.hint.className = 'hint mono';
   hideChooser();
+  if (draftTimer) { clearTimeout(draftTimer); draftTimer = null; }
+  const draft = currentDraft && sameWords(currentDraft.text, value) ? currentDraft.id : null;
+  currentDraft = null;
   ws.send(JSON.stringify({
     type: 'prompt',
     text: value,
+    ...turnOptions(),
+    prelook,
+    images,
+    draft,
+  }));
+}
+
+// Everything that shapes how a turn is answered. Drafts send the same, so a
+// draft made under different settings is never mistaken for the real turn.
+function turnOptions() {
+  return {
     model: ui.pickModel.value,
     voice_id: ui.pickVoice.value,
     search: ui.pickSearch.checked,
+    check: ui.pickCheck.checked,
+    language: ui.pickLang.value === 'auto' ? null : ui.pickLang.value,
+    mode: ui.pickInterp.checked ? 'interpret' : 'agent',
+    pair: interpPair(),
+    source: sharingScreen ? 'screen' : 'camera',
     call: inCall,
-    prelook,
-    images,
-  }));
+  };
 }
+
+/* ----------------------------------------------------------- early answers */
+
+// When the caller pauses mid-sentence, or stops typing, start answering what
+// they have said so far. If that turns out to be the whole question, the
+// answer is already written by the time they finish; if they carry on, the
+// draft is thrown away and never heard.
+let draftSeq = 0;
+let currentDraft = null;
+let draftTimer = null;
+const DRAFT_PAUSE_SPEECH = 320;
+const DRAFT_PAUSE_TYPING = 450;
+
+const wordsOf = (t) => (t || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, '').split(/\s+/).filter(Boolean);
+const sameWords = (a, b) => wordsOf(a).join(' ') === wordsOf(b).join(' ');
+
+function canDraft(text) {
+  if (!ui.pickEarly.checked || ui.pickInterp.checked) return false;
+  if (!ws || ws.readyState !== WebSocket.OPEN || !connected) return false;
+  if (pending.length || camStream) return false;        // looking needs the real turn
+  return wordsOf(text).length >= 3;
+}
+
+function sendDraft(text) {
+  if (!canDraft(text)) return;
+  if (currentDraft && sameWords(currentDraft.text, text)) return;
+  const id = ++draftSeq;
+  currentDraft = { id, text };
+  ws.send(JSON.stringify({ type: 'draft', id, text, ...turnOptions() }));
+}
+
+function draftSoon(text, wait) {
+  if (draftTimer) clearTimeout(draftTimer);
+  draftTimer = setTimeout(() => { draftTimer = null; sendDraft(text); }, wait);
+}
+
+ui.prompt.addEventListener('input', () => {
+  if (listening) return;               // speech drives drafts while the mic is on
+  draftSoon(ui.prompt.value.trim(), DRAFT_PAUSE_TYPING);
+});
 
 let lastSent = [];
 
 ui.send.addEventListener('click', () => submit());
+
+// Starter prompts on the empty transcript, for demoing without a script.
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-prompt]');
+  if (b) submit(b.dataset.prompt);
+});
 ui.prompt.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
 ui.stop.addEventListener('click', () => { stopAudio(); render(); updateStopButton(); });
 
@@ -1454,7 +1812,9 @@ async function startMeter() {
     const ctx = ensureAudio();
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.6;
     ctx.createMediaStreamSource(micStream).connect(analyser);
+    inAnalyser = analyser;
     const data = new Uint8Array(analyser.fftSize);
     const loop = () => {
       analyser.getByteTimeDomainData(data);
@@ -1471,6 +1831,7 @@ function stopMeter() {
   if (meterRaf) cancelAnimationFrame(meterRaf);
   meterRaf = null;
   ui.micLevel.style.height = '0%';
+  inAnalyser = null;
   if (micStream) micStream.getTracks().forEach((t) => t.stop());
   micStream = null;
 }
@@ -1508,7 +1869,7 @@ function startPrelook() {
   if (!url || !ws || ws.readyState !== WebSocket.OPEN) return;
   const id = ++prelookSeq;
   pendingLook = { id, url };
-  ws.send(JSON.stringify({ type: 'prelook', id, images: [url] }));
+  ws.send(JSON.stringify({ type: 'prelook', id, images: [url], source: sharingScreen ? 'screen' : 'camera' }));
 }
 
 function sendWhatWasSaid() {
@@ -1522,7 +1883,7 @@ function startListening() {
   if (listening || !SpeechCtor) return;
 
   rec = new SpeechCtor();
-  rec.lang = 'en-US';
+  rec.lang = SPEECH_LANG[recLang] || 'en-US';
   rec.interimResults = true;
   rec.continuous = true;        // stay open; do not stop after one utterance
   handsFree = true;
@@ -1572,6 +1933,9 @@ function startListening() {
     // Send once they have actually stopped, not on every pause in a sentence.
     if (sinceSpeech) clearTimeout(sinceSpeech);
     if (finalText.trim()) sinceSpeech = setTimeout(sendWhatWasSaid, SETTLE_MS);
+
+    // Meanwhile, a short pause is enough to start drafting an answer.
+    draftSoon(ui.prompt.value, DRAFT_PAUSE_SPEECH);
   };
 
   rec.onerror = (ev) => {
@@ -1657,12 +2021,486 @@ function stopListening() {
 
 ui.mic.addEventListener('click', () => (handsFree ? stopListening() : startListening()));
 
+/* ------------------------------------------------------------ language */
+
+// The recogniser has to be told the language before it hears a word: an
+// en-US recogniser turns French into English-sounding nonsense, so detecting
+// the language from its transcript can never work for speech. The picker is
+// the reliable route; "auto" follows whatever the server detected from typed
+// text, which is the case it can actually see.
+const SPEECH_LANG = {
+  en: 'en-US', es: 'es-ES', fr: 'fr-FR', de: 'de-DE',
+  it: 'it-IT', pt: 'pt-PT', nl: 'nl-NL', ar: 'ar-SA',
+};
+let recLang = 'en';
+
+function setRecLang(code) {
+  if (!SPEECH_LANG[code] || code === recLang) return;
+  recLang = code;
+  // Restart the live recogniser so the next utterance uses the new language.
+  // onend brings it straight back up because hands-free is still on.
+  if (rec) { try { rec.abort(); } catch (e) { /* already gone */ } }
+}
+
+function followLanguage(code) {
+  if (ui.pickLang.value === 'auto') setRecLang(code);
+}
+
+/* ----------------------------------------------------------- interpreter */
+
+// Two people, one in English and one in the language picked (Arabic if the
+// picker is on Auto). Each utterance is translated into the other language,
+// and the recogniser switches to the language the next speaker will use.
+function interpPair() {
+  const v = ui.pickLang.value;
+  return v && v !== 'auto' && v !== 'en' ? v : 'ar';
+}
+
+const LANG_NAME = { en: 'English', ar: 'Arabic', es: 'Spanish', fr: 'French',
+  de: 'German', it: 'Italian', pt: 'Portuguese', nl: 'Dutch' };
+
+function updateSwap() {
+  ui.interpSwap.hidden = !ui.pickInterp.checked;
+  ui.interpSwap.textContent = `Next speaker: ${LANG_NAME[recLang] || recLang}`;
+}
+
+ui.pickInterp.addEventListener('change', () => {
+  if (ui.pickInterp.checked) {
+    setRecLang('en');
+    ui.hint.className = 'hint';
+    ui.hint.textContent = `Interpreting between English and ${LANG_NAME[interpPair()]}. Take turns; the microphone switches language after each person.`;
+  } else {
+    setRecLang(ui.pickLang.value === 'auto' ? 'en' : ui.pickLang.value);
+    ui.hint.textContent = 'Press the mic and talk. It sends when you stop.';
+  }
+  updateSwap();
+});
+
+ui.interpSwap.addEventListener('click', () => {
+  setRecLang(recLang === 'en' ? interpPair() : 'en');
+  updateSwap();
+});
+
+/* ----------------------------------------------------------- screen sharing */
+
+// The shared window takes the camera's place: the same frames, the same
+// "look before they finish talking", the same vision model, with a prompt
+// that reads it as a screen and frames big enough to read.
+let sharingScreen = false;
+
+async function startScreen() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+    ui.hint.className = 'hint warn';
+    ui.hint.textContent = 'This browser cannot share a window. Chrome or Edge on a computer can.';
+    return;
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: 5, displaySurface: 'window' }, audio: false,
+      selfBrowserSurface: 'exclude', surfaceSwitching: 'include',
+    });
+  } catch (err) {
+    ui.hint.className = 'hint warn';
+    ui.hint.textContent = err.name === 'NotAllowedError'
+      ? 'Sharing was cancelled.'
+      : `Could not share the screen: ${err.name}.`;
+    return;
+  }
+  if (camStream) camStream.getTracks().forEach((t) => t.stop());
+  camStream = stream;
+  sharingScreen = true;
+  camMirrored = false;
+  ui.selfview.srcObject = stream;
+  ui.selfview.classList.remove('mirrored');
+  try { await ui.selfview.play(); } catch (e) { /* autoplay guard */ }
+  stream.getVideoTracks()[0].addEventListener('ended', stopScreen);
+  document.body.classList.add('sharing');
+  ui.shareBar.hidden = false;
+  ui.share.classList.add('on');
+  ui.callShare.classList.add('on');
+  ui.hint.className = 'hint';
+  ui.hint.textContent = 'Sharing. Ask about what is on screen; a frame is read only when you ask.';
+  updateStage();
+  if (inCall) showCallVideo();
+}
+
+function stopScreen() {
+  if (!sharingScreen) return;
+  sharingScreen = false;
+  if (camStream) camStream.getTracks().forEach((t) => t.stop());
+  camStream = null;
+  ui.selfview.srcObject = null;
+  document.body.classList.remove('sharing');
+  ui.shareBar.hidden = true;
+  ui.share.classList.remove('on');
+  ui.callShare.classList.remove('on');
+  updateStage();
+  if (inCall) showCallVideo();
+}
+
+const toggleScreen = () => (sharingScreen ? stopScreen() : startScreen());
+ui.share.addEventListener('click', toggleScreen);
+ui.callShare.addEventListener('click', toggleScreen);
+ui.shareStop.addEventListener('click', stopScreen);
+
+ui.pickLang.addEventListener('change', () => {
+  remember('voiceloop.lang', ui.pickLang.value);
+  setRecLang(ui.pickLang.value === 'auto' ? 'en' : ui.pickLang.value);
+});
+{
+  const saved = recall('voiceloop.lang');
+  if (saved && [...ui.pickLang.options].some((o) => o.value === saved)) {
+    ui.pickLang.value = saved;
+    if (saved !== 'auto') recLang = saved;
+  }
+}
+
 if (!SpeechCtor) {
   ui.mic.disabled = true;
   ui.mic.title = 'This browser has no speech recognition';
   ui.hint.textContent = 'Speech input needs Chrome, Edge, or Safari — typing works everywhere.';
 }
 
+/* ------------------------------------------------------------ cards */
+
+// What the agent is talking about, on screen while it says it: the order it
+// looked up, the policy it is quoting, the receipt for what it just did, the
+// colleague who just joined. Built from data the agent already has, so they
+// cost nothing.
+const ACTION_TITLE = { replacement: 'Replacement sent', refund: 'Refund issued', return_label: 'Returns label emailed' };
+const STATUS_SAYS = {
+  'in transit': 'In transit', delivered: 'Delivered', refunded: 'Refunded', cancelled: 'Cancelled',
+  preparing: 'Being prepared', returning: 'Return in progress',
+};
+
+function h(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined && text !== null) e.textContent = text;
+  return e;
+}
+
+const money = (v) => (typeof v === 'number' ? `£${v.toFixed(2)}` : '');
+
+function buildCard(c) {
+  const card = h('article', `vcard vcard-${c.kind}`);
+  if (c.kind === 'order') {
+    const head = h('header', 'vc-head');
+    head.append(h('span', 'vc-kicker', 'Order'), h('span', 'vc-big', c.number));
+    const status = h('span', `vc-status s-${(c.status || '').replace(/\s+/g, '-')}`, STATUS_SAYS[c.status] || c.status);
+    head.append(status);
+    card.append(head);
+    const items = (c.items || []).map((i) => `${i.qty} × ${i.name}`).join(', ');
+    if (items) card.append(h('p', 'vc-line', items));
+    const facts = h('dl', 'vc-facts');
+    const fact = (k, v) => { if (v) { const d = h('div'); d.append(h('dt', null, k), h('dd', null, v)); facts.append(d); } };
+    fact('Carrier', c.carrier ? `${c.carrier}${c.tracking ? `, ${c.tracking}` : ''}` : null);
+    fact('Last scan', c.last_scan);
+    fact('Promised', c.promised);
+    fact('Delivered', c.delivered_on);
+    fact('Paid', money(c.paid));
+    card.append(facts);
+    if (c.days_late) {
+      card.append(h('p', `vc-flag ${c.counts_as_lost ? 'lost' : ''}`,
+        `${c.days_late} working day${c.days_late === 1 ? '' : 's'} late${c.counts_as_lost ? ', which counts as lost' : ''}`));
+    }
+  } else if (c.kind === 'policy') {
+    card.append(h('span', 'vc-kicker', 'From the policy'));
+    c.excerpts.forEach((x) => {
+      card.append(h('p', 'vc-title', x.heading));
+      card.append(h('p', 'vc-line', x.text));
+    });
+  } else if (c.kind === 'action') {
+    card.append(h('span', 'vc-kicker', 'Done'));
+    card.append(h('p', 'vc-title', ACTION_TITLE[c.action] || 'Done'));
+    card.append(h('p', 'vc-ref', c.ref));
+    const bits = [`Order ${c.order}`, c.items];
+    if (c.action === 'refund' && typeof c.amount === 'number') bits.push(`${money(c.amount)} to the original payment method`);
+    if (c.action === 'return_label' && c.email) bits.push(`emailed to ${c.email}`);
+    card.append(h('p', 'vc-line', bits.filter(Boolean).join('. ')));
+  } else if (c.kind === 'handoff') {
+    const row = h('div', 'vc-person');
+    row.append(h('span', 'vc-avatar', (c.name || '?').slice(0, 1)));
+    const who = h('div');
+    who.append(h('p', 'vc-title', `${c.name} joined`), h('p', 'vc-line', `${c.label[0].toUpperCase()}${c.label.slice(1)}. Has everything said so far.`));
+    row.append(who);
+    card.append(row);
+  }
+  return card;
+}
+
+function addCard(turn, data) {
+  turn.cards.push(data);
+  if (turn.id === liveTurn || data.kind === 'handoff') {
+    const card = buildCard(data);
+    ui.visuals.append(card);
+    while (ui.visuals.children.length > 3) ui.visuals.firstElementChild.remove();
+  }
+}
+
+/* ------------------------------------------------------------ cost */
+
+let humanCost = null;
+
+function usd(v) {
+  if (typeof v !== 'number') return '—';
+  if (v === 0) return '$0';
+  if (v < 0.01) return `$${v.toFixed(4)}`;
+  return `$${v.toFixed(v < 1 ? 3 : 2)}`;
+}
+
+const compact = (n) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n));
+
+function showCost(turnCost, callCost) {
+  if (turnCost) ui.costTurn.textContent = usd(turnCost.total_usd);
+  if (callCost) {
+    ui.costCall.textContent = usd(callCost.total_usd);
+    ui.costTokens.textContent = `${compact(callCost.prompt_tokens)} in, ${compact(callCost.completion_tokens)} out`;
+    ui.costChars.textContent = `${compact(callCost.characters)} characters`;
+    const human = typeof callCost.human_usd === 'number' ? callCost.human_usd : humanCost;
+    if (human && callCost.total_usd > 0) {
+      ui.costHuman.hidden = false;
+      ui.costHuman.textContent = `A human-handled call: about ${usd(human)}. This one so far: ${Math.round(human / callCost.total_usd)}× cheaper.`;
+    }
+  }
+}
+
+/* ------------------------------------------------------------ replay */
+
+// Every reply's audio is still in the browser, so any of them can be heard
+// again with its transcript, cards and timeline, or the whole call in order.
+let replayingAll = false;
+
+function replayTurn(id) {
+  const t = turns.get(id);
+  if (!t || !t.chunks.length) return Promise.resolve();
+  stopAudio();
+  ensureAudio();
+  t.replaying = true;
+  playingId = id;
+  t.playStart = null;
+  let seconds = 0;
+  t.chunks.forEach((c) => {
+    const at = speak(c);
+    if (t.playStart === null) t.playStart = at;
+    seconds += c.length / SAMPLE_RATE;
+  });
+  document.querySelectorAll('.msg.replaying').forEach((e) => e.classList.remove('replaying'));
+  if (t.node) {
+    t.node.row.classList.add('replaying');
+    t.node.row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+  ui.visuals.innerHTML = '';
+  showLive(id, t.speaker && !t.prompt ? `${t.speaker.name} joined` : t.prompt, t.node ? t.node.body.textContent : '', true);
+  t.cards.forEach((c) => ui.visuals.append(buildCard(c)));
+  select(id);
+  startDrawing();
+  updateStopButton();
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      if (t.node) t.node.row.classList.remove('replaying');
+      t.replaying = false;
+      resolve();
+    }, seconds * 1000 + 250);
+  });
+}
+
+function addReplay(turn) {
+  if (!turn.node || !turn.chunks.length || turn.node.row.querySelector('.replay')) return;
+  const b = h('button', 'replay', 'Replay');
+  b.type = 'button';
+  b.addEventListener('click', () => { replayingAll = false; replayTurn(turn.id); });
+  turn.node.row.append(b);
+  ui.replayCall.disabled = false;
+}
+
+ui.replayCall.addEventListener('click', async () => {
+  if (replayingAll) {                   // pressed again: stop
+    replayingAll = false;
+    stopAudio();
+    ui.replayCall.textContent = 'Replay call';
+    return;
+  }
+  replayingAll = true;
+  ui.replayCall.textContent = 'Stop replay';
+  const ids = [...turns.values()].filter((t) => t.chunks.length).sort((a, b) => a.id - b.id).map((t) => t.id);
+  for (const id of ids) {
+    if (!replayingAll) break;
+    await replayTurn(id);
+  }
+  replayingAll = false;
+  ui.replayCall.textContent = 'Replay call';
+});
+
+/* ------------------------------------------------------------ voice field */
+
+// The centre of the page is the conversation itself: rings that bend with
+// what is actually being heard. White and driven by the caller's mic while
+// listening, orange and circling while SambaNova works, white again and
+// driven by Cartesia's audio while it speaks.
+
+let liveTurn = null;
+
+function showLive(id, prompt, text, keepCards) {
+  if (liveTurn !== id && !keepCards) ui.visuals.innerHTML = '';
+  liveTurn = id;
+  ui.intro.hidden = true;
+  ui.live.hidden = false;
+  ui.liveYou.textContent = prompt;
+  ui.liveThem.textContent = text;
+}
+
+function phase() {
+  if (sources.length || playingId !== null) return 'speaking';
+  if (running().length) return 'thinking';
+  if (listening) return 'listening';
+  return 'idle';
+}
+
+const PHASE_LABEL = {
+  idle: 'Ready', listening: 'Listening', thinking: 'Thinking', speaking: 'Speaking',
+};
+const INTERP_LABEL = {
+  idle: 'Interpreter', listening: 'Listening', thinking: 'Translating', speaking: 'Speaking',
+};
+
+const REDUCED = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+const BANDS = 8;
+const level = new Float32Array(BANDS);
+let energy = 0;
+let spin = 0;
+let lastPhase = null;
+let palette = null;
+let freqBuf = null;
+
+function readPalette() {
+  palette = {
+    paper: css('--paper'), heat: css('--llm'), mint: css('--tts'), deep: css('--deep'),
+  };
+}
+
+function hear(analyser) {
+  if (!analyser) {
+    for (let i = 0; i < BANDS; i++) level[i] *= 0.9;
+    energy *= 0.9;
+    return;
+  }
+  if (!freqBuf || freqBuf.length !== analyser.frequencyBinCount) {
+    freqBuf = new Uint8Array(analyser.frequencyBinCount);
+  }
+  analyser.getByteFrequencyData(freqBuf);
+  // Speech lives in the bottom third of the spectrum; spread it log-ish.
+  const top = Math.floor(freqBuf.length * 0.35);
+  let sum = 0;
+  for (let b = 0; b < BANDS; b++) {
+    const from = Math.floor(top * Math.pow(b / BANDS, 1.6));
+    const to = Math.max(from + 1, Math.floor(top * Math.pow((b + 1) / BANDS, 1.6)));
+    let v = 0;
+    for (let i = from; i < to; i++) v += freqBuf[i];
+    v = v / (to - from) / 255;
+    level[b] = level[b] * 0.65 + v * 0.35;
+    sum += level[b];
+  }
+  energy = energy * 0.8 + (sum / BANDS) * 0.2;
+}
+
+function drawOrb(now) {
+  requestAnimationFrame(drawOrb);
+  const c = ui.orb;
+  if (!c || !c.offsetParent) return;          // hidden during a call
+  if (!palette) readPalette();
+
+  const p = phase();
+  const label = `${p}${ui.pickInterp.checked ? ':i' : ''}`;
+  if (label !== lastPhase) {
+    lastPhase = label;
+    ui.orbState.textContent = (ui.pickInterp.checked ? INTERP_LABEL : PHASE_LABEL)[p];
+    ui.orbState.dataset.phase = p;
+  }
+
+  const source = p === 'speaking' ? outAnalyser : (p === 'listening' ? inAnalyser : null);
+  if (source) {
+    hear(source);
+  } else if (!REDUCED) {
+    // Nothing to listen to: let the field drift slowly, so a silent page
+    // still reads as alive, and churn a little harder while the model works.
+    const tt = now / 1000;
+    const base = p === 'thinking' ? 0.16 : 0.07;
+    for (let b = 0; b < BANDS; b++) {
+      const target = base * (0.6 + 0.4 * Math.sin(tt * (0.5 + b * 0.13) + b * 1.7));
+      level[b] = level[b] * 0.94 + target * 0.06;
+    }
+    energy = energy * 0.94 + base * 0.06;
+  }
+
+  const box = c.parentElement.getBoundingClientRect();
+  const size = Math.max(160, Math.min(box.width, box.height));
+  const dpr = window.devicePixelRatio || 1;
+  if (c.width !== Math.round(size * dpr)) {
+    c.width = c.height = Math.round(size * dpr);
+    c.style.width = c.style.height = `${size}px`;
+  }
+  const g = c.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, size, size);
+
+  const t = REDUCED ? 0 : now / 1000;
+  const cx = size / 2, cy = size / 2, R = size / 2;
+  spin += p === 'thinking' ? 0.018 : 0.002;
+
+  // A soft core whose colour says who is talking.
+  const core = p === 'thinking' ? palette.heat : (p === 'speaking' ? palette.mint : palette.paper);
+  const glow = g.createRadialGradient(cx, cy, 0, cx, cy, R * 0.62);
+  glow.addColorStop(0, core);
+  glow.addColorStop(1, 'transparent');
+  g.globalAlpha = 0.08 + energy * 0.35 + (p === 'thinking' ? 0.08 : 0);
+  g.fillStyle = glow;
+  g.beginPath(); g.arc(cx, cy, R * 0.62, 0, Math.PI * 2); g.fill();
+  g.globalAlpha = 1;
+
+  const RINGS = 7;
+  const STEPS = 200;
+  for (let r = 0; r < RINGS; r++) {
+    const base = R * (0.30 + r * 0.085);
+    const amp = R * (0.012 + 0.16 * energy) * (1 - r / (RINGS * 1.6));
+    g.beginPath();
+    for (let s = 0; s <= STEPS; s++) {
+      const a = (s / STEPS) * Math.PI * 2;
+      let d = Math.sin(a * 3 + t * 0.6 + r) * R * 0.006;      // always alive, barely
+      for (let b = 0; b < BANDS; b++) {
+        d += level[b] * Math.sin(a * (b + 2) + t * (0.8 + b * 0.35) + r * 0.9) * amp / 1.6;
+      }
+      const rad = base + d;
+      const x = cx + Math.cos(a + spin * (r % 2 ? 1 : -1)) * rad;
+      const y = cy + Math.sin(a + spin * (r % 2 ? 1 : -1)) * rad;
+      if (s === 0) g.moveTo(x, y); else g.lineTo(x, y);
+    }
+    g.closePath();
+
+    const fade = 1 - r / RINGS;
+    if (p === 'thinking') {
+      const circ = Math.PI * 2 * base;
+      g.setLineDash([circ * (0.18 + 0.05 * r), circ * 0.06]);
+      g.lineDashOffset = -(now / 1000) * 90 * (r % 2 ? 1 : -1);
+      g.strokeStyle = palette.heat;
+      g.globalAlpha = 0.25 + 0.65 * fade;
+    } else {
+      g.setLineDash([]);
+      g.strokeStyle = p === 'speaking' && r === 0 ? palette.mint : palette.paper;
+      g.globalAlpha = (p === 'idle' ? 0.16 : 0.3) + (p === 'idle' ? 0.34 : 0.6) * fade;
+    }
+    g.lineWidth = r === 0 ? 2 : 1.15;
+    g.stroke();
+  }
+  g.globalAlpha = 1;
+  g.setLineDash([]);
+}
+
+requestAnimationFrame(drawOrb);
+
+ui.capYou.dir = 'auto';
+ui.capThem.dir = 'auto';
 window.addEventListener('resize', drawTimeline);
 ui.send.disabled = true;
 ui.mic.disabled = true;

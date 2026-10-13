@@ -6,6 +6,7 @@ below and the right provider is chosen for you:
     tavily   TAVILY_API_KEY    answer-shaped results, best fit for a voice reply
     brave    BRAVE_API_KEY     general web index
     serper   SERPER_API_KEY    Google results via serper.dev
+    exa      EXA_API_KEY       neural/semantic search, good at "find one like this"
     ddg      (no key)          scrapes DuckDuckGo's lite endpoint
 
 The keyless DuckDuckGo path exists so the demo runs out of the box. It parses
@@ -36,6 +37,8 @@ def provider():
         return "brave"
     if os.getenv("SERPER_API_KEY"):
         return "serper"
+    if os.getenv("EXA_API_KEY"):
+        return "exa"
     return "ddg"
 
 
@@ -91,6 +94,45 @@ async def _serper(session, query):
     ]
 
 
+async def _exa(session, query):
+    """Exa — semantic rather than keyword.
+
+    Untested against this demo: it needs a key nobody has set yet. Worth trying
+    for "find me one like this", which is what neural search is actually for and
+    where the keyword providers struggle with a description rather than a name.
+    Likely worse for the other two things this demo searches — current news and
+    a specific product by name — which are freshness and keyword problems.
+
+    Costs more than the alternatives: roughly $7 per 1,000 searches against
+    Serper's $1, and the contents and answer endpoints bill separately. Check
+    exa.ai/pricing before relying on any of that.
+    """
+    headers = {"x-api-key": os.environ["EXA_API_KEY"], "Content-Type": "application/json"}
+    body = {
+        "query": query,
+        "numResults": MAX_RESULTS,
+        "type": "auto",          # let Exa choose neural or keyword per query
+        # Page text, so the model has something to answer from. Without this
+        # Exa returns links alone, which is useless for a spoken reply.
+        "contents": {"text": {"maxCharacters": 800}},
+    }
+    async with session.post("https://api.exa.ai/search", json=body, headers=headers) as r:
+        data = await r.json()
+
+    results = [
+        {
+            "title": x.get("title") or x.get("url", ""),
+            "url": x.get("url", ""),
+            "snippet": _clean(x.get("text") or x.get("summary") or ""),
+        }
+        for x in (data.get("results") or [])[:MAX_RESULTS]
+    ]
+    # Exa has a separate /answer endpoint that is billed on its own, so there
+    # is no synthesised sentence here the way Tavily gives one. The model gets
+    # the extracts instead, which is a step down for a voice reply.
+    return {"answer": None, "results": results}
+
+
 # DuckDuckGo's lite page wraps every result URL in a redirect; the real one is
 # the uddg query parameter. Attribute order and quoting here are not stable.
 _LINK = re.compile(r"<a[^>]*?href=\"(?P<href>[^\"]+)\"[^>]*?class='result-link'[^>]*>(?P<title>.*?)</a>", re.S)
@@ -123,7 +165,8 @@ async def _ddg(session, query):
     return out
 
 
-PROVIDERS = {"tavily": _tavily, "brave": _brave, "serper": _serper, "ddg": _ddg}
+PROVIDERS = {"tavily": _tavily, "brave": _brave, "serper": _serper,
+             "exa": _exa, "ddg": _ddg}
 
 
 async def search(query):
@@ -173,7 +216,8 @@ if __name__ == "__main__":
 
     query = " ".join(sys.argv[1:]) or "who won the 2026 super bowl"
     name = provider()
-    keyed = {"tavily": "TAVILY_API_KEY", "brave": "BRAVE_API_KEY", "serper": "SERPER_API_KEY"}
+    keyed = {"tavily": "TAVILY_API_KEY", "brave": "BRAVE_API_KEY",
+             "serper": "SERPER_API_KEY", "exa": "EXA_API_KEY"}
 
     print(f"provider: {name}")
     if name in keyed:

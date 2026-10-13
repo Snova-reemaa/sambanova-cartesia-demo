@@ -3,206 +3,302 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Voice Loop — SambaNova → Cartesia</title>
+<title>Voice Loop</title>
+<meta name="theme-color" content="#22105C">
+<link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700&family=Unbounded:wght@300;400;600;800&display=swap">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 
-<div class="wrap">
+<div class="field">
 
-  <header class="bar">
+  <div class="share-bar" id="share-bar" hidden>
+    <span>The agent can see the window you shared when you ask about it.</span>
+    <button type="button" id="share-stop">Stop sharing</button>
+  </div>
+
+  <header class="topbar">
     <div class="brand">
-      <span class="dot" id="conn-dot"></span>
-      <strong>Voice Loop</strong>
-      <span class="sep">/</span>
-      <span class="muted" id="conn-text">connecting…</span>
+      <span class="wordmark">Voice&nbsp;Loop</span>
+      <span class="byline">SambaNova + Cartesia</span>
     </div>
-    <div class="stackinfo mono">
-      <span id="llm-model">—</span>
-      <span class="sep">→</span>
-      <span id="tts-model">—</span>
-      <span class="sep">·</span>
-      <span id="socket-note">socket —</span>
+
+    <div class="stackinfo" title="Language model, then speech model">
+      <span class="node llm-n"><b></b><span id="llm-model">—</span></span>
+      <svg class="wire" viewBox="0 0 40 8" width="40" height="8" aria-hidden="true"><path d="M0 4h36m-4-3 4 3-4 3" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+      <span class="node tts-n"><b></b><span id="tts-model">—</span></span>
+      <span class="socket" id="socket-note">socket —</span>
+    </div>
+
+    <div class="status">
+      <span class="dot" id="conn-dot"></span>
+      <span id="conn-text">connecting…</span>
     </div>
   </header>
 
-  <div class="call" id="call" hidden>
-    <video id="callview" playsinline muted autoplay></video>
-    <p class="nocam mono" id="nocam" hidden>camera off — voice only</p>
+  <!-- ===================================================== left: readout -->
+  <aside class="hud">
+    <section class="readout" id="readout">
+      <div class="cell hero">
+        <span class="v v-tts" id="m-audio">—</span>
+        <span class="k">First sound</span>
+        <span class="n" id="m-audio-note">From sending the question to hearing the reply</span>
+      </div>
+      <dl class="rows">
+        <div class="cell">
+          <dt class="k">First token</dt>
+          <dd><span class="v v-llm" id="m-token">—</span><span class="n">in this browser</span></dd>
+        </div>
+        <div class="cell">
+          <dt class="k">Inference</dt>
+          <dd><span class="v v-llm" id="m-infer">—</span><span class="n" id="m-overhead">SambaNova's own clock</span></dd>
+        </div>
+        <div class="cell">
+          <dt class="k">Text complete</dt>
+          <dd><span class="v" id="m-text">—</span><span class="n" id="m-chars">—</span></dd>
+        </div>
+        <div class="cell">
+          <dt class="k">Synthesis rate</dt>
+          <dd><span class="v" id="m-rate">—</span><span class="n">against playback speed</span></dd>
+        </div>
+      </dl>
+    </section>
 
-    <div class="call-top">
-      <span class="pill" id="call-state"><i></i><span id="call-state-text">connecting</span></span>
-      <span class="pill quiet mono" id="call-clock">00:00</span>
+    <section class="panel cost" id="cost-panel">
+      <h2>Cost</h2>
+      <dl class="cost-rows">
+        <div><dt>This turn</dt><dd id="cost-turn">—</dd></div>
+        <div><dt>This call</dt><dd id="cost-call">—</dd></div>
+        <div><dt>Tokens</dt><dd id="cost-tokens">—</dd></div>
+        <div><dt>Spoken</dt><dd id="cost-chars">—</dd></div>
+      </dl>
+      <p class="cost-human" id="cost-human" hidden></p>
+      <p class="cost-note">Estimates from pricing.json. Edit it with your real prices.</p>
+    </section>
+
+    <section class="panel caller" id="caller-panel" hidden>
+      <h2 id="caller-title">Caller</h2>
+      <p class="caller-status" id="caller-status"></p>
+      <ol class="caller-calls" id="caller-calls"></ol>
+      <button type="button" class="ghost" id="memory-reset">Reset memory</button>
+    </section>
+
+    <section class="panel pipeline">
+      <h2>Timeline</h2>
+      <div class="scroller">
+        <canvas id="timeline" width="1760" height="300" aria-label="Live latency timeline"></canvas>
+      </div>
+      <div class="legend">
+        <span><i class="sw sw-llm-soft"></i>Waiting</span>
+        <span><i class="sw sw-llm"></i>SambaNova writing</span>
+        <span><i class="sw sw-tts"></i>Cartesia speaking</span>
+        <span><i class="sw sw-play"></i>Playing</span>
+        <span><i class="sw sw-think"></i>Reasoning</span>
+      </div>
+    </section>
+
+    <section class="panel" id="requests-panel" hidden>
+      <h2>Requests</h2>
+      <div class="cards" id="cards"></div>
+    </section>
+
+    <section class="panel" id="wrapup-panel" hidden>
+      <h2>Call summary</h2>
+      <div class="wrapup" id="wrapup"></div>
+      <p class="wrapup-meta" id="wrapup-meta"></p>
+    </section>
+
+    <footer>
+      Timings exclude the Cartesia handshake, which happens once when the page loads.
+    </footer>
+  </aside>
+
+  <!-- ===================================================== centre: the voice -->
+  <main class="stage">
+
+    <div class="orbwrap" id="orbwrap">
+      <canvas id="orb" aria-hidden="true"></canvas>
+      <p class="orb-state" id="orb-state">Ready</p>
     </div>
 
-    <div class="captions" id="captions">
-      <p class="cap-you" id="cap-you"></p>
-      <p class="cap-them" id="cap-them"></p>
-    </div>
-
-    <div class="call-controls">
-      <button id="call-mic" class="round" type="button" title="Mute" aria-label="Mute">
-        <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true">
-          <path d="M12 3.5a2.6 2.6 0 0 1 2.6 2.6v5.2a2.6 2.6 0 0 1-5.2 0V6.1A2.6 2.6 0 0 1 12 3.5Z"/>
-          <path d="M6.2 11a5.8 5.8 0 0 0 11.6 0M12 16.8V20.5M9 20.5h6" fill="none"
-                stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-        </svg>
-      </button>
-      <button id="call-cam" class="round" type="button" title="Camera off" aria-label="Camera off">
-        <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true" fill="none"
-             stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M3 7.5h10.5a1.5 1.5 0 0 1 1.5 1.5v6a1.5 1.5 0 0 1-1.5 1.5H3A1.5 1.5 0 0 1 1.5 15V9A1.5 1.5 0 0 1 3 7.5Z"/>
-          <path d="m15 12 5.5-3.2v6.4L15 12Z"/>
-        </svg>
-      </button>
-      <button id="call-upload" class="round" type="button" title="Upload a photo, video or file" aria-label="Upload a photo, video or file">
-        <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true" fill="none"
-             stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12 16.5V4.5M12 4.5 7.5 9M12 4.5 16.5 9"/>
-          <path d="M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15"/>
-        </svg>
-      </button>
-      <button id="end-call" class="round end" type="button" title="End call" aria-label="End call">
-        <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true" fill="currentColor">
-          <path d="M12 9.5c-2.2 0-4.3.4-6.2 1.1v3c0 .5-.3.9-.7 1.1l-2.2.8a1 1 0 0 1-1.3-.6l-.9-2.6a1 1 0 0 1 .3-1.1C3.9 8.9 7.8 7.5 12 7.5s8.1 1.4 11 3.7a1 1 0 0 1 .3 1.1l-.9 2.6a1 1 0 0 1-1.3.6l-2.2-.8a1.2 1.2 0 0 1-.7-1.1v-3A18 18 0 0 0 12 9.5Z"/>
-        </svg>
-      </button>
-    </div>
-
-    <p class="call-trouble mono" id="call-trouble" hidden></p>
-  </div>
-
-  <section class="ask">
-    <div class="askrow">
-      <button id="mic" class="mic" type="button" aria-label="Hold to speak">
-        <svg viewBox="0 0 24 24" aria-hidden="true" width="20" height="20">
-          <path d="M12 3.5a2.6 2.6 0 0 1 2.6 2.6v5.2a2.6 2.6 0 0 1-5.2 0V6.1A2.6 2.6 0 0 1 12 3.5Z"/>
-          <path d="M6.2 11a5.8 5.8 0 0 0 11.6 0M12 16.8V20.5M9 20.5h6" fill="none" stroke-width="1.7" stroke-linecap="round"/>
-        </svg>
-        <span class="miclevel" id="miclevel"></span>
-      </button>
-      <input id="prompt" type="text" autocomplete="off" spellcheck="false"
-             placeholder="Ask something out loud, or type it here">
-      <button id="attach" class="icon-btn" type="button" title="Attach a photo or video" aria-label="Attach a photo or video">
-        <svg viewBox="0 0 24 24" width="19" height="19" aria-hidden="true" fill="none"
-             stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M20 5.5H15.5L14 3.5h-4l-1.5 2H4a1.5 1.5 0 0 0-1.5 1.5v12A1.5 1.5 0 0 0 4 20.5h16a1.5 1.5 0 0 0 1.5-1.5V7A1.5 1.5 0 0 0 20 5.5Z"/>
-          <circle cx="12" cy="13" r="3.6"/>
-        </svg>
-      </button>
-      <button id="camera" class="icon-btn" type="button" title="Start a video call" aria-label="Start a video call">
-        <svg viewBox="0 0 24 24" width="19" height="19" aria-hidden="true" fill="none"
-             stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M3 7.5h10.5a1.5 1.5 0 0 1 1.5 1.5v6a1.5 1.5 0 0 1-1.5 1.5H3A1.5 1.5 0 0 1 1.5 15V9A1.5 1.5 0 0 1 3 7.5Z"/>
-          <path d="m15 12 5.5-3.2v6.4L15 12Z"/>
-        </svg>
-      </button>
-      <button id="stop" class="stop" type="button" hidden>Stop</button>
-      <button id="send" class="send" type="button">Send</button>
-    </div>
-    <input type="file" id="file" accept="image/*,video/*" multiple hidden>
-
-    <div class="stage" id="stage" hidden>
-      <video id="selfview" playsinline muted hidden></video>
-      <div class="shots" id="shots"></div>
-      <div class="stage-actions">
-        <button id="grab" class="ghost" type="button" hidden>Capture frame</button>
-        <select id="cam-pick" class="cam-pick" aria-label="Which camera" hidden></select>
-        <button id="clear-shots" class="ghost" type="button">Clear</button>
-        <span class="stage-note mono" id="stage-note"></span>
+    <div class="intro" id="intro">
+      <div class="starters">
+        <button type="button" data-prompt="Where's my order? The number is 44812.">Where's order 44812?</button>
+        <button type="button" data-prompt="How long does a refund take once you've received the return?">How long do refunds take?</button>
+        <button type="button" data-prompt="What's the latest news about SambaNova?">Latest SambaNova news</button>
+        <button type="button" data-prompt="¿Hacéis envíos a España?" lang="es">¿Hacéis envíos a España?</button>
+        <button type="button" data-prompt="متى يوصل طلبي رقم 44901؟" lang="ar" dir="rtl">متى يوصل طلبي؟</button>
       </div>
     </div>
 
-    <div class="pickers">
-      <label class="picker">
-        <span class="pk-label mono">Model</span>
-        <select id="pick-model"><option>loading…</option></select>
-      </label>
-      <label class="picker">
-        <span class="pk-label mono">Voice</span>
-        <select id="pick-voice"><option>loading…</option></select>
-      </label>
-      <label class="picker toggle">
-        <input type="checkbox" id="pick-search" checked>
-        <span class="pk-label mono">Web search</span>
-      </label>
-      <p class="hint mono" id="hint">Press the mic and speak — it sends when you stop.</p>
+    <div class="livecap" id="live" hidden>
+      <p class="live-you" id="live-you" dir="auto"></p>
+      <p class="live-them" id="live-them" dir="auto"></p>
     </div>
-  </section>
 
-  <section class="chooser" id="chooser" hidden>
-    <p class="ch-ask" id="ch-ask"></p>
-    <div class="ch-buttons" id="ch-buttons"></div>
-  </section>
+    <div class="visuals" id="visuals" aria-live="polite"></div>
 
-  <section class="panel" id="requests-panel" hidden>
-    <h2>In flight</h2>
-    <div class="cards" id="cards"></div>
-  </section>
+    <div class="call" id="call" hidden>
+      <video id="callview" playsinline muted autoplay></video>
+      <p class="nocam" id="nocam" hidden>Camera off, voice only</p>
 
-  <section class="panel">
-    <h2>This turn</h2>
-    <div class="scroller">
-      <canvas id="timeline" width="1760" height="300" aria-label="Live latency timeline"></canvas>
-    </div>
-    <div class="legend mono">
-      <span><i class="sw sw-llm-soft"></i>waiting for first byte</span>
-      <span><i class="sw sw-llm"></i>SambaNova text</span>
-      <span><i class="sw sw-tts"></i>Cartesia audio</span>
-      <span><i class="sw sw-play"></i>speaker playing</span>
-    </div>
-  </section>
+      <div class="call-top">
+        <span class="pill" id="call-state"><i></i><span id="call-state-text">connecting</span></span>
+        <span class="pill quiet" id="call-clock">00:00</span>
+      </div>
 
-  <section class="readout" id="readout">
-    <div class="cell">
-      <span class="k">First token</span>
-      <span class="v v-llm" id="m-token">—</span>
-      <span class="n">measured in this browser</span>
-    </div>
-    <div class="cell">
-      <span class="k">of which inference</span>
-      <span class="v v-llm" id="m-infer">—</span>
-      <span class="n" id="m-overhead">SambaNova's own clock</span>
-    </div>
-    <div class="cell">
-      <span class="k">First sound</span>
-      <span class="v v-tts" id="m-audio">—</span>
-      <span class="n">you stop waiting here</span>
-    </div>
-    <div class="cell">
-      <span class="k">Text complete</span>
-      <span class="v" id="m-text">—</span>
-      <span class="n" id="m-chars">—</span>
-    </div>
-    <div class="cell">
-      <span class="k">Synthesis rate</span>
-      <span class="v" id="m-rate">—</span>
-      <span class="n">vs. playback speed</span>
-    </div>
-  </section>
+      <div class="captions" id="captions">
+        <p class="cap-you" id="cap-you"></p>
+        <p class="cap-them" id="cap-them"></p>
+      </div>
 
-  <section class="panel" id="wrapup-panel" hidden>
-    <h2>After the call</h2>
-    <div class="wrapup mono" id="wrapup"></div>
-    <p class="wrapup-meta mono" id="wrapup-meta"></p>
-  </section>
+      <div class="call-controls">
+        <button id="call-mic" class="round" type="button" title="Mute" aria-label="Mute">
+          <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true" fill="currentColor">
+            <path d="M12 3.5a2.6 2.6 0 0 1 2.6 2.6v5.2a2.6 2.6 0 0 1-5.2 0V6.1A2.6 2.6 0 0 1 12 3.5Z"/>
+            <path d="M6.2 11a5.8 5.8 0 0 0 11.6 0M12 16.8V20.5M9 20.5h6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+          </svg>
+        </button>
+        <button id="call-cam" class="round" type="button" title="Camera off" aria-label="Camera off">
+          <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 7.5h10.5a1.5 1.5 0 0 1 1.5 1.5v6a1.5 1.5 0 0 1-1.5 1.5H3A1.5 1.5 0 0 1 1.5 15V9A1.5 1.5 0 0 1 3 7.5Z"/>
+            <path d="m15 12 5.5-3.2v6.4L15 12Z"/>
+          </svg>
+        </button>
+        <button id="call-upload" class="round" type="button" title="Upload a photo, video or file" aria-label="Upload a photo, video or file">
+          <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 16.5V4.5M12 4.5 7.5 9M12 4.5 16.5 9"/>
+            <path d="M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15"/>
+          </svg>
+        </button>
+        <button id="call-share" class="round" type="button" title="Share a window" aria-label="Share a window">
+          <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2.5" y="4" width="19" height="13" rx="1.8"/><path d="M8.5 20.5h7M12 17v3.5M12 13.5V8m-2.6 2.4L12 7.8l2.6 2.6"/>
+          </svg>
+        </button>
+        <button id="end-call" class="round end" type="button" title="End call" aria-label="End call">
+          <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true" fill="currentColor">
+            <path d="M12 9.5c-2.2 0-4.3.4-6.2 1.1v3c0 .5-.3.9-.7 1.1l-2.2.8a1 1 0 0 1-1.3-.6l-.9-2.6a1 1 0 0 1 .3-1.1C3.9 8.9 7.8 7.5 12 7.5s8.1 1.4 11 3.7a1 1 0 0 1 .3 1.1l-.9 2.6a1 1 0 0 1-1.3.6l-2.2-.8a1.2 1.2 0 0 1-.7-1.1v-3A18 18 0 0 0 12 9.5Z"/>
+          </svg>
+        </button>
+      </div>
 
-  <section class="panel">
-    <h2>Transcript</h2>
+      <p class="call-trouble" id="call-trouble" hidden></p>
+    </div>
+
+    <section class="chooser" id="chooser" hidden>
+      <p class="ch-ask" id="ch-ask"></p>
+      <div class="ch-buttons" id="ch-buttons"></div>
+    </section>
+
+    <section class="dock">
+      <div class="stage-tray" id="stage" hidden>
+        <video id="selfview" playsinline muted hidden></video>
+        <div class="shots" id="shots"></div>
+        <div class="stage-actions">
+          <button id="grab" class="ghost" type="button" hidden>Capture frame</button>
+          <select id="cam-pick" class="cam-pick" aria-label="Which camera" hidden></select>
+          <button id="clear-shots" class="ghost" type="button">Clear</button>
+          <span class="stage-note" id="stage-note"></span>
+        </div>
+      </div>
+
+      <div class="askrow">
+        <button id="mic" class="mic" type="button" aria-label="Hands-free microphone">
+          <svg viewBox="0 0 24 24" aria-hidden="true" width="22" height="22">
+            <path d="M12 3.5a2.6 2.6 0 0 1 2.6 2.6v5.2a2.6 2.6 0 0 1-5.2 0V6.1A2.6 2.6 0 0 1 12 3.5Z"/>
+            <path d="M6.2 11a5.8 5.8 0 0 0 11.6 0M12 16.8V20.5M9 20.5h6" fill="none" stroke-width="1.7" stroke-linecap="round"/>
+          </svg>
+          <span class="miclevel" id="miclevel"></span>
+        </button>
+        <input id="prompt" type="text" dir="auto" autocomplete="off" spellcheck="false"
+               placeholder="Type, or press the mic">
+        <button id="attach" class="icon-btn" type="button" title="Attach a photo or video" aria-label="Attach a photo or video">
+          <svg viewBox="0 0 24 24" width="19" height="19" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m20.5 11.5-8.3 8.3a5 5 0 0 1-7-7l8.3-8.3a3.3 3.3 0 0 1 4.7 4.7l-8.3 8.3a1.7 1.7 0 0 1-2.4-2.4l7.6-7.6"/>
+          </svg>
+        </button>
+        <button id="camera" class="icon-btn" type="button" title="Start a video call" aria-label="Start a video call">
+          <svg viewBox="0 0 24 24" width="19" height="19" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 7.5h10.5a1.5 1.5 0 0 1 1.5 1.5v6a1.5 1.5 0 0 1-1.5 1.5H3A1.5 1.5 0 0 1 1.5 15V9A1.5 1.5 0 0 1 3 7.5Z"/>
+            <path d="m15 12 5.5-3.2v6.4L15 12Z"/>
+          </svg>
+        </button>
+        <button id="share" class="icon-btn" type="button" title="Share a window with the agent" aria-label="Share a window with the agent">
+          <svg viewBox="0 0 24 24" width="19" height="19" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2.5" y="4" width="19" height="13" rx="1.8"/><path d="M8.5 20.5h7M12 17v3.5M12 13.5V8m-2.6 2.4L12 7.8l2.6 2.6"/>
+          </svg>
+        </button>
+        <button id="stop" class="stop" type="button" hidden>Stop</button>
+        <button id="send" class="send" type="button">Send</button>
+      </div>
+      <input type="file" id="file" accept="image/*,video/*" multiple hidden>
+
+      <div class="pickers">
+        <label class="picker">
+          <span class="pk-label">Model</span>
+          <select id="pick-model"><option>loading…</option></select>
+        </label>
+        <label class="picker">
+          <span class="pk-label">Voice</span>
+          <select id="pick-voice"><option>loading…</option></select>
+        </label>
+        <label class="picker">
+          <span class="pk-label">Language</span>
+          <select id="pick-lang" title="Speech recognition has to know the language before it hears it">
+            <option value="auto">Auto</option>
+            <option value="en">English</option>
+            <option value="ar">العربية</option>
+            <option value="es">Español</option>
+            <option value="fr">Français</option>
+            <option value="de">Deutsch</option>
+            <option value="it">Italiano</option>
+            <option value="pt">Português</option>
+            <option value="nl">Nederlands</option>
+          </select>
+        </label>
+        <label class="picker toggle">
+          <input type="checkbox" id="pick-search" checked>
+          <span class="switch" aria-hidden="true"></span>
+          <span class="pk-label">Web search</span>
+        </label>
+        <label class="picker toggle" title="Check facts against the records before they are spoken">
+          <input type="checkbox" id="pick-check" checked>
+          <span class="switch" aria-hidden="true"></span>
+          <span class="pk-label">Fact-check</span>
+        </label>
+        <label class="picker toggle" title="Start answering while you are still talking or typing">
+          <input type="checkbox" id="pick-early" checked>
+          <span class="switch" aria-hidden="true"></span>
+          <span class="pk-label">Answer early</span>
+        </label>
+        <label class="picker toggle" title="Translate between two people instead of answering">
+          <input type="checkbox" id="pick-interp">
+          <span class="switch" aria-hidden="true"></span>
+          <span class="pk-label">Interpreter</span>
+        </label>
+        <button type="button" class="ghost swap" id="interp-swap" hidden>Next speaker: English</button>
+      </div>
+      <p class="hint" id="hint">Press the mic and talk. It sends when you stop.</p>
+    </section>
+  </main>
+
+  <!-- ===================================================== right: transcript -->
+  <aside class="transcript">
+    <div class="talk-head">
+      <h2>Conversation</h2>
+      <button type="button" class="ghost" id="replay-call" disabled>Replay call</button>
+    </div>
     <div id="log" class="log">
-      <p class="empty">Nothing yet. Ask it something.</p>
+      <p class="empty">No messages yet.</p>
     </div>
-  </section>
-
-  <footer class="mono">
-    The Cartesia socket opens once, when this page connects — so the numbers above
-    exclude the handshake, the way a warm production service would.
-  </footer>
+  </aside>
 
 </div>
 
+<script src="/static/field.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

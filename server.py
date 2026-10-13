@@ -21,13 +21,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from sambanova import (get_client as get_llm, get_model, stream_tools,
+from sambanova import (get_client as get_llm, get_model, stream_tools, stream_chat,
                        describe_images, get_vision_model)
 from cartesia_tts import get_client as get_tts, output_format
 from search import search, as_context, provider as search_provider
 from knowledge_base import Knowledge, as_context as kb_context
 import languages
+import memory
 import orders
+import pricing
+import smarts
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(HERE, "static")
@@ -104,6 +107,48 @@ ORDER_TOOL = {
     },
 }
 
+ACTION_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "resolve_order",
+        "description": (
+            "Carry out what you and the caller have agreed for an order: send a "
+            "replacement, issue a refund, or email a returns label. Call it only "
+            "after the caller has said yes. Never say it is done unless this "
+            "returns a reference."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "order_number": {"type": "string"},
+                "action": {"type": "string", "enum": ["replacement", "refund", "return_label"]},
+                "reason": {"type": "string"},
+            },
+            "required": ["order_number", "action"],
+        },
+    },
+}
+
+TRANSFER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "transfer_to_specialist",
+        "description": (
+            "Pass the caller to a specialist colleague. 'billing' for charges, "
+            "refunds and payments; 'technical' for a device that is not working, "
+            "setup problems or an error on screen. Not for simple order status."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "team": {"type": "string", "enum": ["billing", "technical"]},
+                "reason": {"type": "string"},
+            },
+            "required": ["team"],
+        },
+    },
+}
+
 ORDER_RULES = (
     "\nYou can look up orders. When a caller gives an order number, or asks "
     "where their order is, call lookup_order — never say you are checking "
@@ -159,6 +204,7 @@ BACKCHANNEL = {
     "it": ("Va bene, un momento. ", "Certo, fammi vedere. ", "Perfetto, un secondo. "),
     "pt": ("Certo, um momento. ", "Claro, deixe-me ver. ", "Muito bem, um segundo. "),
     "nl": ("Goed, een moment. ", "Zeker, even kijken. ", "Prima, een seconde. "),
+    "ar": ("تمام، لحظة واحدة. ", "أكيد، خلّيني أشوف. ", "حسنًا، ثانية واحدة. "),
 }
 
 LOOKING_PHRASE = {
@@ -169,6 +215,7 @@ LOOKING_PHRASE = {
     "it": ("Fammi dare un'occhiata. ", "Fammi guardare queste. "),
     "pt": ("Deixe-me dar uma olhada. ", "Deixe-me ver essas. "),
     "nl": ("Laat me daar even naar kijken. ", "Laat me die even bekijken. "),
+    "ar": ("خلّيني أشوف هذا. ", "خلّيني أطّلع عليها. "),
 }
 
 SEARCHING_PHRASE = {
@@ -179,6 +226,7 @@ SEARCHING_PHRASE = {
     "it": ("Un momento, lo cerco subito. ", "Bene, cerco qualche opzione. "),
     "pt": ("Um momento, vou procurar. ", "Certo, vou encontrar opções. "),
     "nl": ("Een moment, ik zoek het op. ", "Goed, ik zoek wat opties. "),
+    "ar": ("لحظة، خلّيني أبحث عن هذا. ", "تمام، خلّيني ألقى لك خيارات. "),
 }
 
 
@@ -243,7 +291,7 @@ KB = Knowledge()
 TRANSLATOR = os.getenv("SAMBANOVA_TRANSLATE_MODEL", "Meta-Llama-3.3-70B-Instruct")
 
 
-async def in_english(llm, text, code):
+async def in_english(llm, text, code, meter=None):
     if code == "en":
         return text
     try:
@@ -253,6 +301,8 @@ async def in_english(llm, text, code):
                        "Translate this customer support question into English. "
                        "Reply with only the English translation, no preamble, no "
                        f"quotes.\n\n{text}"}])
+        if meter is not None:
+            meter.add_usage(TRANSLATOR, getattr(reply, "usage", None))
         out = (reply.choices[0].message.content or "").strip()
         return out or text
     except Exception as exc:
@@ -346,6 +396,7 @@ async def write_up(llm, history):
         "text": text,
         "model": SUMMARY_MODEL,
         "prompt_tokens": getattr(usage, "prompt_tokens", None) if usage else None,
+        "completion_tokens": getattr(usage, "completion_tokens", None) if usage else len(text) // 4,
         "turns": len([m for m in history if m["role"] == "user"]),
     }
 
@@ -357,7 +408,22 @@ GENERIC_LOOK = (
 )
 
 MAX_FRAMES = 8        # gemma read 6 frames in order reliably; 8 leaves headroom
-MAX_IMAGE_BYTES = 1_500_000   # per frame, after the browser has resized it
+# Per frame, after the browser has resized it. Screen frames are sent larger
+# than camera frames — small text in a dialog has to survive the trip.
+MAX_IMAGE_BYTES = 2_500_000
+
+SCREEN_LOOK = (
+    "This is the caller's screen. Say which app or site it is, quote any dialog, "
+    "error or warning word for word, and say which buttons and menus are visible "
+    "and where. Two or three plain sentences, no headings. Say so if you cannot read it."
+)
+
+SCREEN_PROMPT = (
+    "The caller is sharing a window of their screen with you, and you are told "
+    "what is on it when they ask about it. Guide them like someone sitting next "
+    "to them: one step at a time, naming the exact button or menu and where it is "
+    "on screen. Never claim you cannot see their screen."
+)
 
 
 def looks_like_image(url):
@@ -372,7 +438,7 @@ def clean_attachments(raw):
             if looks_like_image(u) and len(u) <= MAX_IMAGE_BYTES]
 
 
-def vision_question(prompt, count):
+def vision_question(prompt, count, screen=False):
     """Ask for observations, not a report — and keep the asking short.
 
     The long version of this prompt cost 413 prompt tokens and returned nine:
@@ -380,6 +446,8 @@ def vision_question(prompt, count):
     returns more detail. Instructions are prompt tokens too, and the model was
     spending its attention on the brief rather than the picture.
     """
+    if screen:
+        return SCREEN_LOOK + f' Caller said: "{prompt}"'
     if count > 1:
         return (
             f"{count} frames from a video, in order. Say what changes across them "
@@ -393,7 +461,15 @@ def vision_question(prompt, count):
     )
 
 
-def seen_prompt(description, count):
+def seen_prompt(description, count, screen=False):
+    if screen:
+        return (
+            "You just looked at the caller's screen. This is what is on it:\n\n"
+            f"{description}\n\n"
+            "Help with what they actually asked. Give the next step only, naming the "
+            "exact button, menu or field and where it is on screen. Do not describe "
+            "the screen back to them, and never mention screenshots or image analysis."
+        )
     what = "the frames" if count > 1 else "the photo"
     return (
         f"You just looked at {what} the caller sent. Here is what you saw:\n\n"
@@ -415,7 +491,33 @@ def grounded_prompt(results):
         "\n\nAnswer the user's question using these results. Speak naturally in "
         "two or three sentences. Do not mention searching, results, or sources."
     )
-MAX_HISTORY = 8  # user+assistant messages retained for context
+# Messages retained for context. 8 was four exchanges — on a support call that
+# is short enough to forget the order number the caller gave a minute ago, and
+# SambaNova is fast enough that a longer history costs nothing audible.
+MAX_HISTORY = int(os.getenv("MAX_HISTORY_MESSAGES", "30"))
+
+# sonic-2 has no Arabic. Arabic turns go to a model that does; everything else
+# stays on whatever .env picked.
+TTS_MODEL_BY_LANGUAGE = {"ar": os.getenv("CARTESIA_MODEL_AR", "sonic-3")}
+
+
+def tts_model_for(code):
+    return TTS_MODEL_BY_LANGUAGE.get(code) or os.getenv("CARTESIA_MODEL", "sonic-2")
+
+
+def heard_part(reply, heard_chars):
+    """What the caller actually heard of a reply they talked over.
+
+    Recording the whole reply told the model it had said things nobody heard,
+    so the next answer built on them. The browser estimates how far playback
+    got; the note makes the interruption itself part of the context.
+    """
+    if heard_chars is None:
+        return reply
+    cut = reply[: max(0, int(heard_chars))].rstrip()
+    if not cut:
+        return "[The caller interrupted before you said anything.]"
+    return cut + " — [the caller cut you off here]"
 VOICE_LIMIT = 20  # how many Cartesia voices to offer in the picker
 MAX_CONCURRENT = 4  # requests accepted in flight at once on one connection
 
@@ -480,6 +582,13 @@ class Turn:
         self.kb_hits = []        # documentation sections used, if any
         self.language = 'en'
         self.order = None        # order number looked up, if any
+        self.route = None        # which model answered, and why
+        self.draft_lead_s = None # how far ahead an early draft started
+        self.think_s = None      # how long the reasoning model took
+        self.checks = {"checked": 0, "held": 0, "slowest_s": 0.0}
+        self.mood = "neutral"
+        self.meter = pricing.Meter()   # what this turn cost
+        self.cost_call = None          # running total for the call, set at the end
 
     def now(self):
         return time.perf_counter() - self.t0
@@ -488,10 +597,12 @@ class Turn:
         audio_seconds = self.audio_bytes / (SAMPLE_RATE * 2)
         total = self.last_audio or self.now()
 
-        # What the wire cost us: our stopwatch minus SambaNova's own.
+        # What the wire cost us: our stopwatch minus SambaNova's own. Meaningless
+        # for a turn answered from an early draft, whose first token arrived
+        # before the turn started.
         inference = self.server.get("time_to_first_token")
         overhead = None
-        if inference is not None and self.first_token is not None:
+        if inference is not None and self.first_token is not None and self.draft_lead_s is None:
             overhead = max(0.0, self.first_token - inference)
 
         return {
@@ -503,6 +614,13 @@ class Turn:
             "kb_hits": self.kb_hits,
             "language": self.language,
             "order": self.order,
+            "route": self.route,
+            "draft_lead_s": self.draft_lead_s,
+            "think_s": self.think_s,
+            "checks": self.checks,
+            "mood": self.mood,
+            "cost": self.meter.summary(),
+            "cost_call": self.cost_call,
             "network_overhead_s": overhead,
             "first_token_s": self.first_token,
             "last_token_s": self.last_token,
@@ -545,22 +663,536 @@ class Channel:
         self.lock = asyncio.Lock()
 
     async def event(self, payload):
+        if self.ws.closed:
+            return
         async with self.lock:
             await self.ws.send_json(payload)
 
     async def audio(self, turn_id, pcm):
+        if self.ws.closed:
+            return
         async with self.lock:
             await self.ws.send_bytes(turn_id.to_bytes(2, "big") + pcm)
 
 
-async def synthesise(chan, conn, turn_id, text, voice_id):
+# ================================================================ session
+
+# Cartesia's experimental voice controls (speed, emotion) are what make the
+# voice itself change with the caller's mood. If the account's model rejects
+# them, the first failure turns them off for the session and the turn is
+# re-synthesised without — the caller hears the reply either way.
+VOICE_CONTROLS = (os.getenv("CARTESIA_VOICE_CONTROLS") or "on").lower() not in ("0", "off", "false", "no")
+
+
+class Session:
+    """Everything one browser connection remembers between turns."""
+
+    def __init__(self):
+        self.history = []
+        self.speaking = {"code": "en"}   # the language this call is being held in
+        self.recent_fillers = []         # so the same acknowledgement is not used twice running
+        self.mood = "neutral"
+        self.controls_ok = VOICE_CONTROLS
+        self.caller = None               # who is on the line, once an order is looked up
+        self.said = {}                   # turn_id -> (assistant message in history, full reply)
+        self.turns_used = 0              # counted, not derived: history is trimmed
+        self.user_turns = 0              # agent turns that reached history
+        self.saved_turns = 0             # of those, how many are already in memory
+        self.drafts = {}                 # draft id -> Draft
+        self.persona = "front"           # who is speaking: front, billing or technical
+        self.voices = {}                 # persona -> Cartesia voice id
+        self.handoff = None              # set when a transfer is asked for mid-turn
+        self.actions = []                # what has actually been done on this call
+        self.cost = pricing.Meter()      # running total for the call
+
+
+PERSONAS = {
+    "billing": {"name": "Maya", "team": "billing",
+                "rule": ("You are Maya from the billing team: refunds, charges and payments. "
+                         "You have taken this call over from a colleague and can see "
+                         "everything said so far. You can resolve orders.")},
+    "technical": {"name": "Omar", "team": "technical support",
+                  "rule": ("You are Omar from technical support: devices, setup and errors on "
+                           "screen. You have taken this call over from a colleague and can see "
+                           "everything said so far. Walk the caller through one step at a time.")},
+}
+
+HANDOFF_PHRASE = {
+    "en": "Let me bring in {name} from our {team} team. They'll have everything we've talked about. ",
+    "ar": "خلّيني أحوّلك على {name} من فريق {team}، وعنده كل اللي تكلمنا فيه. ",
+}
+
+INTRO_RULE = (
+    "You have just taken over this call. Introduce yourself in one short sentence "
+    "with your first name and team, show in a few words that you know what the "
+    "caller needs, then take the next step or ask the one question you need. Do "
+    "not repeat what your colleague already said."
+)
+
+
+def pick_persona_voices(chosen):
+    """A different voice for each specialist, so a handoff is heard, not just read."""
+    ids = [v["id"] for v in CATALOG["voices"]]
+    others = [v for v in ids if v != chosen]
+    return {
+        "front": chosen,
+        "billing": os.getenv("VOICE_BILLING") or (others[0] if others else chosen),
+        "technical": os.getenv("VOICE_TECHNICAL") or (others[1] if len(others) > 1
+                                                      else (others[0] if others else chosen)),
+    }
+
+
+def norm(text):
+    """Two transcripts of the same sentence should compare equal."""
+    return re.sub(r"[^\w\s]", "", (text or "").lower()).split()
+
+
+def read_opts(data):
+    requested = data.get("model")
+    auto = requested in (None, "", "auto")
+    return {
+        "model": pick_model(None if auto else requested),
+        "auto": auto,
+        "voice": data.get("voice_id"),
+        "can_search": bool(data.get("search", True)),
+        "attachments": clean_attachments(data.get("images")),
+        "on_call": bool(data.get("call")),
+        "language": data.get("language"),
+        "check": bool(data.get("check", True)),
+        "mode": "interpret" if data.get("mode") == "interpret" else "agent",
+        "pair": data.get("pair") if data.get("pair") in languages.SUPPORTED else "ar",
+        "source": "screen" if data.get("source") == "screen" else "camera",
+    }
+
+
+def opts_key(opts):
+    """Settings that change what the model is asked, so a draft made under
+    different ones cannot stand in for the real turn."""
+    return (opts["model"], opts["auto"], opts["can_search"], opts["on_call"],
+            opts["language"], opts["mode"], opts["source"])
+
+
+def resolve_language(session, prompt, forced):
+    # A language the caller picked wins. Detection only ever sees what the
+    # browser transcribed, and an en-US recogniser turns French into English
+    # nonsense, so for speech the picker is the only reliable signal.
+    if forced in languages.SUPPORTED:
+        return forced
+    return languages.detect(prompt, session.speaking["code"])
+
+
+# ================================================================ memory
+
+def identify(session, prompt):
+    """Check a caller who is waiting to be verified. Returns an event or None."""
+    c = session.caller
+    if not c or c["verified"]:
+        return None
+    email = memory.find_email(prompt)
+    if not email:
+        return None
+    if email == c["email"]:
+        person = memory.customer(email) or {"name": email.split("@")[0]}
+        c.update(verified=True, name=person["name"], calls=memory.history(email),
+                 mismatch=False)
+        return caller_event(c, "verified")
+    c["mismatch"] = True
+    c["attempts"] = c.get("attempts", 0) + 1
+    return caller_event(c, "mismatch")
+
+
+def caller_event(c, status):
+    return {
+        "type": "caller", "status": status,
+        "order": c.get("order"), "email": memory.mask(c.get("email")),
+        "name": c.get("name") if c.get("verified") else None,
+        "calls": [
+            {"at": x["at"], "summary": x["summary"], "outcome": x.get("outcome"),
+             "actions": x.get("actions"), "seeded": bool(x.get("seeded"))}
+            for x in (c.get("calls") or [])
+        ] if c.get("verified") else [],
+    }
+
+
+def caller_rules(session):
+    c = session.caller
+    if not c:
+        return ""
+    if c["verified"]:
+        return (
+            "\n" + memory.as_context(c["name"], c.get("calls") or []) +
+            "\nUse this the way a good agent who remembers them would: if a previous "
+            "call is relevant, bring it up once, briefly and in your own words — "
+            "for example what was promised last time and whether it happened. Never "
+            "read the history out as a list, and do not mention it at all if it is "
+            "irrelevant to what they are asking now."
+        )
+    if c.get("mismatch"):
+        return (
+            f"\nThe email the caller gave does not match order {c['order']}. Tell them "
+            "kindly that it does not match and ask them to check it. Say nothing about "
+            "their account or previous calls until it does. Never say the right email."
+        )
+    return (
+        f"\nYou have looked up order {c['order']}. You can discuss the order itself. "
+        "Before discussing the caller's account or anything from previous calls, ask "
+        "them to confirm the email address on the order — once, naturally. Never say "
+        "the email address yourself."
+    )
+
+
+WRAP_FIELDS = ("summary", "outcome", "actions", "sentiment", "quality")
+
+
+def parse_write_up(text):
+    out = {}
+    for line in (text or "").splitlines():
+        key, _, value = line.partition(":")
+        key = key.strip().lower()
+        if key in WRAP_FIELDS and value.strip():
+            out[key] = value.strip()
+    return out
+
+
+async def remember_call(llm, session, note=None):
+    """Write the call to the caller's history, once, if they were verified."""
+    c = session.caller
+    if not c or not c.get("verified") or session.user_turns <= session.saved_turns:
+        return None
+    if note is None:
+        note = await write_up(llm, session.history)
+    if not note:
+        return None
+    fields = parse_write_up(note["text"])
+    memory.save_call(c["email"], time.strftime("%Y-%m-%d %H:%M"), fields)
+    session.saved_turns = session.user_turns
+    c["calls"] = memory.history(c["email"])
+    return fields
+
+
+# ================================================================ fact-check
+
+CHECK_MODEL = os.getenv("SAMBANOVA_CHECK_MODEL") or "Meta-Llama-3.3-70B-Instruct"
+
+CHECK_PROMPT = (
+    "You check one sentence a support agent is about to say out loud against the "
+    "records. Records:\n\n{sources}\n\nAlready said: {before}\n\nSentence: {sentence}\n\n"
+    "If every factual claim in the sentence — numbers, dates, durations, statuses, "
+    "prices, policies, promises — is stated in the records or follows directly from "
+    "them, reply exactly OK. Otherwise reply HOLD: followed by what is unsupported, "
+    "in under twelve words. Greetings, questions, offers to help and empathy are OK."
+)
+
+REPAIR = {
+    "en": "Actually, let me double-check one detail on that before I confirm it. ",
+    "ar": "في الحقيقة، خلّيني أتأكد من تفصيلة وحدة قبل ما أأكدها لك. ",
+    "es": "En realidad, déjame comprobar un detalle antes de confirmártelo. ",
+    "fr": "En fait, laissez-moi vérifier un détail avant de vous le confirmer. ",
+    "de": "Moment, lassen Sie mich ein Detail noch prüfen, bevor ich es bestätige. ",
+    "it": "Anzi, fammi verificare un dettaglio prima di confermartelo. ",
+    "pt": "Na verdade, deixe-me confirmar um detalhe antes de lhe dizer. ",
+    "nl": "Wacht, laat me één detail nog even controleren voordat ik het bevestig. ",
+}
+
+
+async def check_sentence(llm, sentence, sources, before, meter=None):
+    t = time.perf_counter()
+    try:
+        reply = await asyncio.wait_for(llm.chat.completions.create(
+            model=CHECK_MODEL, max_tokens=30, temperature=0,
+            messages=[{"role": "user", "content": CHECK_PROMPT.format(
+                sources=sources[:6000], before=before[-600:] or "(nothing yet)",
+                sentence=sentence.strip())}]), timeout=6)
+        verdict = (reply.choices[0].message.content or "").strip()
+        if meter is not None:
+            meter.add_usage(CHECK_MODEL, getattr(reply, "usage", None))
+    except Exception as exc:
+        # Fail open: a checker that is down should not silence the agent. The
+        # browser is told the sentence went out unchecked.
+        log_error(exc, "fact-check")
+        return True, "unchecked", time.perf_counter() - t
+    took = time.perf_counter() - t
+    if verdict.upper().startswith("HOLD"):
+        return False, verdict.split(":", 1)[-1].strip() or "not in the records", took
+    return True, "", took
+
+
+class Gate:
+    """Sits between the language model and the speaker, one sentence at a time.
+
+    Sentences that make a checkable claim — a number, a date, a policy — are
+    checked against what the agent actually knows this turn (the documents,
+    the order record, the search results) before Cartesia gets them. Checks
+    run in parallel and sentences are released in order, so only the first
+    claim costs a round trip; after that, checking happens while earlier
+    sentences are being spoken. Anything unsupported is held back.
+    """
+
+    def __init__(self, llm, sources, release, on_held, enabled, turn):
+        self.llm = llm
+        self.sources = sources         # grows during the turn
+        self.release = release
+        self.on_held = on_held
+        self.enabled = enabled
+        self.turn = turn
+        self.buf = ""
+        self.said = ""
+        self.queue = asyncio.Queue()
+        self.held = []
+        self.worker = asyncio.ensure_future(self._drain())
+
+    async def feed(self, delta):
+        self.buf += delta
+        done, self.buf = smarts.split_sentences(self.buf)
+        for sentence in done:
+            self._submit(sentence)
+
+    def _submit(self, sentence):
+        check = None
+        if self.enabled and self.sources and smarts.has_claim(sentence):
+            check = asyncio.ensure_future(check_sentence(
+                self.llm, sentence, "\n\n".join(self.sources), self.said, self.turn.meter))
+        self.said += sentence
+        self.queue.put_nowait((sentence, check))
+
+    async def _drain(self):
+        while True:
+            item = await self.queue.get()
+            if item is None:
+                return
+            sentence, check = item
+            if check is not None:
+                ok, reason, took = await check
+                self.turn.checks["checked"] += 1
+                self.turn.checks["slowest_s"] = max(self.turn.checks["slowest_s"], took)
+                if not ok:
+                    self.turn.checks["held"] += 1
+                    self.held.append(sentence)
+                    await self.on_held(sentence, reason)
+                    continue
+            await self.release(sentence)
+
+    async def close(self):
+        if self.buf.strip():
+            self._submit(self.buf)
+        self.buf = ""
+        self.queue.put_nowait(None)
+        await self.worker
+
+    def cancel(self):
+        self.worker.cancel()
+
+
+# ================================================================ prepare
+
+class Feed:
+    """A model stream that starts now and is read later.
+
+    A draft starts generating while the caller is still talking; if the turn
+    that arrives matches it, the turn reads what was already produced and then
+    carries on live. If it does not match, the draft is cancelled and nothing
+    it produced is ever heard.
+    """
+
+    def __init__(self, factory):
+        self.items = []
+        self.done = False
+        self.error = None
+        self.wake = asyncio.Event()
+        self.task = asyncio.ensure_future(self._run(factory))
+
+    async def _run(self, factory):
+        try:
+            async for item in factory():
+                self.items.append(item)
+                self.wake.set()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.error = exc
+        finally:
+            self.done = True
+            self.wake.set()
+
+    async def read(self):
+        i = 0
+        while True:
+            while i < len(self.items):
+                yield self.items[i]
+                i += 1
+            if self.done:
+                if self.error:
+                    raise self.error
+                return
+            self.wake.clear()
+            if i < len(self.items) or self.done:
+                continue
+            await self.wake.wait()
+
+    def cancel(self):
+        if not self.task.done():
+            self.task.cancel()
+
+
+TALKER_RULE = (
+    "A colleague with more time is working out the full answer and it will be "
+    "spoken straight after you. Say one or two short sentences that show you "
+    "understood the question and set up the answer — what you are going to look "
+    "at — without giving the answer itself, any numbers or any conclusion. Do "
+    "not ask a question, and never mention a colleague or waiting."
+)
+
+THINKER_RULE = (
+    "Work out the answer carefully, then reply with only what should be said "
+    "out loud next. The caller has already heard a short acknowledgement, so "
+    "start directly with the substance: no greeting, no 'okay', 'so' or 'sure'. "
+    "Two to four spoken sentences, no lists, no markdown."
+)
+
+
+async def collect_text(llm, messages, model, stats=None):
+    """A complete reply from a reasoning model, as one piece of text."""
+    parts = []
+    async for delta in stream_chat(llm, messages, model=model, stats=stats):
+        parts.append(delta)
+    yield "".join(parts).strip()
+
+
+class Prepared:
+    """Everything a turn needs before its first spoken word, made in one place
+    so an early draft and a real turn are built identically."""
+
+    def __init__(self):
+        self.convo = []
+        self.hits = []
+        self.sources = []
+        self.route = None
+        self.mood = "neutral"
+        self.talk = None
+        self.thinker = None
+        self.stats = {}
+        self.think_stats = {}
+        self.meter = pricing.Meter()
+        self.started = time.perf_counter()
+
+    def cancel(self):
+        for feed in (self.talk, self.thinker):
+            if feed is not None:
+                feed.cancel()
+
+
+def build_system(session, code, opts, mood_now, route_):
+    system = SYSTEM_PROMPT + language_rule(code) + ORDER_RULES
+    if opts["on_call"]:
+        system += "\n" + CALL_PROMPT
+    if opts["source"] == "screen":
+        system += "\n" + SCREEN_PROMPT
+    if opts["can_search"] and route_["tier"] != "deep":
+        system += SEARCH_RULES
+    if mood_now in smarts.MOOD_RULES:
+        system += "\n" + smarts.MOOD_RULES[mood_now]
+    system += caller_rules(session)
+    persona = PERSONAS.get(session.persona)
+    if persona:
+        system += "\n" + persona["rule"]
+    system += ("\nWhen you and the caller agree a replacement, refund or returns label, "
+               "carry it out with resolve_order and give them the reference it returns.")
+    return system
+
+
+async def prepare(llm, session, prompt, opts, code, extras=(), intro=None):
+    p = Prepared()
+    p.mood = session.mood if intro else smarts.mood(prompt, session.mood)
+
+    number = orders.find_number(prompt)
+    has_order = bool(number and number in orders.ORDERS)
+    if opts["auto"] and not opts["attachments"] and not intro:
+        p.route = smarts.route(prompt, CATALOG["models"], opts["model"], has_order)
+    else:
+        p.route = {"tier": "standard", "model": opts["model"],
+                   "reason": "took over the call" if intro
+                   else ("chosen in the picker" if not opts["auto"]
+                         else ("reading your screen" if opts["source"] == "screen" else "looking at a photo"))}
+
+    system = build_system(session, code, opts, p.mood, p.route)
+    if intro:
+        # Nobody has said anything new: the specialist speaks first.
+        messages = ([{"role": "system", "content": system + "\n" + INTRO_RULE}]
+                    + list(session.history)
+                    + [{"role": "system", "content": f"Why you were brought in: {intro.get('reason') or 'see above'}"}])
+    else:
+        messages = ([{"role": "system", "content": system}]
+                    + list(session.history) + [{"role": "user", "content": prompt}])
+
+    # Retrieval is local and costs microseconds, so it happens on every turn
+    # rather than behind a tool call the model has to remember to use. Only
+    # pay for a translation round trip when the question might not be English.
+    # A specialist's opening has no new question; look up why they were called.
+    query = (intro or {}).get("reason") or prompt
+    hits = KB.find(query) if query else []
+    if query and not hits and (code != "en" or languages.needs_translation(query)):
+        lookup = await in_english(llm, query, "translate", p.meter)
+        if lookup and lookup.lower() != query.lower():
+            hits = KB.find(lookup)
+    p.hits = hits
+    if hits:
+        p.sources.append(kb_context(hits))
+    convo = messages + list(extras) + [
+        {"role": "system", "content": policy_prompt(hits) if hits else NO_POLICY}]
+    p.convo = convo
+
+    if p.route["tier"] == "deep":
+        talk_convo = convo + [{"role": "system", "content": TALKER_RULE}]
+        think_convo = convo + [{"role": "system", "content": THINKER_RULE}]
+        p.talk = Feed(lambda: stream_tools(llm, talk_convo, model=p.route["model"], stats=p.stats))
+        p.thinker = Feed(lambda: collect_text(llm, think_convo, p.route["thinker"], p.think_stats))
+    else:
+        tools = (SEARCH_TOOL if opts["can_search"] else []) + [ORDER_TOOL, ACTION_TOOL]
+        if session.persona == "front":
+            tools.append(TRANSFER_TOOL)
+        p.talk = Feed(lambda: stream_tools(llm, convo, model=p.route["model"],
+                                           tools=tools, stats=p.stats))
+    return p
+
+
+class Draft:
+    def __init__(self, text, task, history_len, key, code):
+        self.words = norm(text)
+        self.task = task
+        self.history_len = history_len
+        self.key = key
+        self.code = code
+        self.started = time.perf_counter()
+
+    def matches(self, prompt, session, key, code):
+        return (self.words == norm(prompt) and self.history_len == len(session.history)
+                and self.key == key and self.code == code)
+
+    def cancel(self):
+        if self.task.done():
+            if not self.task.cancelled() and self.task.exception() is None:
+                self.task.result().cancel()
+        else:
+            self.task.cancel()
+
+
+# ================================================================ synthesis
+
+def voice_spec(voice_id, controls=None):
+    spec = {"mode": "id", "id": voice_id}
+    if controls:
+        spec["__experimental_controls"] = controls
+    return spec
+
+
+async def synthesise(chan, conn, turn_id, text, voice_id, language="en"):
     """Speak one fixed string — used for the assistant's own 'which first?'
     question, which has no language model in front of it."""
     ctx = conn.context(
-        model_id=os.getenv("CARTESIA_MODEL", "sonic-2"),
-        voice={"mode": "id", "id": voice_id},
+        model_id=tts_model_for(language),
+        voice=voice_spec(voice_id),
         output_format=output_format(),
-        language="en",
+        language=language,
     )
     await ctx.push(text)
     await ctx.no_more_inputs()
@@ -571,49 +1203,93 @@ async def synthesise(chan, conn, turn_id, text, voice_id):
             raise RuntimeError(res.message or res.title or "Cartesia error")
 
 
-async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=None,
-                   can_search=True, attachments=(), on_call=False, prelook=None,
-                   recent_fillers=None, speaking=None):
-    """Stream one prompt through the LLM into its own Cartesia context, relaying
-    text events and raw PCM frames to the browser as they arrive."""
-    turn = Turn()
-    recent_fillers = recent_fillers if recent_fillers is not None else []
-    speaking = speaking if speaking is not None else {"code": "en"}
-    was = speaking["code"]
-    speaking["code"] = languages.detect(prompt, was)
-    turn.language = speaking["code"]
-    voice_id = pick_voice(voice)
-    llm_model = pick_model(model)
-    tts_model = os.getenv("CARTESIA_MODEL", "sonic-2")
-    reply = ""
+INTERPRET_RULE = (
+    "You are a live interpreter between two people on a call. Translate what the "
+    "speaker just said into {target}. Output only the translation, as it should be "
+    "spoken: natural, the same register and tone, nothing added, nothing answered. "
+    "Keep names, numbers and order numbers exactly."
+)
 
-    # Snapshot history now: a turn started alongside others should not see
-    # replies that land while it is still running.
-    system = SYSTEM_PROMPT + language_rule(speaking["code"]) + ORDER_RULES
-    if on_call:
-        system += "\n" + CALL_PROMPT
-    if can_search:
-        system += SEARCH_RULES
-    messages = [{"role": "system", "content": system}] + list(history) + [
-        {"role": "user", "content": prompt}
-    ]
+
+# ================================================================ a turn
+
+async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, draft=None,
+                   prelook=None, intro=None):
+    """One prompt through to speech: prepare (or adopt an early draft), then
+    stream the model through the fact-check gate into its own Cartesia
+    context, relaying text events and raw PCM frames to the browser."""
+    turn = Turn()
+    attachments = opts["attachments"]
+    interpreting = opts["mode"] == "interpret"
+    was = session.speaking["code"]
+
+    if interpreting:
+        source_lang = languages.detect(prompt, "en")
+        pair = opts["pair"] if opts["pair"] != "en" else "ar"
+        if source_lang == "en":
+            code = pair
+        else:
+            code = "en"
+            pair = source_lang
+        turn.language = code
+    else:
+        code = resolve_language(session, prompt, opts["language"])
+        session.speaking["code"] = code
+        turn.language = code
+        # Known before a word is generated, so the voice is set from the start.
+        turn.mood = session.mood if intro else smarts.mood(prompt, session.mood)
+
+    # A specialist speaks in their own voice for the rest of the call.
+    voice_id = session.voices.get(session.persona) if session.persona != "front" else None
+    voice_id = voice_id or pick_voice(opts["voice"])
+    tts_model = tts_model_for(code)
+    reply = ""
+    notes = []
+    held_any = []
+
+    # Identity first: a caller who has just confirmed their email changes what
+    # the model is told, which is also why a draft made before it is no use.
+    who = None if (interpreting or intro) else identify(session, prompt)
+    if who:
+        if draft:
+            draft.cancel()
+        draft = None
 
     await chan.event({
         "type": "turn_start", "turn_id": turn_id, "prompt": prompt,
-        "model": llm_model, "voice_id": voice_id,
+        "model": opts["model"], "voice_id": voice_id,
         "attachments": prelook["count"] if prelook else len(attachments),
-        "language": speaking["code"],
-        "language_changed": speaking["code"] != was,
+        "language": code,
+        "language_changed": (not interpreting) and code != was,
+        "interpreting": {"from": source_lang if interpreting else None, "to": code}
+        if interpreting else None,
+        "speaker": ({"name": PERSONAS[session.persona]["name"], "team": PERSONAS[session.persona]["team"]}
+                    if session.persona in PERSONAS else None),
+        "intro": bool(intro),
     })
+    if who:
+        await chan.event(who)
 
     # The language model runs right away; text waits here for a synthesis slot.
     pending_text = asyncio.Queue()
 
-    async def emit(delta):
+    async def release(text):
         nonlocal reply
-        reply += delta
-        await chan.event({"type": "token", "turn_id": turn_id, "text": delta, "t": turn.now()})
-        await pending_text.put(delta)
+        reply += text
+        await chan.event({"type": "token", "turn_id": turn_id, "text": text, "t": turn.now()})
+        await pending_text.put(text)
+
+    async def on_held(sentence, reason):
+        held_any.append(sentence)
+        await chan.event({"type": "held", "turn_id": turn_id, "sentence": sentence.strip(),
+                          "reason": reason, "t": turn.now()})
+
+    sources = []
+    gate = Gate(llm, sources, release, on_held,
+                enabled=opts["check"] and not interpreting, turn=turn)
+
+    async def emit(delta):
+        await gate.feed(delta)
 
     async def mark_first():
         if turn.first_token is None:
@@ -628,12 +1304,11 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
         which needs the tools that come after.
         """
         count = prelook["count"] if prelook else len(attachments)
-        await chan.event({"type": "looking", "turn_id": turn_id,
-                          "count": count, "t": turn.now(),
-                          "speculative": bool(prelook)})
+        screen = opts["source"] == "screen"
+        await chan.event({"type": "looking", "turn_id": turn_id, "count": count,
+                          "t": turn.now(), "speculative": bool(prelook), "screen": screen})
 
-        one_phrase, many_phrase = LOOKING_PHRASE.get(
-            speaking["code"], LOOKING_PHRASE["en"])
+        one_phrase, many_phrase = LOOKING_PHRASE.get(code, LOOKING_PHRASE["en"])
         bridge = one_phrase if count == 1 else many_phrase
         await emit(bridge)
 
@@ -644,75 +1319,99 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
             description, info = await prelook["task"]
         else:
             description, info = await describe_images(
-                llm, attachments, vision_question(prompt, count))
+                llm, attachments, vision_question(prompt, count, screen))
         turn.vision_s = time.perf_counter() - t_look
+        turn.meter.add(info.get("model"), info.get("prompt_tokens") or 0, len(description) // 4)
         await chan.event({
             "type": "looked", "turn_id": turn_id, "t": turn.now(),
             "took_s": turn.vision_s, "model": info["model"],
             "prompt_tokens": info["prompt_tokens"],
-            "description": description[:400],
+            "description": description[:400], "screen": screen,
         })
         return bridge, description
 
-    async def generate():
-        # Everything downstream builds on `convo`, so anything seen in an image
-        # is still in context when the model decides whether to search.
-        convo = list(messages)
-
-        # Nothing to look at, so nothing else is covering the wait. Skip it for
-        # very short turns: "hi there" does not need "right, let me see" in
-        # front of it, and those answers come back quickly regardless.
-        worth_covering = len(prompt.split()) > 3
-        if on_call and worth_covering and not attachments and not prelook:
-            filler = backchannel(recent_fillers, speaking["code"])
-            recent_fillers.append(filler)
-            del recent_fillers[:-2]
-            turn.filler_s = turn.now()
-            await emit(filler)
-            convo = convo + [
-                {"role": "assistant", "content": filler.strip()},
-                {"role": "system", "content":
-                    f"You have already said \"{filler.strip()}\" out loud. Carry "
-                    "straight on into the answer. Do not greet, acknowledge or "
-                    "say okay again — that has happened."},
-            ]
-
-        if attachments or prelook:
+    async def generate_interpretation():
+        await chan.event({"type": "route", "turn_id": turn_id, "tier": "interpret",
+                          "model": TRANSLATOR, "reason": f"{languages.name(pair if code == 'en' else 'en')} "
+                          f"to {languages.name(code)}"})
+        messages = [{"role": "system", "content": INTERPRET_RULE.format(target=languages.name(code))},
+                    {"role": "user", "content": prompt}]
+        async for delta in stream_chat(llm, messages, model=TRANSLATOR, stats=turn.server):
             await mark_first()
-            bridge, description = await look_at_attachments()
-            convo += [
-                {"role": "assistant", "content": bridge},
-                {"role": "system",
-             "content": seen_prompt(description,
-                                    prelook["count"] if prelook else len(attachments))},
-            ]
+            await emit(delta)
+        turn.meter.add_usage(TRANSLATOR, turn.server)
 
-        # Retrieval is local and costs microseconds, so it happens on every
-        # turn rather than behind a tool call the model has to remember to use.
-        # Detection is driven by the reply language and needs real evidence, so
-        # it calls a short "livrez-vous en France?" English and skips the
-        # translation. Let retrieval decide instead: if nothing matched, try it
-        # in English before concluding the documents do not cover it. The cost
-        # lands only on turns that found nothing, under the holding phrase.
-        hits = KB.find(prompt)
-        if not hits:
-            lookup = await in_english(llm, prompt, "translate")
-            if lookup and lookup.lower() != prompt.lower():
-                hits = KB.find(lookup)
-        turn.kb_hits = [f"{sec.doc} — {sec.heading}" for _, sec in hits]
-        if hits:
-            convo = convo + [{"role": "system", "content": policy_prompt(hits)}]
+    async def generate_answer():
+        prepared = None
+
+        if draft is not None:
+            try:
+                prepared = await draft.task
+            except Exception as exc:
+                log_error(exc, "early draft")
+                prepared = None
+            if prepared is not None:
+                turn.draft_lead_s = time.perf_counter() - draft.started
+                await chan.event({"type": "draft_used", "turn_id": turn_id,
+                                  "lead_s": turn.draft_lead_s})
+
+        if prepared is None:
+            extras = []
+            # Nothing to look at, so nothing else is covering the wait. Skip it
+            # for very short turns: "hi there" does not need "right, let me see"
+            # in front of it, and those answers come back quickly regardless.
+            worth_covering = len(prompt.split()) > 3
+            if opts["on_call"] and worth_covering and not attachments and not prelook and not intro:
+                filler = backchannel(session.recent_fillers, code)
+                session.recent_fillers.append(filler)
+                del session.recent_fillers[:-2]
+                turn.filler_s = turn.now()
+                await emit(filler)
+                extras += [
+                    {"role": "assistant", "content": filler.strip()},
+                    {"role": "system", "content":
+                        f"You have already said \"{filler.strip()}\" out loud. Carry "
+                        "straight on into the answer. Do not greet, acknowledge or "
+                        "say okay again — that has happened."},
+                ]
+            if attachments or prelook:
+                await mark_first()
+                bridge, description = await look_at_attachments()
+                extras += [
+                    {"role": "assistant", "content": bridge},
+                    {"role": "system", "content": seen_prompt(
+                        description, prelook["count"] if prelook else len(attachments),
+                        opts["source"] == "screen")},
+                ]
+            prepared = await prepare(llm, session, prompt, opts, code, extras, intro=intro)
+
+        turn.server = prepared.stats
+        turn.meter.merge(prepared.meter)
+        turn.route = prepared.route
+        turn.mood = prepared.mood
+        if prepared.mood != session.mood or prepared.mood != "neutral":
+            await chan.event({"type": "mood", "turn_id": turn_id, "mood": prepared.mood,
+                              "says": smarts.MOOD_SAYS.get(prepared.mood)})
+        session.mood = prepared.mood
+        await chan.event({"type": "route", "turn_id": turn_id, **prepared.route})
+
+        sources.extend(prepared.sources)
+        turn.kb_hits = [f"{sec.doc} — {sec.heading}" for _, sec in prepared.hits]
+        if prepared.hits:
             await chan.event({"type": "knowledge", "turn_id": turn_id,
-                              "sections": turn.kb_hits, "t": turn.now()})
-        else:
-            convo = convo + [{"role": "system", "content": NO_POLICY}]
+                              "sections": turn.kb_hits, "t": turn.now(),
+                              "excerpts": [{"doc": sec.doc, "heading": sec.heading,
+                                            "text": first_sentences(sec.body)}
+                                           for _, sec in prepared.hits[:2]]})
 
+        if prepared.thinker is not None:
+            await chan.event({"type": "thinking", "turn_id": turn_id,
+                              "model": prepared.route["thinker"],
+                              "t": max(0.0, prepared.started - turn.t0)})
+
+        convo = prepared.convo
         calls = []
-        async for kind, payload in stream_tools(
-            llm, convo, model=llm_model,
-            tools=(SEARCH_TOOL if can_search else []) + [ORDER_TOOL],
-            stats=turn.server,
-        ):
+        async for kind, payload in prepared.talk.read():
             if kind == "text":
                 await mark_first()
                 await emit(payload)
@@ -720,6 +1419,31 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
                 await mark_first()
             elif kind == "tool":
                 calls.append(payload)
+        turn.meter.add_usage(prepared.route["model"], prepared.stats)
+
+        if prepared.thinker is not None:
+            answer = ""
+            try:
+                async for text in prepared.thinker.read():
+                    answer = text
+            except Exception as exc:
+                log_error(exc, "reasoning model")
+            turn.think_s = time.perf_counter() - prepared.started
+            turn.meter.add_usage(prepared.route["thinker"], prepared.think_stats)
+            await chan.event({"type": "thought", "turn_id": turn_id, "t": turn.now(),
+                              "took_s": turn.think_s, "model": prepared.route["thinker"],
+                              "ok": bool(answer)})
+            if answer:
+                await emit(" " + answer)
+            else:
+                # The reasoning model failed: answer with the talker instead of
+                # leaving the caller with only a lead-in.
+                async for kind, payload in stream_tools(
+                        llm, convo + [{"role": "system", "content":
+                                       "Now give the answer itself, in two or three spoken sentences."}],
+                        model=prepared.route["model"]):
+                    if kind == "text":
+                        await emit(payload)
 
         # An order lookup is local and instant, so it needs no holding phrase
         # and no second round trip to decide whether to make one.
@@ -740,22 +1464,66 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
                     "number": record.get("number"), "found": record.get("found"),
                     "status": record.get("status"),
                     "days_late": record.get("days_late"),
+                    "counts_as_lost": record.get("counts_as_lost"),
+                    "items": record.get("items"), "paid": record.get("paid"),
+                    "carrier": record.get("carrier"), "tracking": record.get("tracking"),
+                    "last_scan": record.get("last_scan"), "promised": record.get("promised"),
+                    "delivered_on": record.get("delivered_on"),
                 })
                 detail = ("Order lookup result. This is the real record — answer "
                           "from it and do not add anything it does not say.\n\n"
                           + orders.describe(record))
+                sources.append(orders.describe(record))
+                notes.append(f"Earlier order lookup ({record.get('number')}):\n"
+                             + orders.describe(record))
+
+                # Whose order it is decides whose memory this is — once they
+                # confirm the email on it.
+                email = (orders.ORDERS.get(record.get("number") or "", {}) or {}).get("email")
+                c = session.caller
+                if record.get("found") and email and not (c and c["verified"] and c["email"] == email):
+                    session.caller = {"email": email.lower(), "order": record["number"],
+                                      "verified": False, "name": None}
+                    await chan.event(caller_event(session.caller, "pending"))
+                    detail += ("\n\nTo pull up their account, ask them to confirm the email "
+                               "address on this order. Never say the email yourself.")
             else:
                 detail = ("You called the order lookup without a number. Ask the "
                           "caller for their order number — do not claim to have "
                           "checked anything.")
             convo = convo + [{"role": "system", "content": detail}]
+            follow = {}
             async for kind, payload in stream_tools(
-                llm, convo, model=llm_model,
-                tools=SEARCH_TOOL if can_search else None):
+                    llm, convo, model=prepared.route["model"],
+                    tools=SEARCH_TOOL if opts["can_search"] else None, stats=follow):
                 if kind == "text":
                     await emit(payload)
+            turn.meter.add_usage(prepared.route["model"], follow)
 
-        searched = [c for c in calls if c.get("name") != "lookup_order"]
+        acted = [c for c in calls if c.get("name") == "resolve_order"]
+        if acted:
+            detail = await carry_out(acted[0], prompt, session, turn, turn_id, chan, sources, notes)
+            convo = convo + [{"role": "system", "content": detail}]
+            follow = {}
+            async for kind, payload in stream_tools(llm, convo, model=prepared.route["model"],
+                                                    stats=follow):
+                if kind == "text":
+                    await emit(payload)
+            turn.meter.add_usage(prepared.route["model"], follow)
+
+        moved = [c for c in calls if c.get("name") == "transfer_to_specialist"]
+        if moved and session.persona == "front":
+            try:
+                args = json.loads(moved[0]["arguments"]) or {}
+            except ValueError:
+                args = {}
+            team = args.get("team") if args.get("team") in PERSONAS else "billing"
+            session.handoff = {"team": team, "reason": args.get("reason") or prompt}
+            who_next = PERSONAS[team]
+            await emit(HANDOFF_PHRASE.get(code, HANDOFF_PHRASE["en"]).format(
+                name=who_next["name"], team=who_next["team"]))
+
+        searched = [c for c in calls if c.get("name") == "web_search"]
         if searched:
             try:
                 query = (json.loads(searched[0]["arguments"]) or {}).get("query", "").strip()
@@ -767,11 +1535,8 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
 
                 # Start talking before the search returns. This text goes into
                 # the same synthesis context as the answer that follows it.
-                # A speculative look leaves `attachments` empty while still
-                # having spoken "let me take a look at that", which stacked
-                # three holding phrases in a row.
                 spoken = bridge_phrase(query, already_spoke=bool(attachments or prelook),
-                                       code=speaking["code"])
+                                       code=code)
                 await emit(spoken)
 
                 t_search = turn.now()
@@ -785,18 +1550,38 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
                         for r in results.get("results", [])
                     ],
                 })
+                if results.get("results") or results.get("answer"):
+                    sources.append(as_context(results)[:3000])
+                    notes.append(f"Earlier web search for \"{query}\":\n"
+                                 + as_context(results)[:1200])
 
                 grounded = convo + [
                     {"role": "assistant", "content": spoken},
                     {"role": "system", "content": grounded_prompt(results)},
                 ]
-                async for kind, payload in stream_tools(llm, grounded, model=llm_model):
+                follow = {}
+                async for kind, payload in stream_tools(llm, grounded, model=prepared.route["model"],
+                                                        stats=follow):
                     if kind == "text":
                         await emit(payload)
+                turn.meter.add_usage(prepared.route["model"], follow)
 
-        turn.last_token = turn.now()
-        await chan.event({"type": "text_done", "turn_id": turn_id, "t": turn.last_token})
-        await pending_text.put(None)
+    async def generate():
+        try:
+            if interpreting:
+                await generate_interpretation()
+            else:
+                await generate_answer()
+            await gate.close()
+            if held_any:
+                # Something was held back: say so rather than leave a gap.
+                await release(REPAIR.get(code, REPAIR["en"]))
+            if turn.checks["checked"]:
+                await chan.event({"type": "checked", "turn_id": turn_id, **turn.checks})
+        finally:
+            turn.last_token = turn.now()
+            await chan.event({"type": "text_done", "turn_id": turn_id, "t": turn.last_token})
+            await pending_text.put(None)
 
     async def synthesize():
         if conn is None:
@@ -807,65 +1592,189 @@ async def run_turn(chan, conn, llm, history, turn_id, prompt, model=None, voice=
             turn.tts_start = turn.now()
             await chan.event({"type": "tts_start", "turn_id": turn_id, "t": turn.tts_start})
 
-            ctx = conn.context(
-                model_id=tts_model,
-                voice={"mode": "id", "id": voice_id},
-                output_format=output_format(),
-                language=speaking["code"],
-            )
+            sent = []
+            state = {"finished": False}
 
-            async def pump():
-                while True:
-                    delta = await pending_text.get()
-                    if delta is None:
-                        break
-                    await ctx.push(delta)
-                await ctx.no_more_inputs()
+            async def attempt(controls):
+                ctx = conn.context(
+                    model_id=tts_model,
+                    voice=voice_spec(voice_id, controls),
+                    output_format=output_format(),
+                    language=code,
+                )
 
-            async def drain():
-                async for res in ctx.receive():
-                    if res.type == "chunk" and res.audio:
-                        if turn.first_audio is None:
-                            turn.first_audio = turn.now()
-                            await chan.event({
-                                "type": "first_audio", "turn_id": turn_id,
-                                "t": turn.first_audio, "sample_rate": SAMPLE_RATE,
-                            })
-                        turn.audio_bytes += len(res.audio)
-                        await chan.audio(turn_id, res.audio)
-                    elif res.type == "error":
-                        raise RuntimeError(res.message or res.title or "Cartesia error")
-                turn.last_audio = turn.now()
+                async def pump():
+                    for piece in list(sent):        # replay after a retry
+                        await ctx.push(piece)
+                    while not state["finished"]:
+                        delta = await pending_text.get()
+                        if delta is None:
+                            state["finished"] = True
+                            break
+                        sent.append(delta)
+                        turn.meter.chars += len(delta)
+                        await ctx.push(delta)
+                    await ctx.no_more_inputs()
 
-            await asyncio.gather(pump(), drain())
+                async def drain():
+                    async for res in ctx.receive():
+                        if res.type == "chunk" and res.audio:
+                            if turn.first_audio is None:
+                                turn.first_audio = turn.now()
+                                await chan.event({
+                                    "type": "first_audio", "turn_id": turn_id,
+                                    "t": turn.first_audio, "sample_rate": SAMPLE_RATE,
+                                })
+                            turn.audio_bytes += len(res.audio)
+                            await chan.audio(turn_id, res.audio)
+                        elif res.type == "error":
+                            raise RuntimeError(res.message or res.title or "Cartesia error")
+                    turn.last_audio = turn.now()
 
-    await asyncio.gather(generate(), synthesize())
+                tasks = [asyncio.ensure_future(pump()), asyncio.ensure_future(drain())]
+                try:
+                    await asyncio.gather(*tasks)
+                except BaseException:
+                    for t in tasks:
+                        t.cancel()
+                    raise
 
-    history.append({"role": "user", "content": prompt})
-    history.append({"role": "assistant", "content": reply})
-    del history[:-MAX_HISTORY]
+            controls = (smarts.MOOD_VOICE.get(turn.mood)
+                        if session.controls_ok and not interpreting else None)
+            try:
+                await attempt(controls)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if controls and turn.first_audio is None:
+                    log_error(exc, "voice controls refused; speaking without them")
+                    session.controls_ok = False
+                    await attempt(None)
+                else:
+                    raise
 
+    def remember(text):
+        if interpreting:
+            return
+        if not intro:
+            session.history.append({"role": "user", "content": prompt})
+        for note in notes:
+            session.history.append({"role": "system", "content": note})
+        said_msg = {"role": "assistant", "content": text}
+        session.history.append(said_msg)
+        session.user_turns += 1
+        session.said[turn_id] = (said_msg, reply)
+        for old in [k for k in session.said if k < turn_id - 20]:
+            session.said.pop(old, None)
+        del session.history[:-MAX_HISTORY]
+
+    try:
+        await asyncio.gather(generate(), synthesize())
+    except asyncio.CancelledError:
+        # Talked over. Keep what they heard, so the next answer does not build
+        # on sentences that never reached them — and free the synthesis slot,
+        # which the browser stopping playback never did.
+        remember(heard_part(reply, interrupt.get("heard_chars")))
+        raise
+    finally:
+        gate.cancel()
+        if draft is not None and draft.task.done() and not draft.task.cancelled() \
+                and draft.task.exception() is None:
+            draft.task.result().cancel()
+
+    remember(reply)
+
+    session.cost.merge(turn.meter)
+    turn.cost_call = call_cost(session)
     await chan.event({
         "type": "done", "turn_id": turn_id, "reply": reply, "metrics": turn.metrics(),
     })
 
+    # A transfer asked for during this turn: the specialist speaks next, in
+    # their own voice, without waiting for the caller.
+    if session.handoff and not intro:
+        handoff, session.handoff = session.handoff, None
+        session.persona = handoff["team"]
+        who_next = PERSONAS[handoff["team"]]
+        await chan.event({"type": "handoff", "turn_id": turn_id, "team": handoff["team"],
+                          "name": who_next["name"], "label": who_next["team"],
+                          "reason": handoff["reason"]})
+        return {"handoff": handoff}
+    return None
+
+
+def call_cost(session):
+    total = session.cost.summary()
+    total["human_usd"] = pricing.human_cost()
+    return total
+
+
+def first_sentences(body, limit=170):
+    text = " ".join(body.split())
+    cut = text[:limit]
+    end = max(cut.rfind(". "), cut.rfind("? "))
+    return (cut[:end + 1] if end > 60 else cut.rstrip() + ("…" if len(text) > limit else "")).strip()
+
+
+ACTION_PREFIX = {"replacement": "RP", "refund": "RF", "return_label": "RL"}
+ACTION_SAYS = {"replacement": "replacement sent", "refund": "refund issued",
+               "return_label": "returns label emailed"}
+
+
+async def carry_out(call, prompt, session, turn, turn_id, chan, sources, notes):
+    """Do what was agreed — mocked, like the order lookup — and say what was done."""
+    try:
+        args = json.loads(call.get("arguments") or "{}") or {}
+    except ValueError:
+        args = {}
+    action = args.get("action") if args.get("action") in ACTION_PREFIX else None
+    number = (orders.find_number(args.get("order_number", "")) or orders.find_number(prompt)
+              or (session.caller or {}).get("order"))
+    record = orders.look_up(number) if number else None
+    if not action or not record or not record.get("found"):
+        return ("The action could not be carried out: no valid order or action. Tell the "
+                "caller you could not do it yet and ask for the order number.")
+    if record.get("status") in ("refunded", "cancelled"):
+        return (f"Order {number} is already {record['status']}; nothing more can be done to it. "
+                "Tell the caller that plainly.")
+    ref = f"{ACTION_PREFIX[action]}-{number}-{secrets.token_hex(2).upper()}"
+    items = ", ".join(i["name"] for i in record.get("items", []))
+    email = (orders.ORDERS.get(number, {}) or {}).get("email")
+    done = {"kind": action, "ref": ref, "order": number, "items": items,
+            "amount": record.get("paid"), "email": memory.mask(email) if email else None}
+    session.actions.append(done)
+    await chan.event({"type": "action", "turn_id": turn_id, "t": turn.now(), **done})
+    said = (f"Action completed: {ACTION_SAYS[action]} for order {number} ({items}), "
+            f"reference {ref}.")
+    if action == "refund":
+        said += f" Amount £{record.get('paid', 0):.2f}, to the original payment method."
+    if action == "return_label" and email:
+        said += " Sent to the email address on the order."
+    sources.append(said)
+    notes.append(said)
+    return (said + "\nTell the caller it is done and read the reference out in short groups. "
+            "Say only what is stated here or in the documents about what happens next — no "
+            "dates or timings that are not written down.")
+
+
+# ================================================================ the socket
 
 async def websocket_handler(request):
-    ws = web.WebSocketResponse(heartbeat=25)
+    ws = web.WebSocketResponse(heartbeat=25, max_msg_size=16 * 1024 * 1024)
     await ws.prepare(request)
 
     llm = get_llm()
     tts = get_tts()
-    history = []
+    session = Session()
     chan = Channel(ws)
     running = {}       # turn_id -> task
     next_turn_id = 1
     # Looks started while the caller was still talking, keyed by the id the
     # browser gave them.
     prelooks = {}
-    recent_fillers = []   # so the same acknowledgement is not used twice running
+    interrupts = {}    # turn_id -> {"heard_chars": n} set on barge-in
     opened_at = time.perf_counter()
-    speaking = {"code": "en"}   # the language this call is being held in
+    session.voices = pick_persona_voices(default_voice())
 
     # Losing synthesis should cost the demo its voice, not its existence. The
     # conversation, vision and search all still work; the caller reads instead
@@ -895,9 +1804,13 @@ async def websocket_handler(request):
             "max_turns": MAX_TURNS,
             "max_minutes": MAX_MINUTES,
             "summary_model": SUMMARY_MODEL,
+            "check_model": CHECK_MODEL,
+            "think_model": smarts.think_model(CATALOG["models"]),
+            "quick_model": smarts.quick_model(CATALOG["models"], get_model()),
             "search_provider": search_provider(),
             "vision_model": get_vision_model(),
             "max_frames": MAX_FRAMES,
+            "human_cost": pricing.human_cost(),
             "audio": conn is not None,
             "audio_trouble": (
                 f"{audio_trouble} Replies are text only until then."
@@ -906,10 +1819,26 @@ async def websocket_handler(request):
         }
     )
 
-    async def supervise(turn_id, coro):
+    def drop_drafts(keep=None):
+        for did in [d for d in session.drafts if d != keep]:
+            session.drafts.pop(did).cancel()
+
+    async def supervise(turn_id, coro, opts=None):
+        nonlocal next_turn_id
         try:
-            await coro
+            outcome = await coro
+            if outcome and outcome.get("handoff") and opts is not None:
+                # The specialist's first words are a turn of their own: it can
+                # be interrupted, timed and replayed like any other.
+                intro_id = next_turn_id
+                next_turn_id += 1
+                interrupts[intro_id] = {}
+                intro_opts = dict(opts, attachments=[], on_call=opts["on_call"])
+                running[intro_id] = asyncio.ensure_future(supervise(intro_id, run_turn(
+                    chan, conn, llm, session, intro_id, "", intro_opts,
+                    interrupts[intro_id], intro=outcome["handoff"])))
         except asyncio.CancelledError:
+            await chan.event({"type": "cancelled", "turn_id": turn_id})
             raise
         except Exception as exc:
             log_error(exc, f"turn {turn_id}")
@@ -917,7 +1846,12 @@ async def websocket_handler(request):
                               "message": safe_error(exc, "that request")})
         finally:
             running.pop(turn_id, None)
+            interrupts.pop(turn_id, None)
             await chan.event({"type": "idle", "turn_id": turn_id, "running": len(running)})
+
+    def over_limit():
+        minutes = (time.perf_counter() - opened_at) / 60
+        return session.turns_used >= MAX_TURNS or minutes >= MAX_MINUTES
 
     try:
         async for msg in ws:
@@ -931,8 +1865,8 @@ async def websocket_handler(request):
             kind = data.get("type")
 
             if kind == "prelook":
-                # The camera already shows whatever they are holding up, so
-                # start reading it now rather than when they stop speaking.
+                # The camera (or shared screen) already shows whatever they mean,
+                # so start reading it now rather than when they stop speaking.
                 pid = data.get("id")
                 frames = clean_attachments(data.get("images"))
                 if pid is None or not frames:
@@ -940,11 +1874,31 @@ async def websocket_handler(request):
                 for old in [k for k in prelooks if k < pid - 2]:
                     task = prelooks.pop(old)["task"]
                     task.cancel()
+                look = SCREEN_LOOK if data.get("source") == "screen" else GENERIC_LOOK
                 prelooks[pid] = {
                     "count": len(frames),
-                    "task": asyncio.ensure_future(
-                        describe_images(llm, frames, GENERIC_LOOK)),
+                    "task": asyncio.ensure_future(describe_images(llm, frames, look)),
                 }
+                continue
+
+            if kind == "draft":
+                # The caller has paused mid-sentence (or stopped typing). Start
+                # answering what they have said so far; if that turns out to be
+                # the whole question, the answer is already on its way.
+                text = (data.get("text") or "").strip()
+                did = data.get("id")
+                if not text or did is None or over_limit() or len(running) >= MAX_CONCURRENT:
+                    continue
+                opts = read_opts(data)
+                if opts["attachments"] or opts["mode"] == "interpret" or data.get("prelook"):
+                    continue
+                if session.caller and not session.caller["verified"] and memory.find_email(text):
+                    continue        # verifying changes the prompt; do it live
+                drop_drafts()
+                code = resolve_language(session, text, opts["language"])
+                session.drafts[did] = Draft(
+                    text, asyncio.ensure_future(prepare(llm, session, text, opts, code)),
+                    len(session.history), opts_key(opts), code)
                 continue
 
             if kind == "prompt":
@@ -952,14 +1906,13 @@ async def websocket_handler(request):
                 if not prompt:
                     continue
 
-                spent = len(history) // 2
-                minutes = (time.perf_counter() - opened_at) / 60
-                if spent >= MAX_TURNS or minutes >= MAX_MINUTES:
+                if over_limit():
+                    drop_drafts()
                     await chan.event({
                         "type": "spent",
                         "message": (
                             f"This session has reached its limit of {MAX_TURNS} "
-                            f"questions." if spent >= MAX_TURNS else
+                            f"questions." if session.turns_used >= MAX_TURNS else
                             f"This session has been open {MAX_MINUTES} minutes."
                         ) + " Reload the page to start a new one.",
                     })
@@ -971,29 +1924,74 @@ async def websocket_handler(request):
                     })
                     continue
 
+                opts = read_opts(data)
+                draft = session.drafts.pop(data.get("draft"), None) if data.get("draft") is not None else None
+                drop_drafts()
+                if draft is not None:
+                    code = resolve_language(session, prompt, opts["language"])
+                    if not draft.matches(prompt, session, opts_key(opts), code) \
+                            or opts["mode"] == "interpret":
+                        draft.cancel()
+                        draft = None
+
                 turn_id = next_turn_id
                 next_turn_id += 1
+                session.turns_used += 1
+                interrupts[turn_id] = {}
                 coro = run_turn(
-                    chan, conn, llm, history, turn_id, prompt,
-                    model=data.get("model"),
-                    voice=data.get("voice_id"),
-                    can_search=bool(data.get("search", True)),
-                    attachments=clean_attachments(data.get("images")),
-                    on_call=bool(data.get("call")),
-                    recent_fillers=recent_fillers,
-                    speaking=speaking,
+                    chan, conn, llm, session, turn_id, prompt, opts,
+                    interrupts[turn_id], draft=draft,
                     prelook=prelooks.pop(data["prelook"], None)
                     if data.get("prelook") in prelooks else None,
                 )
-                running[turn_id] = asyncio.ensure_future(supervise(turn_id, coro))
+                running[turn_id] = asyncio.ensure_future(supervise(turn_id, coro, opts))
+
+            elif kind == "cancel":
+                # The caller talked over this turn, or pressed stop.
+                try:
+                    tid = int(data.get("turn_id"))
+                except (TypeError, ValueError):
+                    continue
+                heard = data.get("heard_chars")
+                heard = int(heard) if isinstance(heard, (int, float)) else None
+                task = running.get(tid)
+                if task is not None and not task.done():
+                    interrupts.setdefault(tid, {})["heard_chars"] = heard
+                    task.cancel()
+                elif tid in session.said and heard is not None:
+                    # Finished generating, but playback was cut short.
+                    msg_, full = session.said[tid]
+                    msg_["content"] = heard_part(full, heard)
+                continue
 
             elif kind == "wrapup":
                 try:
-                    note = await write_up(llm, history)
+                    note = await write_up(llm, session.history)
                 except Exception as exc:
                     log_error(exc, "call write-up")
                     note = None
-                await chan.event({"type": "wrapup", "note": note})
+                saved = None
+                if note:
+                    session.cost.add(SUMMARY_MODEL, note.get("prompt_tokens") or 0,
+                                     note.get("completion_tokens") or 0)
+                    try:
+                        saved = await remember_call(llm, session, note)
+                    except Exception as exc:
+                        log_error(exc, "saving to memory")
+                await chan.event({"type": "wrapup", "note": note,
+                                  "remembered": bool(saved),
+                                  "cost_call": call_cost(session),
+                                  "actions": session.actions,
+                                  "caller": session.caller.get("name") if session.caller else None})
+                if saved and session.caller:
+                    await chan.event(caller_event(session.caller, "verified"))
+                continue
+
+            elif kind == "memory_reset":
+                memory.reset()
+                session.caller = None
+                session.saved_turns = session.user_turns
+                await chan.event({"type": "memory", "reset": True})
                 continue
 
             elif kind == "say":
@@ -1005,19 +2003,27 @@ async def websocket_handler(request):
                     continue
                 try:
                     await chan.event({"type": "say_start", "turn_id": 0})
-                    await synthesise(chan, conn, 0, text, pick_voice(data.get("voice_id")))
+                    await synthesise(chan, conn, 0, text, pick_voice(data.get("voice_id")),
+                                     language=session.speaking["code"])
                     await chan.event({"type": "say_done", "turn_id": 0})
                 except Exception as exc:
                     log_error(exc, "spoken prompt")
                     await chan.event({"type": "error", "turn_id": 0,
                                       "message": safe_error(exc, "speaking")})
     finally:
+        drop_drafts()
         for entry in prelooks.values():
             entry["task"].cancel()
         for task in list(running.values()):
             task.cancel()
         if running:
             await asyncio.gather(*running.values(), return_exceptions=True)
+        # A refresh or a closed tab ends the call as surely as hanging up does:
+        # write it to the caller's history so the next call remembers it.
+        try:
+            await remember_call(llm, session)
+        except Exception as exc:
+            log_error(exc, "saving to memory on disconnect")
         if conn is not None:
             try:
                 await manager.__aexit__(None, None, None)
@@ -1102,6 +2108,7 @@ async def login(request):
 async def on_startup(app):
     global TTS_SLOTS
     TTS_SLOTS = asyncio.Semaphore(TTS_CONCURRENCY)
+    memory.init()
 
     llm = get_llm()
     tts = get_tts()
@@ -1119,6 +2126,7 @@ async def on_startup(app):
               " video frames will suffer. gemma-4-31B-it is the safe choice.")
     print(f"  up to {MAX_CONCURRENT} requests in flight, {TTS_CONCURRENCY} synthesising at once")
     print(f"  {len(orders.ORDERS)} orders loaded from {os.path.basename(orders.PATH)}")
+    print(f"  customer memory in {os.path.basename(memory.PATH)}")
     print(f"  {len(KB)} knowledge sections loaded"
           + ("" if len(KB) else " — answers about policy will be refused, not invented"))
 

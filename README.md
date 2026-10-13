@@ -74,6 +74,162 @@ To move it server-side, replace the `SpeechRecognition` block in
 resulting text as the existing `{"type": "prompt"}` message. Nothing else in the
 pipeline changes — the server only ever sees text.
 
+## What it does with SambaNova's speed
+
+Most voice agents make one slow model call per turn. SambaNova is fast enough
+to run several models in parallel on every turn and still finish inside a human
+pause. Every feature below is that idea, and each one shows itself on screen
+as a line under the reply.
+
+| feature | what you will see | switch |
+| --- | --- | --- |
+| Answer early | "Started answering 1.0 s before you finished" | Answer early |
+| Fact-check | an unsupported sentence struck through, never spoken | Fact-check |
+| Talker and thinker | a reasoning bar on the timeline beside the talker | Model: Auto |
+| Per-turn routing | "Answered by Llama 3.1 8B: small talk" | Model: Auto |
+| Mood | "You sound frustrated: slower, calmer voice" | always on |
+| Interpreter | English in, Arabic out, and back | Interpreter |
+| Memory | the caller's name and past calls in the left column | always on |
+| Screen sharing | a bar saying the agent can see the shared window | the screen button |
+
+### Answer early
+
+When the caller pauses mid-sentence (320 ms of silence in the transcript) or
+stops typing (450 ms), the browser sends what it has as a draft. The server
+starts the whole turn on it: retrieval, translation, the model call. If the
+final question has the same words, the turn adopts the draft and its first
+token is already there; if not, the draft is cancelled and nothing it wrote is
+ever heard. One draft runs at a time. Drafts are skipped for photos, the
+camera, the screen and the interpreter, which need the real turn.
+
+The cost is a model call for every draft that turns out not to match.
+
+### Fact-check before speaking
+
+Text now reaches Cartesia one sentence at a time. A sentence that makes a
+checkable claim (a number, a date, a duration, a policy word) is checked
+against what the agent actually has this turn: the policy documents, the order
+record, the search results. The checks run in parallel and sentences are
+released in order, so only the first claim costs a round trip; after that,
+checking happens while earlier sentences are being spoken.
+
+A sentence the checker cannot support is held back, shown struck through, and
+replaced at the end with "let me double-check one detail on that". If the
+checker itself fails or times out, the sentence goes out and that is logged:
+a broken checker should not silence the agent. Set the model with
+`SAMBANOVA_CHECK_MODEL`.
+
+### A fast talker and a slow thinker, and routing
+
+With Model set to Auto, every turn is routed before the model is called, by
+a local rule (a model call to choose the model would cost a round trip):
+
+- greetings and thanks on their own go to the smallest model on the account
+- questions that need working out ("why", "difference between", "what's
+  wrong", "walk me through") go to the talker and a reasoning model together
+- everything else goes to the default model
+
+On a hard question Llama says one or two sentences framing the problem while
+`gpt-oss-120b` reasons in parallel; its answer is spoken straight after. The
+timeline's reasoning lane shows the two running side by side. Override with
+`SAMBANOVA_QUICK_MODEL` and `SAMBANOVA_THINK_MODEL`.
+
+### The voice follows the caller's mood
+
+Each utterance is read for frustration, confusion or hurry (words, capitals,
+exclamation marks). The reply is told how to respond, and Cartesia is asked to
+speak slower and calmer, or faster, through its experimental voice controls.
+Frustration fades over two turns rather than snapping back. If the account's
+Cartesia model refuses the controls, the first refusal turns them off for the
+session and the turn is spoken without them. `CARTESIA_VOICE_CONTROLS=off`
+disables them outright.
+
+### Interpreter
+
+Turn on Interpreter and pick the other language (Arabic on Auto). Anything
+said in English is spoken in that language, and anything in it is spoken in
+English. Nothing is answered and nothing goes into history. After each
+utterance the microphone switches to the language the other person will reply
+in; the "Next speaker" button switches it by hand.
+
+### Memory
+
+Nobody signs up. The caller gives an order number, the agent looks it up, and
+the email on the order is who they are, once they confirm it. Until then,
+nothing from their history is used; a wrong email is told it does not match.
+
+History lives in `memory.sqlite3` next to `orders.json` (gitignored). It is
+written when a call ends: on hang-up, and also when the page is refreshed or
+closed. Refreshing clears the conversation, not the memory. **Reset memory**
+in the left column puts it back to the seeded customers.
+
+To see it work without making a call first:
+
+1. Type or say "Hi, it's about order 44812."
+2. When asked, give the email: "r.patel@example.com", or say "r dot patel at
+   example dot com".
+3. It brings up the call on the 28th, when an update was promised in 2 days.
+
+To see it learn:
+
+1. Give order 44901 and confirm "s.bergstrom@example.com". Say the lamps
+   haven't arrived and you need them by Friday.
+2. Refresh the page.
+3. Give 44901 and the email again. It asks whether this is about the lamps.
+
+The demo is a stand-in for a CRM, the same way `orders.py` stands in for an
+order system: swap `memory.py` and nothing above it changes.
+
+### Screen sharing
+
+The screen button (also in the call controls) shares a window instead of the
+camera. Frames are sent at up to 1440 px so dialog text stays readable, read
+with a screen-specific prompt, and answered one step at a time, naming the
+button and where it is. A bar stays at the top of the page while sharing.
+
+What the agent sees: a frame is captured only when you ask something, and
+goes to SambaNova's vision model. Nothing is stored. Share a single window
+rather than the whole screen, and close anything private first: the model
+cannot tell a password from any other text.
+
+## Cards, receipts, handoffs, cost and replay
+
+None of these add model calls of their own, except a short follow-up when an
+action is actually carried out.
+
+**Cards on screen.** While the agent talks, what it is talking about appears
+under the caption: the order it looked up (status, carrier, last scan, how
+late), the policy section it is answering from, the receipt for anything it
+just did, and the colleague who just joined. They are built from data the
+agent already has.
+
+**It does what it promises.** The model has a `resolve_order` tool for a
+replacement, a refund or a returns label, mocked the same way as the order
+lookup. It only works on a real order that is not already refunded or
+cancelled. It returns a reference such as `RP-44812-7Q2F`, which the agent reads
+out and the receipt card shows. Swap `carry_out` in server.py for a real
+order system call.
+
+**Specialist handoff.** On "I was charged twice" or "my screen shows an
+error", the agent can call `transfer_to_specialist`: it says who it is
+handing to, and Maya (billing) or Omar (technical support) speaks next in a
+different voice, with the whole conversation. Their voices are the second and
+third voices on your Cartesia account, or set `VOICE_BILLING` and
+`VOICE_TECHNICAL`. The specialist stays for the rest of the call.
+
+**Cost meter.** Every model call is counted: the reply, fact-checks,
+translation, the reasoning model, vision, and the post-call summary, plus the
+characters Cartesia speaks. The left column shows this turn and the whole
+call. The prices are estimates in `pricing.json`. Check them against your
+SambaNova and Cartesia pricing and edit the file. Set
+`human_agent_cost_per_call` to a figure you can stand behind to show the
+comparison. Drafts that were thrown away are not counted.
+
+**Replay.** Every reply has a Replay button, and "Replay call" plays the whole
+call in order, with its transcript line, cards and timeline. Only the agent's
+side has audio: the caller's speech was transcribed in the browser and never
+recorded.
+
 ## Where the latency actually is
 
 SambaNova returns its own inference timings in the usage frame that closes every
@@ -417,6 +573,35 @@ It is not a rubber stamp. On a three-turn test call it wrote: "the agent was
 polite and empathetic but prematurely promised a delivery charge refund before
 verifying the order status."
 
+## Talking over it, properly
+
+Barge-in used to be browser-only: the speaker stopped, but the server kept
+generating and synthesising, held one of the two Cartesia slots until it
+finished, and recorded the whole reply in history as if it had been heard. The
+next answer then built on sentences the caller never got.
+
+Now stopping playback — talking over it, or the Stop button — sends a `cancel`
+for that turn. The server cancels the task, which frees the synthesis slot, and
+records only what was heard: the browser estimates how far playback got, and
+the history entry ends with `[the caller cut you off here]`. A reply that had
+finished generating but not finished playing is trimmed the same way.
+
+## Languages, including Arabic
+
+Speech recognition has to be told the language before it hears a word — an
+en-US recogniser turns French into English-sounding nonsense, so detecting the
+language from its transcript can never work for speech. The **Language** picker
+sets both the recogniser and the reply language. On **Auto**, the reply follows
+whatever was typed, and the recogniser follows along after.
+
+Arabic is detected by script, replies right to left, and is synthesised with
+`CARTESIA_MODEL_AR` (sonic-3 by default), because sonic-2 does not speak it.
+Check your Cartesia plan has access to sonic-3 and pick a voice that suits it.
+
+Questions the documents do not cover are only translated for retrieval when
+they might not be English. Before, every uncovered English turn — greetings,
+general questions — waited on a Llama round trip that could never help it.
+
 ## Staying up
 
 A dropped socket used to end the session and take the buffered answers with it.
@@ -429,7 +614,8 @@ session away and the socket will keep returning 401 for ever.
 ## Limits
 
 `MAX_TURNS_PER_SESSION` (60) and `MAX_SESSION_MINUTES` (45) bound what one
-browser session can spend. One passphrase shared on a call, and a link that
+browser session can spend. The turn limit used to be counted from the trimmed
+history, which topped out at four, so it never fired; it is a real counter now. One passphrase shared on a call, and a link that
 outlives it, is otherwise somebody else spending your credits.
 
 ## Showing it to someone remote

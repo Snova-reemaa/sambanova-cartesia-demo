@@ -46,12 +46,46 @@ HINTS = {
     "it": "àèìòù",
 }
 
-SUPPORTED = tuple(MARKERS)
+# Arabic needs no word list: the script settles it on its own.
+ARABIC = re.compile(r"[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]")
+
+SUPPORTED = tuple(MARKERS) + ("ar",)
 
 NAMES = {
     "en": "English", "es": "Spanish", "fr": "French", "de": "German",
-    "it": "Italian", "pt": "Portuguese", "nl": "Dutch",
+    "it": "Italian", "pt": "Portuguese", "nl": "Dutch", "ar": "Arabic",
 }
+
+# Short, unambiguous English words that are not in MARKERS because they are
+# too common to separate languages — but enough to say "this is English, do
+# not pay for a translation".
+EVERYDAY_EN = {"hi", "hey", "there", "yeah", "yes", "okay", "ok", "is", "are",
+               "my", "it", "how", "why", "who", "where", "does", "do", "not",
+               "i", "me", "your", "order", "thank", "much", "good", "great",
+               "need", "want", "help", "tell", "explain", "know", "if", "of"}
+
+
+def needs_translation(text):
+    """Could this be a non-English question, worth translating for retrieval?
+
+    False for anything that reads as English: that turn already went through
+    retrieval in its own words, and a translation round trip cannot help it.
+    """
+    lowered = (text or "").lower()
+    if ARABIC.search(lowered):
+        return True
+    if any(ord(ch) > 127 and ch.isalpha() for ch in lowered):
+        return True
+    words = re.findall(r"[a-z']+", lowered)
+    if not words:
+        return False
+    for code, markers in MARKERS.items():
+        if code != "en" and any(w in markers for w in words):
+            english = sum(w in MARKERS["en"] or w in EVERYDAY_EN for w in words)
+            other = sum(w in markers for w in words)
+            if other > english:
+                return True
+    return False
 
 # Below this, the utterance is too short or too ambiguous to act on — keep
 # whatever language the call was already in rather than flapping between two.
@@ -60,6 +94,8 @@ MIN_EVIDENCE = 2
 
 def detect(text, current="en"):
     """Best guess at the language, falling back to what we were already using."""
+    if len(ARABIC.findall(text or "")) >= 2:
+        return "ar"
     words = re.findall(r"[^\W\d_]+", (text or "").lower(), re.UNICODE)
     if not words:
         return current
@@ -106,6 +142,8 @@ if __name__ == "__main__":
         ("Hallo, wanneer komt mijn bestelling aan?", "nl"),
         ("ok", "en"),
         ("hmm", "en"),
+        ("متى يوصل طلبي؟", "ar"),
+        ("مرحبا، عندي مشكلة في الطلب", "ar"),
     ]
     wrong = 0
     for text, want in SAMPLES:
@@ -113,4 +151,22 @@ if __name__ == "__main__":
         if got != want:
             wrong += 1
         print(f"  {'ok  ' if got == want else 'FAIL'} {got}  (wanted {want})  {text[:46]}")
-    print(f"\n  {len(SAMPLES) - wrong}/{len(SAMPLES)} correct")
+    total = len(SAMPLES)
+    # (text, should translate for retrieval)
+    TRANSLATE = [
+        ("hi there", False),
+        ("what is a GPU", False),
+        ("do you price match with competitors", False),
+        ("livrez-vous en France?", True),
+        ("¿hacéis envíos a España?", True),
+        ("متى يوصل طلبي؟", True),
+        ("liefern Sie nach Deutschland?", True),
+        ("no it hasn't arrived yet", False),
+    ]
+    for text, want in TRANSLATE:
+        got = needs_translation(text)
+        if got != want:
+            wrong += 1
+        print(f"  {'ok  ' if got == want else 'FAIL'} translate={got}  {text}")
+    total += len(TRANSLATE)
+    print(f"\n  {total - wrong}/{total} correct")

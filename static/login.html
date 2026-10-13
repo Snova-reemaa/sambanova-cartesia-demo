@@ -3,83 +3,76 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Voice Loop — access</title>
+<title>Voice Loop</title>
+<meta name="theme-color" content="#22105C">
+<link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700&family=Unbounded:wght@300;400;600;800&display=swap">
 <link rel="stylesheet" href="/static/style.css">
 <style>
-  body { display: grid; place-items: center; min-height: 100vh; padding: 24px; }
-
+  body { overflow: auto; }
   .gate {
-    width: 100%;
-    max-width: 380px;
-    background: var(--surface);
-    border: 1px solid var(--line);
-    border-radius: 4px;
-    padding: 28px;
-    display: flex;
-    flex-direction: column;
-    gap: 18px;
+    position: relative; z-index: 1;
+    min-height: 100vh;
+    display: flex; flex-direction: column; justify-content: center;
+    gap: 28px;
+    padding: 48px clamp(20px, 8vw, 120px);
+    max-width: 1100px;
   }
-
+  .gate .wordmark { font-size: 17px; }
   .gate h1 {
-    font-size: 19px;
-    font-weight: 600;
-    letter-spacing: -0.01em;
     margin: 0;
+    font-family: var(--display);
+    font-weight: 300;
+    font-size: clamp(40px, 7vw, 96px);
+    line-height: .98;
+    letter-spacing: -0.055em;
+    max-width: none;
   }
-
-  .gate p { margin: 0; font-size: 13.5px; color: var(--muted); }
-
-  .gate form { display: flex; flex-direction: column; gap: 10px; }
-
+  .gate p { margin: 0; font-size: 16px; color: var(--muted); max-width: 46ch; }
+  .gate form {
+    display: flex; gap: 6px; align-items: center;
+    width: min(520px, 100%);
+    padding: 7px;
+    background: var(--deep);
+    border-radius: 999px;
+  }
   .gate input {
-    padding: 11px 14px;
-    font-family: var(--mono);
-    font-size: 15px;
-    color: var(--ink);
-    background: var(--ground);
-    border: 1px solid var(--line);
-    border-radius: 4px;
+    flex: 1; min-width: 0; height: 48px; padding: 0 18px;
+    font-family: var(--sans); font-size: 16px;
+    color: var(--paper); background: transparent; border: none;
   }
-  .gate input:focus { outline: 2px solid var(--tts); outline-offset: -1px; }
-
+  .gate input::placeholder { color: var(--faint); }
+  .gate input:focus { outline: none; }
+  .gate form:focus-within { box-shadow: 0 0 0 2px var(--paper); }
   .gate button {
-    padding: 11px;
-    font-family: var(--sans);
-    font-size: 14px;
-    font-weight: 500;
-    color: var(--surface);
-    background: var(--ink);
-    border: 1px solid var(--ink);
-    border-radius: 4px;
-    cursor: pointer;
+    height: 48px; padding: 0 26px;
+    font-family: var(--sans); font-size: 15px; font-weight: 700;
+    color: var(--ground); background: var(--paper);
+    border: none; border-radius: 999px; cursor: pointer;
   }
-  .gate button:hover { opacity: .85; }
-
-  .bad {
-    font-family: var(--mono);
-    font-size: 12px;
-    color: var(--bad);
-    margin: 0;
-  }
+  .gate button:hover { background: #fff; }
+  .bad { font-size: 14px; font-weight: 600; color: var(--bad) !important; }
+  .fine { font-size: 13px !important; color: var(--faint) !important; }
 </style>
 </head>
 <body>
 
 <div class="gate">
   <h1>Voice Loop</h1>
-  <p>A SambaNova → Cartesia speech demo. Enter the passphrase you were given.</p>
+  <p>SambaNova and Cartesia voice agent demo. Enter the passphrase you were given.</p>
 
   <form method="post" action="/login">
-    <input type="password" name="passphrase" placeholder="passphrase"
+    <input type="password" name="passphrase" placeholder="Passphrase" aria-label="Passphrase"
            autocomplete="current-password" autofocus required>
     <button type="submit">Enter</button>
   </form>
 
-  <p class="bad" id="bad" hidden>That passphrase didn't match.</p>
+  <p class="bad" id="bad" hidden>Wrong passphrase.</p>
+  <p class="fine">Use Chrome or Edge for the microphone.</p>
 </div>
 
+<script src="/static/field.js"></script>
 <script>
   if (new URLSearchParams(location.search).has('bad')) {
     document.getElementById('bad').hidden = false;

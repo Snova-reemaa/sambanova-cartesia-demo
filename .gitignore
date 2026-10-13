@@ -22,3 +22,6 @@ __pycache__/
 .vscode/
 .idea/
 *.swp
+
+# Customer memory (local demo data)
+memory.sqlite3
