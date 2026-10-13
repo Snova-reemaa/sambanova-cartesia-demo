@@ -41,10 +41,36 @@ for key in SAMBANOVA_API_KEY CARTESIA_API_KEY; do
 done
 
 # A server left running from last time holds the port and the new one dies.
-if lsof -ti:"$PORT" >/dev/null 2>&1; then
-  echo "  port $PORT was busy — stopping the old server"
-  lsof -ti:"$PORT" | xargs kill 2>/dev/null || true
-  sleep 1
+# A flat "sleep 1" was not enough: aiohttp can take a few seconds to let the
+# socket go, and the replacement then fails to bind having already said it
+# stopped the old one.
+# -sTCP:LISTEN matters: a plain -ti:PORT also lists every client with an open
+# socket to it, so an open browser tab ends up in the kill list.
+if lsof -ti:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "  port $PORT is busy — stopping the old server"
+  lsof -ti:"$PORT" -sTCP:LISTEN | xargs kill 2>/dev/null || true
+
+  for _ in $(seq 1 20); do
+    lsof -ti:"$PORT" -sTCP:LISTEN >/dev/null 2>&1 || break
+    sleep 0.5
+  done
+
+  # Still there after ten seconds: it is not going to go politely.
+  if lsof -ti:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "  it did not stop — forcing it"
+    lsof -ti:"$PORT" -sTCP:LISTEN | xargs kill -9 2>/dev/null || true
+    sleep 1
+  fi
+
+  if lsof -ti:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo
+    echo "  Port $PORT is still held by:"
+    lsof -nP -iTCP:"$PORT" -sTCP:LISTEN | tail -n +2 | sed "s/^/    /"
+    echo "  Run on another port instead:  PORT=8081 ./run.sh"
+    echo
+    exit 1
+  fi
+  echo "  port $PORT free"
 fi
 
 echo "  opening http://localhost:$PORT in your browser"
