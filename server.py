@@ -1393,6 +1393,15 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
             if attachments or prelook:
                 await mark_first()
                 bridge, description = await look_at_attachments()
+                # `extras` lasts one turn; `notes` goes into history. Without
+                # this, anything seen but not said out loud is gone next turn —
+                # a caller held up a mug, the agent read it, and three turns
+                # later said "I don't know what's written on the mug".
+                notes.append(
+                    f"What the camera showed earlier{' (their screen)' if opts['source'] == 'screen' else ''}:\n"
+                    f"{description}\n"
+                    "Still true unless they have moved the camera. Answer from "
+                    "it rather than asking them to show you again.")
                 extras += [
                     {"role": "assistant", "content": bridge},
                     {"role": "system", "content": seen_prompt(
