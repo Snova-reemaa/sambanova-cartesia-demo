@@ -148,6 +148,12 @@ function speak(samples) {
       if (done && done.status === 'playing') done.status = 'played';
       playingId = null;
       if (settleLater) { settleLater = false; settle(); }
+      // The button was only ever hidden by pressing it. Audio finishing on
+      // its own cleared the state behind it and left Stop on screen with
+      // nothing to stop.
+      updateStopButton();
+      render();
+      if (inCall) refreshCallState();
     }
   };
   return at;
@@ -1920,7 +1926,12 @@ function startListening() {
     let fresh = '';
     for (let i = ev.resultIndex; i < ev.results.length; i++) {
       const chunk = ev.results[i][0].transcript;
-      if (ev.results[i].isFinal) fresh += chunk; else interim += chunk;
+      if (ev.results[i].isFinal) {
+        fresh += chunk;
+        noteConfidence(ev.results[i][0].confidence);
+      } else {
+        interim += chunk;
+      }
     }
 
     const heard = (fresh + interim).trim();
@@ -2050,6 +2061,17 @@ const SPEECH_LANG = {
 };
 let recLang = 'en';
 
+function clearMishearing() {
+  unsure = 0;
+  nudged = false;
+  ui.pickLang.classList.remove('wants-attention');
+  if (ui.hint.className.includes('warn')) {
+    ui.hint.className = 'hint mono';
+    ui.hint.textContent = '';
+  }
+  if (inCall && typeof callTrouble === 'function') callTrouble('');
+}
+
 function setRecLang(code) {
   if (!SPEECH_LANG[code] || code === recLang) return;
   recLang = code;
@@ -2060,6 +2082,54 @@ function setRecLang(code) {
 
 function followLanguage(code) {
   if (ui.pickLang.value === 'auto') setRecLang(code);
+}
+
+/* ------------------------------------------------- mishearing the caller */
+
+// Auto cannot detect the language from speech. SpeechRecognition.lang takes
+// one tag, so the mic is always listening in a single language, and a caller
+// speaking another one gets transcribed into nonsense that still looks like
+// English — the server then detects English and never switches. The loop
+// never closes.
+//
+// What we can see is that Chrome is unsure. A run of low-confidence finals
+// means it is hearing speech it cannot place, which is exactly what another
+// language sounds like to the wrong model. So stop failing silently and ask.
+const UNSURE_BELOW = 0.6;
+const UNSURE_RUN = 3;
+
+let unsure = 0;
+let nudged = false;
+
+function heardClearly(confidence) {
+  // Some browsers report 0 for every result; treat that as no opinion rather
+  // than as certainty that we misheard.
+  if (!confidence) return true;
+  return confidence >= UNSURE_BELOW;
+}
+
+function noteConfidence(confidence) {
+  if (heardClearly(confidence)) {
+    unsure = 0;
+    return;
+  }
+  unsure += 1;
+  if (unsure < UNSURE_RUN || nudged) return;
+  if (ui.pickLang.value !== 'auto') return;   // they already told us
+  nudged = true;
+  askWhichLanguage();
+}
+
+function askWhichLanguage() {
+  const text = "I am not catching that clearly. If you are speaking another "
+             + "language, pick it next to the mic — I can only listen in one "
+             + "at a time.";
+  ui.hint.className = 'hint mono warn';
+  ui.hint.textContent = text;
+  if (inCall && typeof callTrouble === 'function') callTrouble(text);
+  // Draw the eye to the control that fixes it.
+  ui.pickLang.classList.add('wants-attention');
+  setTimeout(() => ui.pickLang.classList.remove('wants-attention'), 12000);
 }
 
 /* ----------------------------------------------------------- interpreter */
@@ -2163,6 +2233,8 @@ ui.shareStop.addEventListener('click', stopScreen);
 ui.pickLang.addEventListener('change', () => {
   remember('voiceloop.lang', ui.pickLang.value);
   setRecLang(ui.pickLang.value === 'auto' ? 'en' : ui.pickLang.value);
+  // They answered the question, so stop asking it.
+  clearMishearing();
 });
 {
   const saved = recall('voiceloop.lang');

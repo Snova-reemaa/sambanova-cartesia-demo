@@ -835,3 +835,13 @@ body.sharing #callview { object-fit: contain; }
 .msg.replaying .what { color: var(--tts); }
 .msg .note-action  { color: var(--tts); }
 .msg .note-handoff { color: var(--llm); }
+
+/* The language picker, when we have been mishearing the caller and suspect
+   they are speaking something the recogniser is not listening for. */
+.wants-attention {
+  outline: 2px solid var(--bad);
+  outline-offset: 2px;
+  animation: notice 1.1s ease-in-out 3;
+}
+@keyframes notice { 50% { outline-color: transparent; } }
+@media (prefers-reduced-motion: reduce) { .wants-attention { animation: none; } }

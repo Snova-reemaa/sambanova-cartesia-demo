@@ -2151,7 +2151,10 @@ async def fresh_static(request, handler):
     version of the file and concluding it did not work.
     """
     response = await handler(request)
-    if request.path.startswith("/static") or request.path == "/":
+    # /login was missing here, so a blank response cached while the server was
+    # down kept being served after it came back — a white page with no title,
+    # on a server returning a perfectly good one.
+    if request.path.startswith("/static") or request.path in ("/", "/login"):
         response.headers["Cache-Control"] = "no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
     return response
