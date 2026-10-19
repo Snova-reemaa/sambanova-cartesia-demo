@@ -175,7 +175,11 @@ ORDER_RULES = (
     "Answer, then ask for the number if there is something to look up.\n"
     "Everything the lookup returns is true; everything it does not return, you "
     "do not know. Do not invent a delivery date, a courier, or a refund that is "
-    "not in the result."
+    "not in the result.\n"
+    "When the lookup says an order counts as late or lost, lead with that and "
+    "offer what the caller is owed — a replacement or a full refund for a lost "
+    "one. \"A bit delayed\" for something eleven working days overdue is the "
+    "sort of thing that makes a caller ask for a manager."
 )
 
 SEARCH_TOOL = [{
@@ -1028,7 +1032,8 @@ CHECK_MODEL = os.getenv("SAMBANOVA_CHECK_MODEL") or "Meta-Llama-3.3-70B-Instruct
 
 CHECK_PROMPT = (
     "You check one sentence a phone support agent is about to say out loud, "
-    "against the records below.\n\nRecords:\n\n{sources}\n\nAlready said: {before}\n\n"
+    "against the records below.\n\nRecords:\n\n{sources}\n\n"
+    "What the caller said: {asked}\n\nAlready said: {before}\n\n"
     "Sentence: {sentence}\n\n"
     "Reply HOLD only if the sentence contradicts the records, or states a specific "
     "number, date, price, time limit or policy that the records do not contain. "
@@ -1038,12 +1043,23 @@ CHECK_PROMPT = (
     "- Applying a rule in the records to what the caller has just described. "
     "Their own account of their situation is a given, not something to verify, "
     "and working out what the rule means for them is the job.\n"
+    "- Repeating back something the caller themselves supplied, an order "
+    "number above all. \"Your order number is 44901\" was held as an "
+    "unsupported number when the caller had just read those digits out; "
+    "confirming what you heard is not a claim about the records.\n"
     "- Arithmetic on numbers the caller supplied or the records contain.\n"
     "- Ordinary words about the present — now, currently, today, still, "
     "already, at this point. They are speech, not a claim about the date. "
     "\"Covered for six months, so it is not covered now\" was held for the "
     "word \"now\" when the six months was in the records and the caller had "
     "just said nine; that is the mistake to avoid.\n"
+    "- Two fields of the same record are both true at once. An order can be "
+    "\"in transit\" and also past the threshold that makes it count as lost; "
+    "saying both is a description, not a contradiction. Only call it a "
+    "contradiction when the record denies what the sentence asserts.\n"
+    "- The plain meaning of a field. \"In transit\" means it has been "
+    "dispatched, so \"it has shipped\" is the same fact in the caller's "
+    "words, not a new one.\n"
     "Hold what the agent would be inventing, not what it is concluding. "
     "Reply exactly OK, or HOLD: followed by what is unsupported, in under twelve words."
 )
@@ -1071,13 +1087,14 @@ REPAIR = {
 }
 
 
-async def check_sentence(llm, sentence, sources, before, meter=None):
+async def check_sentence(llm, sentence, sources, before, asked="", meter=None):
     t = time.perf_counter()
     try:
         reply = await asyncio.wait_for(llm.chat.completions.create(
             model=CHECK_MODEL, max_tokens=30, temperature=0,
             messages=[{"role": "user", "content": CHECK_PROMPT.format(
                 sources=sources[:6000], before=before[-600:] or "(nothing yet)",
+                asked=(asked or "(nothing yet)")[-400:],
                 sentence=sentence.strip())}]), timeout=6)
         verdict = (reply.choices[0].message.content or "").strip()
         if meter is not None:
@@ -1141,8 +1158,9 @@ class Gate:
     sentences are being spoken. Anything unsupported is held back.
     """
 
-    def __init__(self, llm, sources, release, on_held, enabled, turn):
+    def __init__(self, llm, sources, release, on_held, enabled, turn, asked=""):
         self.llm = llm
+        self.asked = asked
         self.sources = sources         # grows during the turn
         self.release = release
         self.on_held = on_held
@@ -1173,7 +1191,8 @@ class Gate:
         check = None
         if self.enabled and self.sources and smarts.has_claim(sentence):
             check = asyncio.ensure_future(check_sentence(
-                self.llm, sentence, "\n\n".join(self.sources), self.said, self.turn.meter))
+                self.llm, sentence, "\n\n".join(self.sources), self.said,
+                self.asked, self.turn.meter))
         self.said += sentence
         self.queue.put_nowait((sentence, check))
 
@@ -1355,6 +1374,16 @@ async def prepare(llm, session, prompt, opts, code, extras=(), intro=None):
 
     number = orders.find_number(prompt)
     has_order = bool(number and number in orders.ORDERS)
+    # The caller read their order number down a microphone and the browser
+    # wrote "for for eight one to". The lookup copes, but the model is
+    # reading the same transcript: left alone it does not see a number to
+    # look up, and when it does answer it reads the mishearing back. Say what
+    # the digits were, only when they resolve to a real order and the
+    # transcript does not already contain them.
+    heard_as = (f"The caller said their order number out loud and it came "
+                f"through the microphone as words. It is {number}. Use that, "
+                f"and say it back as digits." if has_order and number not in prompt
+                else None)
     if opts["auto"] and not opts["attachments"] and not intro:
         p.route = smarts.route(prompt, CATALOG["models"], opts["model"], has_order)
     else:
@@ -1377,6 +1406,9 @@ async def prepare(llm, session, prompt, opts, code, extras=(), intro=None):
     # rather than behind a tool call the model has to remember to use. Only
     # pay for a translation round trip when the question might not be English.
     # A specialist's opening has no new question; look up why they were called.
+    if heard_as:
+        extras = list(extras) + [{"role": "system", "content": heard_as}]
+
     query = (intro or {}).get("reason") or prompt
     hits = KB.find(query) if query else []
     if query and not hits and (code != "en" or languages.needs_translation(query)):
@@ -1565,7 +1597,7 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
 
     sources = []
     gate = Gate(llm, sources, release, on_held,
-                enabled=opts["check"] and not interpreting, turn=turn)
+                enabled=opts["check"] and not interpreting, turn=turn, asked=prompt)
 
     async def emit(delta):
         await gate.feed(delta)
@@ -1882,7 +1914,8 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
                 # than leave the caller with only "let me double-check".
                 first_round = list(held_any)
                 held_any.clear()
-                retry = Gate(llm, sources, release, on_held, enabled=opts["check"], turn=turn)
+                retry = Gate(llm, sources, release, on_held, enabled=opts["check"],
+                             turn=turn, asked=prompt)
                 said_so_far = reply.strip() or "(nothing yet)"
                 listing = "\n".join(f"- {s} ({why})" for s, why in first_round)
                 again = last["convo"] + [
@@ -1892,9 +1925,14 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
                 follow = {}
                 try:
                     gate.boundary()
+                    # Not prepared.temperature: that is a local of
+                    # generate_answer and this is a sibling function, so
+                    # reaching for it raised NameError, the except below
+                    # swallowed it into a log line, and every rewrite silently
+                    # did nothing for a day.
                     async for kind, payload in stream_tools(llm, again, model=last["model"],
                                                             stats=follow,
-                                                            temperature=prepared.temperature):
+                                                            temperature=sampling_for(code)):
                         if kind == "text":
                             await retry.feed(payload)
                     await retry.close()
