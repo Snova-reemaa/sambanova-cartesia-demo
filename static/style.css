@@ -641,7 +641,13 @@ body.dropping::after {
     height: auto; min-height: 100vh;
   }
   body { overflow: auto; }
-  .stage { min-height: 720px; }
+  /* 720px flat was taller than the laptop it was being demonstrated on. The
+     topbar plus that floor already overflows a 768px-high window, so the
+     reply and the text box sat below the fold and the orb filled the screen:
+     the metrics panel updated, the answer was spoken, and nothing the caller
+     needed to read was anywhere on it. Bound by the window, not by a number. */
+  .stage { min-height: min(720px, 58vh); }
+  .orbwrap { flex: 0 1 auto; height: min(100%, 46vh); min-height: 180px; }
   .transcript { padding: 10px 32px 40px; max-height: 60vh; }
   .byline { display: none; }
 }
