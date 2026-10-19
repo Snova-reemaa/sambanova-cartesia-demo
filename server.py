@@ -985,7 +985,11 @@ def caller_rules(session):
             "call is relevant, bring it up once, briefly and in your own words — "
             "for example what was promised last time and whether it happened. Never "
             "read the history out as a list, and do not mention it at all if it is "
-            "irrelevant to what they are asking now."
+            "irrelevant to what they are asking now.\n"
+            "They have just confirmed their email address, so do not read it back. "
+            "The transcript of an address spoken aloud is half wrong in any case — "
+            "it came through once as \"our dot patel\" — and repeating that at them "
+            "sounds like you did not understand. Greet them by name and carry on."
         )
     if c.get("mismatch"):
         return (

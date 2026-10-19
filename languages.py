@@ -143,10 +143,24 @@ for _code, _markers in MARKERS.items():
 MIN_EVIDENCE = 2
 
 
+# An address is not evidence of a language. "com" is a Portuguese word and
+# the commonest top-level domain, and it arrives twice in every address read
+# aloud — "our dot patel at example dot com" — which outscored everything
+# else and answered an English caller in Portuguese. Written addresses and
+# the spoken form are both taken out before anything is counted.
+ADDRESS = re.compile(
+    r"\S+@\S+"
+    r"|\b[\w.+-]+\.(?:com|net|org|io|co|uk|de|fr|es|it|pt|nl)\b"
+    r"|\b(?:dot|point)\s+(?:com|net|org|io|co|uk|de|fr|es|it|pt|nl)\b",
+    re.I,
+)
+
+
 def detect(text, current="en"):
     """Best guess at the language, falling back to what we were already using."""
     if len(ARABIC.findall(text or "")) >= 2:
         return "ar"
+    text = ADDRESS.sub(" ", text or "")
     words = re.findall(r"[^\W\d_]+", (text or "").lower(), re.UNICODE)
     if not words:
         return current
@@ -199,6 +213,17 @@ if __name__ == "__main__":
         ("hmm", "en"),
         ("متى يوصل طلبي؟", "ar"),
         ("مرحبا، عندي مشكلة في الطلب", "ar"),
+        # Reading an address out loud used to answer the caller in
+        # Portuguese: "com" is a Portuguese word and the end of every
+        # address, and it lands twice.
+        ("our dot patel at example dot com", "en"),
+        ("r dot patel at example dot com", "en"),
+        ("ess dot bergstrom at example dot com", "en"),
+        ("it's r.patel@example.com", "en"),
+        ("have a look at sambanova.ai", "en"),
+        # Portuguese with "com" in it is still Portuguese.
+        ("posso falar com alguém sobre a minha encomenda", "pt"),
+        ("quero devolver isto, com quem falo", "pt"),
         # Every one of these came back "en" before the lists were widened,
         # so the caller got an English holding phrase and an English answer.
         ("Quando chega a minha encomenda?", "pt"),

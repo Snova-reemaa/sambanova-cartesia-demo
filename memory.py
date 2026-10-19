@@ -161,19 +161,95 @@ SPOKEN = (
 )
 
 
+# A letter said out loud and what the recogniser writes down instead. Reading
+# "r.patel@example.com" aloud gives "our dot patel at example dot com" — "r"
+# is a letter, "our" is a word, and the recogniser picks the word every time.
+# Addresses here are nearly all a single initial and a surname, so the initial
+# is the character most often spoken on its own and most often lost.
+LETTER_WORDS = {
+    "a": "a", "ay": "a", "eh": "a",
+    "b": "b", "bee": "b", "be": "b",
+    "c": "c", "see": "c", "sea": "c", "cee": "c",
+    "d": "d", "dee": "d",
+    "e": "e", "ee": "e",
+    "f": "f", "ef": "f", "eff": "f",
+    "g": "g", "gee": "g", "jee": "g",
+    "h": "h", "aitch": "h", "haitch": "h",
+    "i": "i", "eye": "i", "aye": "i",
+    "j": "j", "jay": "j",
+    "k": "k", "kay": "k", "cay": "k",
+    "l": "l", "el": "l", "ell": "l",
+    "m": "m", "em": "m", "emm": "m",
+    "n": "n", "en": "n", "enn": "n",
+    "o": "o", "oh": "o", "owe": "o",
+    "p": "p", "pee": "p", "pea": "p",
+    "q": "q", "cue": "q", "queue": "q",
+    "r": "r", "are": "r", "our": "r", "ar": "r", "arr": "r",
+    "s": "s", "ess": "s", "es": "s",
+    "t": "t", "tee": "t", "tea": "t",
+    "u": "u", "you": "u", "yoo": "u", "ewe": "u",
+    "v": "v", "vee": "v",
+    "w": "w", "dubya": "w",
+    "x": "x", "ex": "x", "eks": "x",
+    "y": "y", "why": "y", "wye": "y",
+    "z": "z", "zed": "z", "zee": "z",
+}
+
+SPLIT = re.compile(r"([.@_\-])")
+
+
+def spell_out(address):
+    """Turn any part of an address that is the name of a letter into it.
+
+    Only the pieces between the dots and the at sign are considered, so an
+    ordinary word in a surname is never touched — "sea" is only read as "c"
+    where it stands alone as a whole segment.
+    """
+    parts = SPLIT.split(address)
+    return "".join(LETTER_WORDS.get(bit, bit) if i % 2 == 0 else bit
+                   for i, bit in enumerate(parts))
+
+
+def _known():
+    """The addresses on the order book, if there is one. Imported lazily so
+    this module stays usable without it."""
+    try:
+        import orders
+    except Exception:
+        return frozenset()
+    return frozenset(
+        (o.get("email") or "").lower() for o in orders.ORDERS.values() if o.get("email"))
+
+
 def find_email(text):
+    """The address the caller gave, spoken or typed.
+
+    A candidate that matches a real customer always wins, which is what makes
+    the letter reading safe: it is only preferred when it lands on someone.
+    """
     if not text:
         return None
+    candidates = []
     found = EMAIL.search(text)
     if found:
-        return found.group(0).lower().rstrip(".")
+        candidates.append(found.group(0).lower().rstrip("."))
     spoken = " " + text.lower() + " "
     for pattern, repl in SPOKEN:
         spoken = re.sub(pattern, repl, spoken)
     found = EMAIL.search(spoken.replace(" @", "@").replace("@ ", "@"))
     if found:
-        return found.group(0).lower().rstrip(".")
-    return None
+        candidates.append(found.group(0).lower().rstrip("."))
+    if not candidates:
+        return None
+
+    known = _known()
+    spelled = [spell_out(c) for c in candidates]
+    for candidate in candidates + spelled:
+        if candidate in known:
+            return candidate
+    # Nobody on the books. Keep what they actually said rather than reading
+    # letters into a surname that happens to sound like one.
+    return candidates[0]
 
 
 def mask(email):
@@ -188,8 +264,35 @@ def mask(email):
 
 if __name__ == "__main__":
     init()
-    for said in ("it's r.patel@example.com", "r dot patel at example dot com",
-                 "my email is s dot bergstrom at example dot com thanks", "no idea"):
-        print(f"  {said!r:52} -> {find_email(said)}")
+    # What the recogniser writes when an address is read out. The initial is
+    # the character most often spoken alone and the one it most often loses:
+    # "r" comes back as "our", "s" as "ess", "a" as "eh".
+    HEARD = [
+        ("it's r.patel@example.com", "r.patel@example.com"),
+        ("r dot patel at example dot com", "r.patel@example.com"),
+        ("our dot patel at example dot com", "r.patel@example.com"),
+        ("are dot patel at example dot com", "r.patel@example.com"),
+        ("its our dot patel at example dot com thanks", "r.patel@example.com"),
+        ("my email is s dot bergstrom at example dot com thanks", "s.bergstrom@example.com"),
+        ("ess dot bergstrom at example dot com", "s.bergstrom@example.com"),
+        ("jay dot okafor at example dot com", "j.okafor@example.com"),
+        ("kay dot yamamoto at example dot com", "k.yamamoto@example.com"),
+        ("eh dot novak at example dot com", "a.novak@example.com"),
+        ("em dot lindqvist at example dot com", "m.lindqvist@example.com"),
+        ("el dot haddad at example dot com", "l.haddad@example.com"),
+        ("dee dot ferreira at example dot com", "d.ferreira@example.com"),
+        # Not on the order book, so it is left exactly as spoken rather than
+        # having "sea" read as the letter c.
+        ("sea.breeze@somewhere.com", "sea.breeze@somewhere.com"),
+        ("no idea", None),
+        ("our team will call you back", None),
+        ("can you see the order", None),
+    ]
+    wrong = 0
+    for said, want in HEARD:
+        got = find_email(said)
+        wrong += got != want
+        print(f"  {'ok  ' if got == want else 'FAIL'} {str(got):26} {said[:46]}")
+    print(f"\n  {len(HEARD) - wrong}/{len(HEARD)} heard correctly")
     print()
     print(as_context("Riya Patel", history("r.patel@example.com")))
