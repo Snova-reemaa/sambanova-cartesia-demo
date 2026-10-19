@@ -604,6 +604,10 @@ TTS_MODEL_BY_LANGUAGE = {}
 DROPPED = set()
 
 
+class NothingToSay(Exception):
+    """The turn produced no text at all, so there is nothing to synthesise."""
+
+
 def out_of_credit(exc):
     """Cartesia says this in prose rather than with a code of its own."""
     text = str(exc).lower()
@@ -1974,8 +1978,10 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
                 )
 
                 async def pump():
+                    pushed = False
                     for piece in list(sent):        # replay after a retry
                         await ctx.push(piece)
+                        pushed = True
                     while not state["finished"]:
                         delta = await pending_text.get()
                         if delta is None:
@@ -1984,6 +1990,19 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
                         sent.append(delta)
                         turn.meter.chars += len(delta)
                         await ctx.push(delta)
+                        pushed = True
+                    if not pushed:
+                        # Closing an empty context makes Cartesia answer "No
+                        # valid transcripts passed", and because synthesis and
+                        # generation are gathered together that error is the
+                        # one the caller sees — in place of whatever actually
+                        # stopped the answer being written. There is nothing
+                        # to say, so say nothing and let the real failure
+                        # through. Raising rather than returning because
+                        # drain() is waiting on a context that will now never
+                        # be closed.
+                        state["finished"] = True
+                        raise NothingToSay()
                     await ctx.no_more_inputs()
 
                 async def drain():
@@ -2004,6 +2023,14 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
                 tasks = [asyncio.ensure_future(pump()), asyncio.ensure_future(drain())]
                 try:
                     await asyncio.gather(*tasks)
+                except NothingToSay:
+                    for t in tasks:
+                        t.cancel()
+                    return
+                except asyncio.CancelledError:
+                    for t in tasks:
+                        t.cancel()
+                    raise
                 except BaseException:
                     for t in tasks:
                         t.cancel()
