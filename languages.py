@@ -11,30 +11,73 @@ parameter, not a different voice.
 
 import re
 
-# The most common words in each language, chosen to overlap as little as
-# possible with the others. "the" is not here because it appears in English
-# loanwords everywhere; "que" and "ich" are decisive.
+# Function words, not vocabulary. What a caller asks about ("order", "delivery")
+# is the same noun in half of Europe; how they ask it — the articles, the
+# pronouns, the question words — is not. These are the fifty or so commonest
+# of those per language.
+#
+# Overlap between the lists is fine and expected ("no" is Spanish, Italian and
+# Portuguese). A word shared by several languages scores for all of them and so
+# decides nothing; a word unique to one is worth double. That weighting is
+# computed below rather than curated, so adding a word can never quietly break
+# the balance of a list it is not in.
 MARKERS = {
     "en": ("the", "and", "you", "what", "have", "with", "this", "that", "for",
-           "can", "please", "thanks", "hello", "would", "about", "when"),
+           "can", "please", "thanks", "hello", "would", "about", "when", "there",
+           "they", "from", "will", "could", "should", "been", "were", "does",
+           "doesn't", "didn't", "isn't", "won't", "i'm", "it's", "we're",
+           "still", "just", "much", "very", "sorry", "thank", "yesterday",
+           "tomorrow", "because", "these", "those", "which", "where", "why",
+           # Listed here because they are also ordinary English, not because
+           # English needs them: "no", "was", "is" and "come" each sit in
+           # another list above, and without an English claim on them one of
+           # them alone would carry a sentence into the wrong language.
+           # "no it hasn't arrived yet" was detected as Spanish.
+           "no", "me", "mi", "plus", "die", "war", "hat", "was", "per",
+           "come", "fare", "do", "is", "van", "over", "so", "an", "in", "on"),
     "es": ("que", "de", "no", "la", "el", "es", "por", "una", "con", "para",
-           "hola", "gracias", "cuando", "donde", "puedo", "quiero", "cómo", "pero",
-           "muy", "está", "usted", "sí", "hacer", "hacéis", "envío"),
+           "hola", "gracias", "cuando", "cuándo", "donde", "dónde", "puedo",
+           "quiero", "cómo", "pero", "muy", "está", "usted", "sí", "hacer",
+           "hacéis", "envío", "mi", "me", "se", "los", "las", "del", "al",
+           "un", "ya", "más", "todavía", "porque", "cuál", "qué", "quién",
+           "tengo", "tiene", "puede", "hay", "está", "están", "sobre", "desde",
+           "hasta", "también", "ahora", "nada", "algo", "vosotros", "ustedes",
+           "pedido", "pedidos", "devolver"),
     "fr": ("je", "le", "pas", "vous", "une", "est", "et", "des", "pour", "que",
            "bonjour", "merci", "comment", "quand", "pouvez", "voudrais", "avec",
-           "dans", "mais", "votre", "être", "livrez", "aussi"),
+           "dans", "mais", "votre", "être", "livrez", "aussi", "ne", "ce",
+           "cette", "les", "du", "au", "aux", "sont", "suis", "nous", "ils",
+           "elle", "quel", "quelle", "quels", "quelles", "vos", "mon", "ma",
+           "mes", "plus", "très", "toujours", "encore", "déjà", "chez", "sans",
+           "parce", "pourquoi", "où", "qui", "commande", "livraison", "retour"),
     "de": ("ich", "nicht", "und", "das", "die", "der", "sie", "ein", "mit",
-           "ist", "hallo", "danke", "wann", "können", "möchte", "wie", "nach", "haben",
-           "wir", "auch", "noch", "bitte", "liefern", "aber"),
+           "ist", "hallo", "danke", "wann", "können", "möchte", "wie", "nach",
+           "haben", "wir", "auch", "noch", "bitte", "liefern", "aber", "meine",
+           "mein", "meinen", "kommt", "wurde", "werden", "wird", "war", "sind",
+           "hat", "habe", "eine", "einen", "den", "dem", "für", "von", "zu",
+           "auf", "schon", "warum", "was", "wer", "wo", "welche", "ihre",
+           "ihnen", "bestellung", "lieferung", "zurückgeben"),
     "it": ("non", "che", "di", "il", "la", "per", "sono", "una", "con", "come",
-           "ciao", "grazie", "quando", "dove", "posso", "vorrei", "molto", "anche",
-           "questo", "ma", "più", "fate"),
+           "ciao", "grazie", "quando", "dove", "posso", "vorrei", "molto",
+           "anche", "questo", "ma", "più", "fate", "mio", "mia", "miei", "sua",
+           "del", "della", "degli", "nel", "gli", "lo", "un", "uno", "quale",
+           "quali", "vostri", "vostro", "vostra", "perché", "ancora", "già",
+           "adesso", "qualcosa", "niente", "cosa", "chi", "ordine", "consegna",
+           "restituire", "ho", "ha", "hanno", "essere", "fare"),
     "pt": ("não", "que", "de", "uma", "para", "com", "está", "você", "obrigado",
            "olá", "quando", "onde", "posso", "quero", "como", "muito", "bem",
-           "obrigada", "mas", "fazem", "entrega"),
+           "obrigada", "mas", "fazem", "entrega", "minha", "meu", "minhas",
+           "meus", "sua", "seu", "vosso", "vossa", "qual", "quais", "é", "são",
+           "tenho", "tem", "do", "da", "dos", "das", "ao", "à", "pelo", "pela",
+           "ainda", "já", "porque", "porquê", "quem", "isso", "aqui", "encomenda",
+           "devolver", "pedido", "fazer", "ser"),
     "nl": ("het", "een", "niet", "van", "ik", "en", "dat", "is", "hallo",
            "dank", "wanneer", "waar", "kan", "wil", "hoe", "maar", "ook", "mijn",
-           "jullie", "leveren"),
+           "jullie", "leveren", "zijn", "wat", "wie", "waarom", "welke", "deze",
+           "die", "dit", "heb", "heeft", "hebben", "wordt", "werd", "nog",
+           "al", "graag", "alstublieft", "bedankt", "uw", "jouw", "naar", "met",
+           "voor", "bij", "over", "bestelling", "levering", "retourneren",
+           "terugsturen", "openingstijden"),
 }
 
 # Letters that only appear in some of these languages at all.
@@ -87,6 +130,14 @@ def needs_translation(text):
                 return True
     return False
 
+# word -> every language that claims it. Built once, so the lists above stay
+# the only thing anyone has to edit.
+OWNERS = {}
+for _code, _markers in MARKERS.items():
+    for _word in _markers:
+        OWNERS.setdefault(_word, []).append(_code)
+
+
 # Below this, the utterance is too short or too ambiguous to act on — keep
 # whatever language the call was already in rather than flapping between two.
 MIN_EVIDENCE = 2
@@ -102,9 +153,8 @@ def detect(text, current="en"):
 
     scores = {code: 0 for code in MARKERS}
     for word in words:
-        for code, markers in MARKERS.items():
-            if word in markers:
-                scores[code] += 1
+        for code in OWNERS.get(word, ()):
+            scores[code] += 2 if len(OWNERS[word]) == 1 else 1
 
     lowered = (text or "").lower()
     for code, letters in HINTS.items():
@@ -115,10 +165,15 @@ def detect(text, current="en"):
     if scores[best] < MIN_EVIDENCE:
         return current
 
-    # A clear winner, or stay put. Spanish and Portuguese share a lot.
-    runner_up = max((s for c, s in scores.items() if c != best), default=0)
-    if scores[best] == runner_up:
-        return current
+    # A clear winner, or stay put. Spanish and Portuguese share a lot, and a
+    # tie on function words alone is exactly the case the accents settle:
+    # "é" and "ã" are Portuguese, "¿" and "ñ" are Spanish.
+    tied = [c for c, s in scores.items() if s == scores[best]]
+    if len(tied) > 1:
+        marked = [c for c in tied if any(ch in lowered for ch in HINTS.get(c, ""))]
+        if len(marked) != 1:
+            return current
+        return marked[0]
     return best
 
 
@@ -144,6 +199,33 @@ if __name__ == "__main__":
         ("hmm", "en"),
         ("متى يوصل طلبي؟", "ar"),
         ("مرحبا، عندي مشكلة في الطلب", "ar"),
+        # Every one of these came back "en" before the lists were widened,
+        # so the caller got an English holding phrase and an English answer.
+        ("Quando chega a minha encomenda?", "pt"),
+        ("Como devolvo um produto?", "pt"),
+        ("A minha encomenda chegou danificada, o que faço?", "pt"),
+        ("Qual é o vosso horário?", "pt"),
+        ("Quali sono i vostri orari?", "it"),
+        ("Wat zijn jullie openingstijden?", "nl"),
+        ("Quels sont vos horaires d'ouverture ?", "fr"),
+        ("Wann kommt meine Bestellung an?", "de"),
+        ("Comment puis-je retourner un article ?", "fr"),
+        ("Wie kann ich einen Artikel zurückgeben?", "de"),
+        ("Come posso restituire un prodotto?", "it"),
+        ("Hoe kan ik een product retourneren?", "nl"),
+        ("¿Cómo devuelvo un producto?", "es"),
+        ("Mijn bestelling is beschadigd aangekomen, wat nu?", "nl"),
+        ("Meine Bestellung ist beschädigt angekommen, was nun?", "de"),
+        ("Il mio ordine è in ritardo, cosa faccio?", "it"),
+        ("Mi pedido llegó roto, ¿qué hago?", "es"),
+        ("Ma commande est en retard, que faire ?", "fr"),
+        ("¿Cuál es vuestro horario de atención?", "es"),
+        ("Quali sono i vostri orari di apertura?", "it"),
+        # English must not be dragged off by a stray lookalike.
+        ("no it has not arrived yet", "en"),
+        ("is my order out for delivery", "en"),
+        ("what are your opening hours", "en"),
+        ("I would like a refund please", "en"),
     ]
     wrong = 0
     for text, want in SAMPLES:

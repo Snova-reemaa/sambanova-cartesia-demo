@@ -314,11 +314,60 @@ async def in_english(llm, text, code, meter=None):
 def language_rule(code):
     """Follow the caller. Switching language mid-call is the normal case in a
     contact centre, not an edge case."""
-    return (
-        f"\nThe caller is speaking {languages.name(code)}. Reply in "
-        f"{languages.name(code)} and nothing else — not a translation, not a "
-        "mixture. If they switch language again, switch with them."
+    name = languages.name(code)
+    rule = (
+        f"\nThe caller is speaking {name}. Reply in {name} and nothing else — "
+        "not a translation, not a mixture. If they switch language again, "
+        "switch with them."
     )
+    if code == "en":
+        return rule
+    # Llama drops out of the language mid-sentence, and worse, mid-word:
+    # "حالة الشipment" fused an Arabic definite article to an English noun.
+    # Every word here is spoken aloud, so a stray script is not a cosmetic
+    # blemish — Cartesia reads it with the wrong phonology and it comes out
+    # as noise.
+    #
+    # An earlier version of this rule listed the words to avoid by name —
+    # "shipment, billing, tracking, refund, order, delivery" — and those six
+    # were precisely the ones that leaked, so naming them looked like the
+    # cause. Removing them changed nothing measurable, which is the useful
+    # finding: "shipment" appears nowhere in the context, so the model is not
+    # copying it. The list is gone anyway, because a prohibition that names
+    # its own counter-examples is a bad bet, but the leak it was aimed at is
+    # handled by NON_ENGLISH_TEMPERATURE below, not by this paragraph.
+    return rule + (
+        f"\nWrite every single word in {name}, in {name} script — including any "
+        "term you would reach for in English out of habit. Never start a word "
+        "in one script and finish it in another, and never use Chinese, "
+        f"Japanese or Korean characters. If the {name} word will not come, "
+        f"describe the thing in {name} rather than borrowing from another "
+        "language."
+    )
+
+
+# English turns are left on the provider's own default: the variety is what
+# keeps the agent from sounding like a script, and nothing is at risk if it
+# picks a different synonym. A non-English turn is a different trade. Llama
+# 3.3 answering in Arabic produced "حالة الشipment" — an Arabic definite
+# article and an English noun fused into one word — and no amount of
+# instruction stopped it, because it is a sampling artefact rather than a
+# misunderstanding: the model starts a word in one script and the next token
+# it draws is from the other. Narrowing the distribution is the lever that
+# actually reaches it.
+NON_ENGLISH_TEMPERATURE = float(os.getenv("NON_ENGLISH_TEMPERATURE", "0.3"))
+
+
+def sampling_for(code):
+    return None if code == "en" else NON_ENGLISH_TEMPERATURE
+
+
+def speak_in(code):
+    """A one-line reminder, last in the stack, after the English instructions."""
+    name = languages.name(code)
+    return (f"Reminder: the caller is speaking {name}. Everything above is "
+            f"written in English for you, but your reply is spoken aloud to "
+            f"them — write it in {name}, every word.")
 
 
 def policy_prompt(hits):
@@ -496,13 +545,37 @@ def grounded_prompt(results):
 # SambaNova is fast enough that a longer history costs nothing audible.
 MAX_HISTORY = int(os.getenv("MAX_HISTORY_MESSAGES", "30"))
 
-# sonic-2 has no Arabic. Arabic turns go to a model that does; everything else
-# stays on whatever .env picked.
-TTS_MODEL_BY_LANGUAGE = {"ar": os.getenv("CARTESIA_MODEL_AR", "sonic-3")}
+# sonic-2 has no Arabic, and as of October 2026 it no longer has Italian or
+# Dutch either: Cartesia answers those two with "the requested model has been
+# sunsetted", which killed the turn outright. sonic-3 speaks all eight and is
+# no slower — measured over three runs it reached first audio in 1223 ms
+# against sonic-2's 1314 ms — so it is the default now, and CARTESIA_MODEL
+# only comes into it if someone sets it.
+FALLBACK_TTS_MODEL = os.getenv("CARTESIA_MODEL_AR", "sonic-3")
+TTS_MODEL_BY_LANGUAGE = {}
+
+# A language Cartesia has stopped serving on the configured model, learned at
+# the point it fails rather than from a table that has to be kept in step with
+# their release notes. One turn degrades; the rest of the call does not.
+DROPPED = set()
+
+
+def note_tts_failure(code, exc):
+    """Was that failure the model refusing this language, or something else?"""
+    if "sunset" not in str(exc).lower() or code in DROPPED:
+        return False
+    was = tts_model_for(code)
+    DROPPED.add(code)
+    print(f"  ! {was} no longer speaks {languages.name(code)} — "
+          f"using {FALLBACK_TTS_MODEL} for it from here on")
+    return True
 
 
 def tts_model_for(code):
-    return TTS_MODEL_BY_LANGUAGE.get(code) or os.getenv("CARTESIA_MODEL", "sonic-2")
+    if code in DROPPED:
+        return FALLBACK_TTS_MODEL
+    return (TTS_MODEL_BY_LANGUAGE.get(code) or os.getenv("CARTESIA_MODEL")
+            or FALLBACK_TTS_MODEL)
 
 
 def heard_part(reply, heard_chars):
@@ -586,6 +659,7 @@ class Turn:
         self.draft_lead_s = None # how far ahead an early draft started
         self.think_s = None      # how long the reasoning model took
         self.checks = {"checked": 0, "held": 0, "slowest_s": 0.0}
+        self.fused = 0           # words written in two scripts and dropped
         self.mood = "neutral"
         self.meter = pricing.Meter()   # what this turn cost
         self.cost_call = None          # running total for the call, set at the end
@@ -717,10 +791,40 @@ PERSONAS = {
                            "everything said so far. Walk the caller through one step at a time.")},
 }
 
+# This is spoken, not generated, so it is the one line in the call that cannot
+# drift — and before these existed a Spanish caller heard "Let me bring in Omar
+# from our technical support team" in the middle of their own language.
 HANDOFF_PHRASE = {
     "en": "Let me bring in {name} from our {team} team. They'll have everything we've talked about. ",
+    "es": "Le paso con {name}, de nuestro equipo de {team}. Tiene todo lo que hemos hablado. ",
+    "fr": "Je vous mets en relation avec {name}, de notre équipe {team}, qui a tout l'historique de notre conversation. ",
+    "de": "Ich verbinde Sie mit {name} aus unserem Team für {team}. Dort liegt alles vor, worüber wir gesprochen haben. ",
+    "it": "Le passo {name}, del nostro team di {team}. Ha già tutto quello di cui abbiamo parlato. ",
+    "pt": "Vou passar para {name}, da nossa equipa de {team}. Tem tudo o que falámos. ",
+    "nl": "Ik verbind u door met {name} van ons team {team}. Die heeft alles wat we besproken hebben. ",
     "ar": "خلّيني أحوّلك على {name} من فريق {team}، وعنده كل اللي تكلمنا فيه. ",
 }
+
+# The team name is inside that sentence, so translating the sentence and
+# leaving "technical support" in it would not have fixed anything.
+TEAM_NAME = {
+    "en": {"billing": "billing", "technical": "technical support"},
+    "es": {"billing": "facturación", "technical": "soporte técnico"},
+    "fr": {"billing": "facturation", "technical": "support technique"},
+    "de": {"billing": "Rechnungsfragen", "technical": "technischen Support"},
+    "it": {"billing": "fatturazione", "technical": "assistenza tecnica"},
+    "pt": {"billing": "faturação", "technical": "apoio técnico"},
+    "nl": {"billing": "facturatie", "technical": "technische ondersteuning"},
+    "ar": {"billing": "الفواتير", "technical": "الدعم الفني"},
+}
+
+
+def handoff_line(code, team):
+    """What the caller hears as the call changes hands, in their language."""
+    phrase = HANDOFF_PHRASE.get(code, HANDOFF_PHRASE["en"])
+    names = TEAM_NAME.get(code, TEAM_NAME["en"])
+    return phrase.format(name=PERSONAS[team]["name"],
+                         team=names.get(team, PERSONAS[team]["team"]))
 
 INTRO_RULE = (
     "You have just taken over this call. Introduce yourself in one short sentence "
@@ -930,6 +1034,43 @@ async def check_sentence(llm, sentence, sources, before, meter=None):
     return True, "", took
 
 
+# One word, two writing systems, no space between them: "الشipment", where the
+# model began the Arabic for "the shipment" and finished the word in English.
+# It is never legitimate — no language in this demo writes a single word in two
+# scripts — and it survived every prompt I wrote and every temperature from 1.0
+# down to 0.1 unchanged, which is what says it is not a sampling problem.
+#
+# Cartesia is given one language per generation, so it reads the Latin tail
+# with Arabic phonology and the caller hears noise. Dropping the word costs a
+# noun; speaking it costs the sentence. The count goes on the turn so this
+# stays visible rather than becoming a silent papering-over.
+# A word is a run of letters plus the Arabic vowel marks, which are combining
+# characters and so not \w — without them "خلّيني" splits at the shadda.
+_W = r"[\w\u064b-\u0652\u0670]"
+_AR = r"[\u0600-\u06ff\u0750-\u077f]"
+_CJK = r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]"
+_LAT = r"[A-Za-z]"
+FUSED = re.compile(
+    f"{_W}*(?:{_AR}(?:{_LAT}|{_CJK})|(?:{_LAT}|{_CJK}){_AR}|{_LAT}{_CJK}|{_CJK}{_LAT}){_W}*"
+)
+
+
+def unfuse(sentence):
+    """Drop any word written in two scripts. Returns (clean, dropped)."""
+    dropped = FUSED.findall(sentence)
+    if not dropped:
+        return sentence, []
+    out = FUSED.sub("", sentence)
+    # Removing a word leaves a double space behind, and strands the space in
+    # front of whatever punctuation followed it.
+    out = re.sub(r"\s{2,}", " ", out)
+    out = re.sub(r"\s+([،,.؟?!:;])", r"\1", out)
+    # The gate hands sentences over with their trailing space, and the next
+    # one is appended straight onto this: strip() here gave "حالة.هل".
+    trailing = sentence[len(sentence.rstrip()):]
+    return out.strip() + trailing, dropped
+
+
 class Gate:
     """Sits between the language model and the speaker, one sentence at a time.
 
@@ -961,6 +1102,12 @@ class Gate:
             self._submit(sentence)
 
     def _submit(self, sentence):
+        sentence, dropped = unfuse(sentence)
+        if dropped:
+            self.turn.fused += len(dropped)
+            print(f"  ~ dropped {len(dropped)} half-translated word(s): {dropped}")
+        if not sentence.strip():
+            return
         check = None
         if self.enabled and self.sources and smarts.has_claim(sentence):
             check = asyncio.ensure_future(check_sentence(
@@ -1086,6 +1233,7 @@ class Prepared:
         self.stats = {}
         self.think_stats = {}
         self.meter = pricing.Meter()
+        self.temperature = None
         self.started = time.perf_counter()
 
     def cancel(self):
@@ -1115,6 +1263,7 @@ def build_system(session, code, opts, mood_now, route_):
 
 async def prepare(llm, session, prompt, opts, code, extras=(), intro=None):
     p = Prepared()
+    p.temperature = sampling_for(code)
     p.mood = session.mood if intro else smarts.mood(prompt, session.mood)
 
     number = orders.find_number(prompt)
@@ -1152,19 +1301,27 @@ async def prepare(llm, session, prompt, opts, code, extras=(), intro=None):
         p.sources.append(kb_context(hits))
     convo = messages + list(extras) + [
         {"role": "system", "content": policy_prompt(hits) if hits else NO_POLICY}]
+    # Those last two are written in English and they are the final thing the
+    # model reads, which is enough to pull the whole reply into English: every
+    # "what are your opening hours" in French, Italian, Portuguese and Dutch
+    # came back in English until the language was restated after them.
+    if code != "en":
+        convo.append({"role": "system", "content": speak_in(code)})
     p.convo = convo
 
     if p.route["tier"] == "deep":
         talk_convo = convo + [{"role": "system", "content": TALKER_RULE}]
         think_convo = convo + [{"role": "system", "content": THINKER_RULE}]
-        p.talk = Feed(lambda: stream_tools(llm, talk_convo, model=p.route["model"], stats=p.stats))
+        p.talk = Feed(lambda: stream_tools(llm, talk_convo, model=p.route["model"],
+                                           stats=p.stats, temperature=p.temperature))
         p.thinker = Feed(lambda: collect_text(llm, think_convo, p.route["thinker"], p.think_stats))
     else:
         tools = (SEARCH_TOOL if opts["can_search"] else []) + [ORDER_TOOL, ACTION_TOOL]
         if session.persona == "front":
             tools.append(TRANSFER_TOOL)
         p.talk = Feed(lambda: stream_tools(llm, convo, model=p.route["model"],
-                                           tools=tools, stats=p.stats))
+                                           tools=tools, stats=p.stats,
+                                           temperature=p.temperature))
     return p
 
 
@@ -1255,7 +1412,6 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
     # A specialist speaks in their own voice for the rest of the call.
     voice_id = session.voices.get(session.persona) if session.persona != "front" else None
     voice_id = voice_id or pick_voice(opts["voice"])
-    tts_model = tts_model_for(code)
     reply = ""
     notes = []
     held_any = []
@@ -1541,7 +1697,8 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
             last.update(convo=convo)
             follow = {}
             async for kind, payload in stream_tools(llm, convo, model=prepared.route["model"],
-                                                    stats=follow):
+                                                    stats=follow,
+                                                    temperature=prepared.temperature):
                 if kind == "text":
                     await emit(payload)
             turn.meter.add_usage(prepared.route["model"], follow)
@@ -1555,8 +1712,7 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
             team = args.get("team") if args.get("team") in PERSONAS else "billing"
             session.handoff = {"team": team, "reason": args.get("reason") or prompt}
             who_next = PERSONAS[team]
-            await emit(HANDOFF_PHRASE.get(code, HANDOFF_PHRASE["en"]).format(
-                name=who_next["name"], team=who_next["team"]))
+            await emit(handoff_line(code, team))
 
         searched = [c for c in calls if c.get("name") == "web_search"]
         if searched:
@@ -1597,7 +1753,8 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
                 last.update(convo=grounded)
                 follow = {}
                 async for kind, payload in stream_tools(llm, grounded, model=prepared.route["model"],
-                                                        stats=follow):
+                                                        stats=follow,
+                                                        temperature=prepared.temperature):
                     if kind == "text":
                         await emit(payload)
                 turn.meter.add_usage(prepared.route["model"], follow)
@@ -1624,7 +1781,8 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
                 follow = {}
                 try:
                     async for kind, payload in stream_tools(llm, again, model=last["model"],
-                                                            stats=follow):
+                                                            stats=follow,
+                                                            temperature=prepared.temperature):
                         if kind == "text":
                             await retry.feed(payload)
                     await retry.close()
@@ -1657,9 +1815,9 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
             sent = []
             state = {"finished": False}
 
-            async def attempt(controls):
+            async def attempt(controls, model_id=None):
                 ctx = conn.context(
-                    model_id=tts_model,
+                    model_id=model_id or tts_model_for(code),
                     voice=voice_spec(voice_id, controls),
                     output_format=output_format(),
                     language=code,
@@ -1708,7 +1866,14 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                if controls and turn.first_audio is None:
+                if turn.first_audio is not None:
+                    raise
+                # Cartesia dropped Italian and Dutch from sonic-2 without the
+                # model id changing, so the first anyone knew was a dead turn.
+                # Take the hint and finish the sentence on sonic-3.
+                if note_tts_failure(code, exc):
+                    await attempt(controls, FALLBACK_TTS_MODEL)
+                elif controls:
                     log_error(exc, "voice controls refused; speaking without them")
                     session.controls_ok = False
                     await attempt(None)
@@ -1887,7 +2052,7 @@ async def websocket_handler(request):
             "type": "ready",
             "socket_setup_ms": setup_ms,
             "llm_model": get_model(),
-            "tts_model": os.getenv("CARTESIA_MODEL", "sonic-2"),
+            "tts_model": tts_model_for("en"),
             "sample_rate": SAMPLE_RATE,
             "models": CATALOG["models"],
             "voices": CATALOG["voices"],

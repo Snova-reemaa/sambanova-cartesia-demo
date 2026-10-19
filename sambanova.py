@@ -137,7 +137,8 @@ class ThinkFilter:
         return rest
 
 
-async def stream_tools(client, messages, model=None, tools=None, stats=None):
+async def stream_tools(client, messages, model=None, tools=None, stats=None,
+                       temperature=None):
     """Like stream_chat, but the model may answer with a tool call instead.
 
     Yields ('text', delta) as prose arrives, ('tool_start', None) at the first
@@ -145,6 +146,8 @@ async def stream_tools(client, messages, model=None, tools=None, stats=None):
     completed call at the end.
     """
     kwargs = {"tools": tools} if tools else {}
+    if temperature is not None:
+        kwargs["temperature"] = temperature
     stream = await client.chat.completions.create(
         model=model or get_model(),
         messages=messages,
@@ -190,7 +193,7 @@ async def stream_tools(client, messages, model=None, tools=None, stats=None):
         yield ("tool", slot)
 
 
-async def stream_chat(client, messages, model=None, stats=None):
+async def stream_chat(client, messages, model=None, stats=None, temperature=None):
     """Stream deltas for a full message list. Reuses a caller-owned client so the
     TLS connection stays warm between turns.
 
@@ -201,6 +204,7 @@ async def stream_chat(client, messages, model=None, stats=None):
         model=model or get_model(),
         messages=messages,
         stream=True,
+        **({"temperature": temperature} if temperature is not None else {}),
     )
 
     think = ThinkFilter()
