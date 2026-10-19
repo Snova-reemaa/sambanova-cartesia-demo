@@ -1454,7 +1454,8 @@ async def prepare(llm, session, prompt, opts, code, extras=(), intro=None):
                 f"and say it back as digits." if has_order and number not in prompt
                 else None)
     if opts["auto"] and not opts["attachments"] and not intro:
-        p.route = smarts.route(prompt, CATALOG["models"], opts["model"], has_order)
+        p.route = smarts.route(prompt, CATALOG["models"], opts["model"], has_order,
+                               code=code)
     else:
         p.route = {"tier": "standard", "model": opts["model"],
                    "reason": "took over the call" if intro
