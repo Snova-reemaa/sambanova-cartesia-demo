@@ -1510,6 +1510,11 @@ async def synthesise(chan, conn, turn_id, text, voice_id, language="en"):
             raise RuntimeError(res.message or res.title or "Cartesia error")
 
 
+FINALLY_RULE = (
+    "Answer the caller now, in two or three spoken sentences, using only what "
+    "is above. Do not call any tool and do not mention looking anything up."
+)
+
 INTERPRET_RULE = (
     "You are a live interpreter between two people on a call. Translate what the "
     "speaker just said into {target}. Output only the translation, as it should be "
@@ -1603,7 +1608,11 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
     gate = Gate(llm, sources, release, on_held,
                 enabled=opts["check"] and not interpreting, turn=turn, asked=prompt)
 
+    said_anything = {"yes": False}
+
     async def emit(delta):
+        if delta and delta.strip():
+            said_anything["yes"] = True
         await gate.feed(delta)
 
     async def mark_first():
@@ -1828,9 +1837,16 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
             convo = convo + [{"role": "system", "content": detail}]
             last.update(convo=convo)
             follow = {}
+            gate.boundary()
+            # No tools on this round. It was offered web_search, and tool
+            # calls made here are never collected — `calls` only holds what
+            # the first stream returned — so when it answered the lookup with
+            # another tool call instead of words, the call was dropped and
+            # the caller got an order card, a cost, a timing, and silence.
+            # The record is already in front of it; there is nothing to look up.
             async for kind, payload in stream_tools(
-                    llm, convo, model=prepared.route["model"],
-                    tools=SEARCH_TOOL if opts["can_search"] else None, stats=follow):
+                    llm, convo, model=prepared.route["model"], stats=follow,
+                    temperature=prepared.temperature):
                 if kind == "text":
                     await emit(payload)
             turn.meter.add_usage(prepared.route["model"], follow)
@@ -1912,6 +1928,20 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
                 await generate_interpretation()
             else:
                 await generate_answer()
+                # Every tool round above emits only on "text", so a round that
+                # comes back as another tool call emits nothing at all — and a
+                # turn can finish having said not one word, which reaches the
+                # caller as an order card and silence. Whatever the loop did,
+                # answer before closing. No tools this time, so it cannot
+                # happen twice.
+                if not said_anything["yes"] and last.get("convo"):
+                    print(f"  ~ turn {turn_id} said nothing after its tools; answering again")
+                    async for kind, payload in stream_tools(
+                            llm, last["convo"] + [{"role": "system", "content": FINALLY_RULE}],
+                            model=last.get("model") or opts["model"],
+                            temperature=sampling_for(code)):
+                        if kind == "text":
+                            await emit(payload)
             await gate.close()
             if held_any and last.get("convo") and not interpreting:
                 # Try once more from the records, checked the same way, rather
