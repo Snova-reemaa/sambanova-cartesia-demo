@@ -87,10 +87,18 @@ def words(text):
 # headphones/headphone and every other noun ending in a silent e.
 SIBILANT = re.compile(r"(s|x|z|ch|sh)es$")
 
+# Words that end in an inflection they do not have. "evening" is not the
+# gerund of "even", and a caller asking whether they can call this evening
+# was matched to the delivery tracking section on the strength of it.
+NEVER_STEM = {"evening", "morning", "nothing", "something", "anything",
+              "during", "being", "thing", "ceiling", "sterling", "address"}
+
 
 def stem(word):
     """Crude suffix trimming, so "refunds" finds "refund" and "delivered"
     finds "delivery". A real stemmer is not worth a dependency here."""
+    if word in NEVER_STEM:
+        return word
     for suffix in ("ing", "ies", "ed", "es", "s"):
         if not word.endswith(suffix) or len(word) - len(suffix) < 3:
             continue
@@ -105,21 +113,36 @@ def terms(text):
     return [stem(w) for w in words(text)]
 
 
+# A line directly under a heading, "> also: ...", naming the words callers
+# use for this that the heading does not. Retrieval is lexical, so a question
+# that shares no word with any heading cannot reach the document that answers
+# it however well written both are: "can I get help at 10pm on a Sunday"
+# scored 1.81 against "Opening hours and contact", below the score of a
+# question the documents genuinely do not cover. Rather than loosen the
+# threshold until that question gets through — it would let the other one
+# through first — the gap is closed in the documents, where whoever writes
+# them can see it and fix it without touching this file.
+ALSO = re.compile(r"^\s*>\s*also:\s*(.+)$", re.I | re.M)
+
+
 class Section:
     """One '##' section of one document — the unit a support answer comes in."""
 
     def __init__(self, doc, heading, body):
         self.doc = doc
         self.heading = heading
-        self.body = body.strip()
+        self.aliases = " ".join(ALSO.findall(body))
+        self.body = ALSO.sub("", body).strip()
         # The heading is what the customer is most likely echoing back, so it
         # counts three times. The document title counts too: "opening hours"
         # appears only in the title of hours.md, and without it a question
         # using those exact words ranked a delivery section first.
-        self.terms = Counter(terms(body) + terms(heading) * 3 + terms(doc) * 2)
+        self.terms = Counter(terms(self.body) + terms(heading) * 3
+                             + terms(doc) * 2 + terms(self.aliases) * 3)
         self.length = sum(self.terms.values())
         # What this section is *about*, as opposed to what it mentions.
-        self.topic = set(terms(heading)) | set(terms(doc))
+        self.topic = (set(terms(heading)) | set(terms(doc))
+                      | set(terms(self.aliases)))
 
     @property
     def text(self):
@@ -266,6 +289,24 @@ if __name__ == "__main__":
         ("how do I make a warranty claim", "warranty"),
         ("my laptop broke after 18 months", "warranty"),
         ("are batteries covered", "warranty"),
+        # Reached only through the "> also:" aliases: none of these shares a
+        # word with any heading. The first scored 1.81 before them, below a
+        # question the documents do not answer at all.
+        ("Can I get help at 10pm on a Sunday?", "hours"),
+        ("can I call you this evening", "hours"),
+        ("is anyone there on a bank holiday", "hours"),
+        ("do you have a shop in Glasgow", "hours"),
+        ("my parcel never turned up", "delivery"),
+        ("do you ship to Ireland", "delivery"),
+        ("I changed my mind about an item", "returns"),
+        ("I want to swap it for a different one", "returns"),
+        ("is there a guarantee on this", "warranty"),
+        ("I spilled coffee on it", "warranty"),
+        # These caught the aliases being written too loosely: "price" had
+        # been listed under out-of-warranty repairs and "opened" under the
+        # return window, where it stems to "open".
+        ("when are you open", "hours"),
+        ("Do you price match with competitors", None),
         # Nothing here says whether a delivery address can be changed. The
         # delivery section still comes back, and that is the intended trade
         # rather than a failure: policy_prompt tells the model these sections

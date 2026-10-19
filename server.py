@@ -166,6 +166,13 @@ ORDER_RULES = (
     "\nYou can look up orders. When a caller gives an order number, or asks "
     "where their order is, call lookup_order — never say you are checking "
     "unless you have. If you do not have a number yet, ask for it.\n"
+    "Only ask when the answer actually depends on which order it is. A "
+    "question about the rules — how long the return window is, what the "
+    "warranty covers, when you are open — has the same answer for everybody, "
+    "so answer it first. Asking for an order number instead reads as a "
+    "brush-off: \"I opened the box 20 days ago, full refund right?\" was met "
+    "with a request for the order number when the window alone settles it. "
+    "Answer, then ask for the number if there is something to look up.\n"
     "Everything the lookup returns is true; everything it does not return, you "
     "do not know. Do not invent a delivery date, a courier, or a refund that is "
     "not in the result."
@@ -269,12 +276,16 @@ TROUBLE = (
     ("timeout", "timed out"),
 )
 
+# Named, because "the AI service is out of credit" sent someone to check the
+# wrong account: two providers are in play and only one of them had run out.
 SAYS = (
-    "The AI service rejected our credentials. Check the API key in .env.",
-    "The AI service is out of credit. Top up the account to carry on.",
-    "The AI service is busy right now. Try that again in a moment.",
+    "The {what} service rejected our credentials. Check the API key in .env.",
+    "The {what} service is out of credit. Top up that account to carry on.",
+    "The {what} service is busy right now. Try that again in a moment.",
     "That took too long and timed out. Try again.",
 )
+
+WHICH = {"speech": "speech", "speaking": "speech"}
 
 
 def safe_error(exc, where="that"):
@@ -282,7 +293,7 @@ def safe_error(exc, where="that"):
     text = str(exc).lower()
     for phrases, says in zip(TROUBLE, SAYS):
         if any(p in text for p in phrases):
-            return says
+            return says.format(what=WHICH.get(where, "AI"))
     return f"Something went wrong with {where}. The server log has the detail."
 
 
@@ -1023,6 +1034,17 @@ CHECK_PROMPT = (
     "number, date, price, time limit or policy that the records do not contain. "
     "These are all OK: paraphrase, numbers written as words, summaries of the "
     "records, offers the records allow, questions, greetings and empathy. "
+    "Also OK, and the things most often held by mistake:\n"
+    "- Applying a rule in the records to what the caller has just described. "
+    "Their own account of their situation is a given, not something to verify, "
+    "and working out what the rule means for them is the job.\n"
+    "- Arithmetic on numbers the caller supplied or the records contain.\n"
+    "- Ordinary words about the present — now, currently, today, still, "
+    "already, at this point. They are speech, not a claim about the date. "
+    "\"Covered for six months, so it is not covered now\" was held for the "
+    "word \"now\" when the six months was in the records and the caller had "
+    "just said nine; that is the mistake to avoid.\n"
+    "Hold what the agent would be inventing, not what it is concluding. "
     "Reply exactly OK, or HOLD: followed by what is unsupported, in under twelve words."
 )
 
@@ -1130,6 +1152,9 @@ class Gate:
         self.said = ""
         self.queue = asyncio.Queue()
         self.held = []
+        # Once a claim has been pulled, the rest of the same answer was
+        # written on top of it and cannot be trusted to stand alone.
+        self.spoiled = False
         self.worker = asyncio.ensure_future(self._drain())
 
     async def feed(self, delta):
@@ -1165,8 +1190,20 @@ class Gate:
                 if not ok:
                     self.turn.checks["held"] += 1
                     self.held.append(sentence)
+                    self.spoiled = True
                     await self.on_held(sentence, reason)
                     continue
+            if self.spoiled:
+                # "Batteries are covered for a year." was held, and what
+                # followed it — "Would you like that?" — was released on its
+                # own, referring to an offer the caller never heard. A
+                # sentence written after a removed one is a dangling
+                # reference more often than it is a usable answer, and the
+                # rewrite below covers the same ground properly.
+                self.turn.checks["held"] += 1
+                self.held.append(sentence)
+                await self.on_held(sentence, "follows a sentence that was held")
+                continue
             await self.release(sentence)
 
     def boundary(self):
