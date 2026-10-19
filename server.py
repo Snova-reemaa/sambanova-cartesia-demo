@@ -134,9 +134,22 @@ TRANSFER_TOOL = {
     "function": {
         "name": "transfer_to_specialist",
         "description": (
-            "Pass the caller to a specialist colleague. 'billing' for charges, "
-            "refunds and payments; 'technical' for a device that is not working, "
-            "setup problems or an error on screen. Not for simple order status."
+            "Hand the call to a colleague who can do something you cannot. "
+            "'billing' for a dispute about money already taken: a double "
+            "charge, a payment they do not recognise, a refund that was agreed "
+            "and has not arrived. 'technical' for working through a device that "
+            "is not functioning, step by step with the caller. "
+            "Never transfer a question. Policy, prices, opening hours, "
+            "delivery, returns, warranty cover and what the company does or "
+            "does not offer are all yours to answer — and where you do not know "
+            "the answer, say you will find out. Passing the call on does not "
+            "make the answer appear, it just makes the caller explain "
+            "themselves twice.\n"
+            "The line that catches people out is returns. Whether an item can "
+            "go back, how long the window is, who pays the postage, how long a "
+            "refund takes once it is sent — all policy, all yours. It only "
+            "becomes billing's when money has actually gone wrong: a refund "
+            "that was agreed and never arrived, a charge they did not make."
         ),
         "parameters": {
             "type": "object",
@@ -356,10 +369,20 @@ def language_rule(code):
 # it draws is from the other. Narrowing the distribution is the lever that
 # actually reaches it.
 NON_ENGLISH_TEMPERATURE = float(os.getenv("NON_ENGLISH_TEMPERATURE", "0.3"))
+# Unset, so English keeps the provider's own default. Lowering it looked like
+# the obvious cure for the agent transferring calls it should have answered,
+# and it is not: over the 17-case routing set the provider default scored
+# 16/17 twice and 0.6 scored 16/17 then 15/17. Sampling was not what made
+# those decisions wrong, so there is nothing to buy by narrowing it, and
+# narrowing it costs the variety that keeps the agent from sounding scripted.
+# The knob stays because it is the first thing to reach for if a model change
+# makes the agent erratic. (Non-English turns are a different trade — see
+# NON_ENGLISH_TEMPERATURE above.)
+TEMPERATURE = float(os.environ["TEMPERATURE"]) if os.getenv("TEMPERATURE") else None
 
 
 def sampling_for(code):
-    return None if code == "en" else NON_ENGLISH_TEMPERATURE
+    return TEMPERATURE if code == "en" else NON_ENGLISH_TEMPERATURE
 
 
 def speak_in(code):
@@ -1132,6 +1155,19 @@ class Gate:
                     continue
             await self.release(sentence)
 
+    def boundary(self):
+        """A fresh generation is about to feed into the same turn.
+
+        A model that stops to call a tool often leaves a part-sentence behind,
+        and what comes back after the tool is appended straight onto it:
+        "...what the order number is?" and "Actually, let me double-check"
+        arrived as "is?Actually", which the sentence splitter cannot break
+        because it needs whitespace after the mark — so it reached Cartesia
+        as one word.
+        """
+        if self.buf and not self.buf[-1].isspace():
+            self.buf += " "
+
     async def close(self):
         if self.buf.strip():
             self._submit(self.buf)
@@ -1317,6 +1353,20 @@ async def prepare(llm, session, prompt, opts, code, extras=(), intro=None):
         p.thinker = Feed(lambda: collect_text(llm, think_convo, p.route["thinker"], p.think_stats))
     else:
         tools = (SEARCH_TOOL if opts["can_search"] else []) + [ORDER_TOOL, ACTION_TOOL]
+        # Withholding this tool whenever the knowledge base had a hit was the
+        # obvious fix for the over-eager transfers and it made things worse:
+        # 13/17 against 16/17 for the tool description alone. "Charged twice
+        # for the same order" matches the heading "When an order is late",
+        # and "pair my phone with the speaker" matches "Phone support", so
+        # the callers who most needed a specialist were the ones who could no
+        # longer reach one. Retrieval score does not separate the two either
+        # — the questions the front agent should keep score 3.48 to 10.52 and
+        # the ones it should pass on score 0.00 to 5.43. So the decision is
+        # left to the model, and the tool description carries it: over the
+        # same 17 cases the original description averaged 13.0 right (14, 13,
+        # 12) and the one below averaged 15.6 (16, 16, 16, 15, 15). It is a
+        # judgement made by a language model, so it is not deterministic and
+        # the last case or two move between runs.
         if session.persona == "front":
             tools.append(TRANSFER_TOOL)
         p.talk = Feed(lambda: stream_tools(llm, convo, model=p.route["model"],
@@ -1444,6 +1494,14 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
 
     async def release(text):
         nonlocal reply
+        # Everything the caller hears passes through here, including the fixed
+        # phrases that never went near the gate: the handoff line, and the
+        # "Actually, let me double-check" the gate adds when it holds a
+        # sentence back. The last sentence of a generation arrives without a
+        # trailing space, so those fused onto it — "the order number
+        # is?Actually, let me double-check" reached Cartesia as one word.
+        if reply and not reply[-1].isspace() and text[:1].isalnum():
+            text = " " + text
         reply += text
         await chan.event({"type": "token", "turn_id": turn_id, "text": text, "t": turn.now()})
         await pending_text.put(text)
@@ -1696,6 +1754,7 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
             convo = convo + [{"role": "system", "content": detail}]
             last.update(convo=convo)
             follow = {}
+            gate.boundary()
             async for kind, payload in stream_tools(llm, convo, model=prepared.route["model"],
                                                     stats=follow,
                                                     temperature=prepared.temperature):
@@ -1752,6 +1811,7 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
                 ]
                 last.update(convo=grounded)
                 follow = {}
+                gate.boundary()
                 async for kind, payload in stream_tools(llm, grounded, model=prepared.route["model"],
                                                         stats=follow,
                                                         temperature=prepared.temperature):
@@ -1780,6 +1840,7 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
                 ]
                 follow = {}
                 try:
+                    gate.boundary()
                     async for kind, payload in stream_tools(llm, again, model=last["model"],
                                                             stats=follow,
                                                             temperature=prepared.temperature):
