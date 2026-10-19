@@ -13,6 +13,7 @@ a support line knows you by your order or your number, not by an account.
 import os
 import re
 import sqlite3
+import unicodedata
 import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -184,7 +185,8 @@ LETTER_WORDS = {
     "o": "o", "oh": "o", "owe": "o",
     "p": "p", "pee": "p", "pea": "p",
     "q": "q", "cue": "q", "queue": "q",
-    "r": "r", "are": "r", "our": "r", "ar": "r", "arr": "r",
+    "r": "r", "are": "r", "our": "r", "ar": "r", "arr": "r", "or": "r",
+    "ore": "r", "oar": "r", "err": "r",
     "s": "s", "ess": "s", "es": "s",
     "t": "t", "tee": "t", "tea": "t",
     "u": "u", "you": "u", "yoo": "u", "ewe": "u",
@@ -250,6 +252,43 @@ def find_email(text):
     # Nobody on the books. Keep what they actually said rather than reading
     # letters into a surname that happens to sound like one.
     return candidates[0]
+
+
+def fold(word):
+    """Bergström and bergstrom are the same person. Speech recognition writes
+    plain ASCII whatever the spelling on the account says."""
+    stripped = unicodedata.normalize("NFD", (word or "").lower())
+    return "".join(c for c in stripped if not unicodedata.combining(c))
+
+
+def _people():
+    """Everyone on the books, as (email, first, last), accents folded."""
+    out = []
+    with _lock, _connect() as db:
+        for row in db.execute("SELECT email, name FROM customers"):
+            parts = fold(row["name"] or "").split()
+            out.append((row["email"].lower(), parts[0] if parts else "",
+                        parts[-1] if parts else ""))
+    return out
+
+
+def find_customer(text):
+    """Who is on the phone, from an address or just from their name.
+
+    Spelling an address down a microphone is miserable — "R" comes back as
+    "or", so the caller says it again, and again, and the transcript reads
+    "or or or or or". A surname is a word, which is the one thing speech
+    recognition is good at, and these are unique. "It's Patel" is enough.
+    """
+    email = find_email(text)
+    if email:
+        return email
+    words = set(re.findall(r"[a-z']+", fold(text)))
+    if not words:
+        return None
+    hits = {e for e, first, last in _people()
+            if (last and last in words) or (first and first in words)}
+    return hits.pop() if len(hits) == 1 else None
 
 
 def mask(email):

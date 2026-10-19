@@ -43,7 +43,8 @@ LETTERS = {
     "o": "o", "oh": "o", "owe": "o",
     "p": "p", "pee": "p", "pea": "p",
     "q": "q", "cue": "q", "queue": "q",
-    "r": "r", "are": "r", "our": "r", "ar": "r", "arr": "r",
+    "r": "r", "are": "r", "our": "r", "ar": "r", "arr": "r", "or": "r",
+    "ore": "r", "oar": "r", "err": "r",
     "s": "s", "ess": "s", "es": "s",
     "t": "t", "tee": "t", "tea": "t",
     "u": "u", "you": "u", "yoo": "u", "ewe": "u",
@@ -56,12 +57,17 @@ LETTERS = {
 
 SEPARATORS = ("dot", "point", "at", "underscore", "dash", "hyphen")
 
-# "ordot", "essdot", "jaydot": the letter and the separator spoken without a
-# gap between them and written as one token. Longest letter words first, so
-# "ess" is tried before "es".
+# "essdot", "jaydot": the letter and the separator spoken without a gap
+# between them and written as one token. Longest letter words first, so "ess"
+# is tried before "es".
+#
+# Only "dot" and "point" split. Allowing "at" too meant every ordinary word
+# that happens to end in it came apart — "cat" is "c" plus "at", and so are
+# sat, mat, bat, hat, rat, eat and beat. The caller said "I sat on the mat"
+# and the agent was handed "I s at on the m at".
 _LETTER_ALT = "|".join(sorted(LETTERS, key=len, reverse=True))
 _SEP_ALT = "|".join(SEPARATORS)
-FUSED = re.compile(rf"\b({_LETTER_ALT})({_SEP_ALT})\b", re.I)
+FUSED = re.compile(rf"\b({_LETTER_ALT})(dot|point)\b", re.I)
 
 ADDRESS_WORDS = re.compile(
     rf"\b(?:{_SEP_ALT})\b|@|\b[\w.+-]+@[\w.-]+\b", re.I)
@@ -250,6 +256,14 @@ if __name__ == "__main__":
         ("my brother is at home", None),
         ("where is order 44812", None),
         ("he lives at number four", None),
+        # Every one of these came apart on the "at": c-at, s-at, m-at, e-at,
+        # be-at. The caller was handed back their own words in pieces.
+        ("the cat sat on the mat", None),
+        ("I want to eat something first", None),
+        ("just beat it", None),
+        ("can you look at the order", None),
+        ("that is great", None),
+        ("is it a flat rate", None),
     ]
 
     ORDER_CASES = [

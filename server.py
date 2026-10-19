@@ -978,13 +978,36 @@ def clean_up(chan, text, tell=False, turn_id=None):
 
 
 def identify(session, prompt):
-    """Check a caller who is waiting to be verified. Returns an event or None."""
+    """Work out who is on the phone. Returns an event or None.
+
+    Two ways in. Either an order has been looked up and they are confirming
+    the address on it, or they lead with the address — "hello, it's
+    r.patel@example.com" — which is how most support calls actually start and
+    which did nothing at all before: session.caller only existed after a
+    lookup, so giving the address first fell through to "I'm not sure what
+    you're asking about".
+
+    An address is not proof of identity, and in front of real customer data
+    this is where a one-time code would go. Here it opens the same door that
+    confirming it against an order already opens.
+    """
     c = session.caller
-    if not c or c["verified"]:
+    if c and c["verified"]:
         return None
-    email = memory.find_email(prompt)
+    # Confirming against an order has to be the address itself. Opening a
+    # call can be the name — nobody should have to spell an address into a
+    # microphone to be recognised.
+    email = memory.find_email(prompt) if c else memory.find_customer(prompt)
     if not email:
         return None
+    if not c:
+        person = memory.customer(email)
+        if not person:
+            return None
+        calls = memory.history(email)
+        session.caller = {"email": email.lower(), "order": None, "verified": True,
+                          "name": person["name"], "calls": calls, "mismatch": False}
+        return caller_event(session.caller, "verified")
     if email == c["email"]:
         person = memory.customer(email) or {"name": email.split("@")[0]}
         c.update(verified=True, name=person["name"], calls=memory.history(email),
