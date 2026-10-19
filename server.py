@@ -824,6 +824,7 @@ class Session:
         self.mood = "neutral"
         self.controls_ok = VOICE_CONTROLS
         self.audio_off = False   # synthesis gave out part way through the call
+        self.just_named = False  # they said who they are and nothing else yet
         self.caller = None               # who is on the line, once an order is looked up
         self.said = {}                   # turn_id -> (assistant message in history, full reply)
         self.turns_used = 0              # counted, not derived: history is trimmed
@@ -1043,6 +1044,9 @@ def caller_rules(session):
             "for example what was promised last time and whether it happened. Never "
             "read the history out as a list, and do not mention it at all if it is "
             "irrelevant to what they are asking now.\n"
+            "If they have only just said who they are and asked nothing yet, greet "
+            "them by name and ask what you can do — that is not a moment to hand "
+            "the call to anyone, because nobody has asked for anything.\n"
             "They have just confirmed their email address, so do not read it back. "
             "The transcript of an address spoken aloud is half wrong in any case — "
             "it came through once as \"our dot patel\" — and repeating that at them "
@@ -1515,7 +1519,11 @@ async def prepare(llm, session, prompt, opts, code, extras=(), intro=None):
         # 12) and the one below averaged 15.6 (16, 16, 16, 15, 15). It is a
         # judgement made by a language model, so it is not deterministic and
         # the last case or two move between runs.
-        if session.persona == "front":
+        # Not on the turn where they have just said who they are. "Hi, it's
+        # Patel" was handed to billing five times out of five — nobody had
+        # asked for anything yet — and telling the model not to made no
+        # difference at all, so the tool is simply not there for that turn.
+        if session.persona == "front" and not session.just_named:
             tools.append(TRANSFER_TOOL)
         p.talk = Feed(lambda: stream_tools(llm, convo, model=p.route["model"],
                                            tools=tools, stats=p.stats,
@@ -1622,6 +1630,7 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
     # Identity first: a caller who has just confirmed their email changes what
     # the model is told, which is also why a draft made before it is no use.
     who = None if (interpreting or intro) else identify(session, prompt)
+    session.just_named = bool(who)
     if who:
         if draft:
             draft.cancel()

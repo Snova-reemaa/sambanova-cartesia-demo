@@ -155,6 +155,18 @@ def best_email(candidate, known):
     return close[0] if close else None
 
 
+def _address_starts(span, email):
+    """Index of the first token in `span` that is part of the address."""
+    name = _surname(email)
+    for i, token in enumerate(span):
+        low = token.lower().strip(",.?!'\"")
+        if (low in LETTERS or low in SEPARATORS or "@" in low
+                or low.endswith(("dot", "point"))
+                or (name and name in low)):
+            return i
+    return 0
+
+
 def repair(text, emails=(), orders=()):
     """Return (repaired text, list of (before, after) for anything changed)."""
     if not text:
@@ -187,13 +199,21 @@ def repair(text, emails=(), orders=()):
                 if not built:
                     continue
                 match = best_email(built, known_emails)
-                if match:
-                    phrase = " ".join(span)
-                    if match != phrase:
-                        out = out.replace(phrase, match, 1)
-                        changes.append((phrase, match))
-                    tokens = out.split()
-                    break
+                if not match:
+                    continue
+                # Keep only the part that is actually the address. A list of
+                # lead-in words cannot cover everything somebody might say
+                # first — "hi it's all that Patel at example.com" replaced
+                # the whole greeting — so the span starts at the first token
+                # that belongs to an address: a letter, a separator, a letter
+                # welded to one, or the surname itself.
+                span = span[_address_starts(span, match):]
+                phrase = " ".join(span)
+                if match != phrase:
+                    out = out.replace(phrase, match, 1)
+                    changes.append((phrase, match))
+                tokens = out.split()
+                break
 
     # Order numbers: orders.find_number already prefers a candidate that
     # matches a real order, so this only rewrites the transcript, so that the
@@ -249,6 +269,10 @@ if __name__ == "__main__":
         ("dee dot ferreira at hotmail dot com", "d.ferreira@example.com"),
         ("r.patel@example.com", "r.patel@example.com"),
         ("k dot yamamoto at example dot com please", "k.yamamoto@example.com"),
+        # The greeting is not part of the address. This replaced the whole
+        # line, so the screen showed only an email where a sentence had been.
+        ("hi it's all that Patel at example.com", "r.patel@example.com"),
+        ("hello there it is j dot okafor at example dot com", "j.okafor@example.com"),
         # Nothing to do with an address. None of this may be touched.
         ("thanks for your help", None),
         ("can you look at the order", None),
