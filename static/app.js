@@ -1387,6 +1387,10 @@ function onEvent(m) {
       ui.mic.disabled = !SpeechCtor;
       break;
 
+    case 'reheard':
+      reheard = m;
+      break;
+
     case 'turn_start': {
       if (m.interpreting) {
         // The other person answers in the language they just heard.
@@ -1406,7 +1410,19 @@ function onEvent(m) {
         showLive(m.turn_id, `${m.speaker.name} from ${m.speaker.team} joined`, '', true);
       } else {
         showLive(m.turn_id, m.prompt, '');
-        addMessage('you', 'you', m.prompt);
+        const you = addMessage('you', 'you', m.prompt);
+        // The transcript was repaired on the way in, so what is on screen is
+        // not quite what they said. Show the correction rather than rewriting
+        // their words behind their back — an order number or an address that
+        // silently changes is worse than one that visibly did.
+        if (reheard && reheard.turn_id === m.turn_id && you && you.row) {
+          const p = document.createElement('p');
+          p.className = 'cmeta note-x';
+          p.textContent = 'heard ' + reheard.changes
+            .map(c => `"${c.from}" — read as "${c.to}"`).join('; ');
+          you.row.append(p);
+        }
+        reheard = null;
       }
       t.node = addMessage('bot', m.speaker ? m.speaker.name : 'reply', '');
       showCursor(t.node);
@@ -2427,6 +2443,10 @@ ui.replayCall.addEventListener('click', async () => {
 // what is actually being heard. White and driven by the caller's mic while
 // listening, orange and circling while SambaNova works, white again and
 // driven by Cartesia's audio while it speaks.
+
+// Set by the server when it repairs a transcript, consumed by the next
+// turn_start so the correction appears under what the caller said.
+let reheard = null;
 
 let liveTurn = null;
 

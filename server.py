@@ -27,6 +27,7 @@ from cartesia_tts import get_client as get_tts, output_format
 from search import search, as_context, provider as search_provider
 from knowledge_base import Knowledge, as_context as kb_context
 import languages
+import heard
 import memory
 import orders
 import pricing
@@ -942,6 +943,39 @@ def resolve_language(session, prompt, forced):
 
 
 # ================================================================ memory
+
+def customer_emails():
+    """Addresses on the order book, for snapping a misheard one back."""
+    return [o["email"] for o in orders.ORDERS.values() if o.get("email")]
+
+
+def clean_up(chan, text, tell=False, turn_id=None):
+    """Repair a speech transcript before anything reads it.
+
+    Everything downstream — the language detector, retrieval, the model, the
+    order lookup — was being handed whatever the browser's recogniser made of
+    an order number or an address, and each of them coped differently or not
+    at all. One pass here, at the point the text arrives, is the same thing a
+    dictation system does, and it means the caller sees the corrected words
+    rather than the model quietly working around them.
+    """
+    if not text:
+        return text
+    try:
+        fixed, changes = heard.repair(text, emails=customer_emails(),
+                                      orders=orders.ORDERS)
+    except Exception as exc:          # never lose a turn over a tidy-up
+        log_error(exc, "repairing the transcript")
+        return text
+    if changes and tell:
+        for before, after in changes:
+            print(f"  ~ heard {before!r} — reading it as {after!r}")
+        asyncio.ensure_future(chan.event({
+            "type": "reheard", "turn_id": turn_id, "text": fixed,
+            "changes": [{"from": b, "to": a} for b, a in changes],
+        }))
+    return fixed
+
 
 def identify(session, prompt):
     """Check a caller who is waiting to be verified. Returns an event or None."""
@@ -2366,7 +2400,7 @@ async def websocket_handler(request):
                 # The caller has paused mid-sentence (or stopped typing). Start
                 # answering what they have said so far; if that turns out to be
                 # the whole question, the answer is already on its way.
-                text = (data.get("text") or "").strip()
+                text = clean_up(chan, (data.get("text") or "").strip())
                 did = data.get("id")
                 if not text or did is None or over_limit() or len(running) >= MAX_CONCURRENT:
                     continue
@@ -2383,7 +2417,11 @@ async def websocket_handler(request):
                 continue
 
             if kind == "prompt":
-                prompt = (data.get("text") or "").strip()
+                # next_turn_id, not turns_used: drafts and cancelled turns
+                # make them diverge, and the browser matches this against the
+                # turn_start that follows.
+                prompt = clean_up(chan, (data.get("text") or "").strip(),
+                                  tell=True, turn_id=next_turn_id)
                 if not prompt:
                     continue
 
