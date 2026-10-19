@@ -41,10 +41,11 @@ MIN_SCORE = 1.0          # worth showing the model alongside a better hit
 # the old bar on its own.
 COVERED_SCORE = 2.6
 
-# Added per query term found in a section's heading or document title. Enough
-# to lift a section about the thing asked over a section that merely mentions
-# it: "how do I return a product" ranked warranty's "What is covered" first,
-# on the single word "product", over the returns window itself.
+# Multiplies the IDF of each query term found in a section's heading or
+# document title. Enough to lift a section about the thing asked over one
+# that merely mentions it: "how do I return a product" was answered by
+# warranty's "What is covered", on the single word "product", rather than by
+# the returns window itself.
 TOPIC_BONUS = 1.2
 
 # BM25 constants. k1 damps repeated terms, b weights length normalisation.
@@ -57,6 +58,11 @@ STOP = {
     "my", "your", "our", "their", "me", "do", "does", "did", "can", "could",
     "will", "would", "should", "have", "has", "had", "what", "when", "where",
     "how", "why", "who", "there", "here", "about", "get", "got", "please",
+    # Part of how a question is phrased rather than what it is about. "How
+    # long do emails take to answer" was answered by the section headed "How
+    # long a refund takes", which it shares "long" and "take" with and
+    # nothing else.
+    "long", "take", "much", "many", "need", "want", "know", "tell", "say",
     # What is left of a negated verb once the contraction is stripped:
     # "don't" becomes "don", which is nobody's search term.
     "don", "doesn", "didn", "isn", "aren", "wasn", "weren", "hasn", "haven",
@@ -73,13 +79,25 @@ def words(text):
             if w not in STOP and len(w) > 1]
 
 
+# "es" is only a plural ending in its own right after a sibilant: boxes,
+# watches, dishes. Everywhere else the "e" belongs to the word and only the
+# "s" is the plural. Stripping "es" regardless meant "stores" became "stor"
+# while "store" stayed "store", so a question about a store did not match a
+# section headed "Stores" — and the same for charges/charge,
+# headphones/headphone and every other noun ending in a silent e.
+SIBILANT = re.compile(r"(s|x|z|ch|sh)es$")
+
+
 def stem(word):
     """Crude suffix trimming, so "refunds" finds "refund" and "delivered"
     finds "delivery". A real stemmer is not worth a dependency here."""
     for suffix in ("ing", "ies", "ed", "es", "s"):
-        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
-            base = word[: -len(suffix)]
-            return base + "y" if suffix == "ies" else base
+        if not word.endswith(suffix) or len(word) - len(suffix) < 3:
+            continue
+        if suffix == "es" and not SIBILANT.search(word):
+            continue          # let the "s" rule take it: stores -> store
+        base = word[: -len(suffix)]
+        return base + "y" if suffix == "ies" else base
     return word
 
 
@@ -167,7 +185,12 @@ class Knowledge:
                 continue
             norm = 1 - B + B * (section.length / self.avg_len) if self.avg_len else 1
             total += self.idf(term) * (count * (K1 + 1)) / (count + K1 * norm)
-        return total + TOPIC_BONUS * len(set(query_terms) & section.topic)
+        # Weighted by how distinctive the word is, not flat. "How long do
+        # emails take to answer" shares "take" with the heading "How long a
+        # refund takes", and a flat bonus let that outrank the section headed
+        # "Email" — a word in a title still has to be worth something.
+        on_topic = set(query_terms) & section.topic
+        return total + TOPIC_BONUS * sum(self.idf(t) for t in on_topic)
 
     def on_topic(self, section, query_terms):
         """Does the question share a word with what this section is about?"""

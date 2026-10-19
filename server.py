@@ -368,6 +368,12 @@ def language_rule(code):
 # misunderstanding: the model starts a word in one script and the next token
 # it draws is from the other. Narrowing the distribution is the lever that
 # actually reaches it.
+# Everything except the speaking: the conversation, retrieval, vision and
+# search all run and the caller reads the reply. Useful for exercising the
+# agent without spending synthesis credits, and as a way to keep a demo
+# usable when there are none left.
+TEXT_ONLY = os.getenv("TEXT_ONLY", "").lower() in ("1", "true", "yes")
+
 NON_ENGLISH_TEMPERATURE = float(os.getenv("NON_ENGLISH_TEMPERATURE", "0.3"))
 # Unset, so English keeps the provider's own default. Lowering it looked like
 # the obvious cure for the agent transferring calls it should have answered,
@@ -583,6 +589,13 @@ TTS_MODEL_BY_LANGUAGE = {}
 DROPPED = set()
 
 
+def out_of_credit(exc):
+    """Cartesia says this in prose rather than with a code of its own."""
+    text = str(exc).lower()
+    return any(s in text for s in ("ran out of credits", "credit limit",
+                                   "upgrade your subscription", "balance_units"))
+
+
 def note_tts_failure(code, exc):
     """Was that failure the model refusing this language, or something else?"""
     if "sunset" not in str(exc).lower() or code in DROPPED:
@@ -790,6 +803,7 @@ class Session:
         self.recent_fillers = []         # so the same acknowledgement is not used twice running
         self.mood = "neutral"
         self.controls_ok = VOICE_CONTROLS
+        self.audio_off = False   # synthesis gave out part way through the call
         self.caller = None               # who is on the line, once an order is looked up
         self.said = {}                   # turn_id -> (assistant message in history, full reply)
         self.turns_used = 0              # counted, not derived: history is trimmed
@@ -1865,7 +1879,7 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
             await pending_text.put(None)
 
     async def synthesize():
-        if conn is None:
+        if conn is None or session.audio_off:
             while await pending_text.get() is not None:
                 pass                      # consume so generate() is never blocked
             return
@@ -1934,6 +1948,16 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
                 # Take the hint and finish the sentence on sonic-3.
                 if note_tts_failure(code, exc):
                     await attempt(controls, FALLBACK_TTS_MODEL)
+                elif out_of_credit(exc):
+                    # The connection opened fine and the credits ran out
+                    # part way through the call, so the "no synthesis this
+                    # session" path above never got a chance to fire and the
+                    # turn died instead. The answer is already written; the
+                    # caller should get to read it.
+                    log_error(exc, "synthesis credits exhausted; text only now")
+                    session.audio_off = True
+                    await chan.event({"type": "audio_off", "turn_id": turn_id,
+                                      "message": safe_error(exc, "speech")})
                 elif controls:
                     log_error(exc, "voice controls refused; speaking without them")
                     session.controls_ok = False
@@ -2101,11 +2125,14 @@ async def websocket_handler(request):
     manager = tts.tts.websocket_connect()
     conn = None
     audio_trouble = None
-    try:
-        conn = await manager.__aenter__()
-    except Exception as exc:
-        log_error(exc, "no synthesis this session")
-        audio_trouble = safe_error(exc, "speech")
+    if TEXT_ONLY:
+        print("  TEXT_ONLY is set — answering without synthesis")
+    else:
+        try:
+            conn = await manager.__aenter__()
+        except Exception as exc:
+            log_error(exc, "no synthesis this session")
+            audio_trouble = safe_error(exc, "speech")
     setup_ms = (time.perf_counter() - t_setup) * 1000
 
     await ws.send_json(
