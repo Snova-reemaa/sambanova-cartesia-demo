@@ -2754,9 +2754,13 @@ def main():
 
     port = int(os.getenv("PORT", "8080"))
     print(f"\n  listening on http://localhost:{port}")
-    print(f"  passphrase: {PASSPHRASE}")
+    # Only ever print one we made up. A passphrase set in .env is a secret,
+    # and in a container this line goes wherever the pod's stdout goes.
     if GENERATED_PASSPHRASE:
+        print(f"  passphrase: {PASSPHRASE}")
         print("  (generated for this run — set DEMO_PASSPHRASE in .env to fix it)")
+    else:
+        print("  passphrase: set from DEMO_PASSPHRASE")
     web.run_app(app, host="127.0.0.1", port=port, print=None)
 
 
