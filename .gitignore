@@ -23,5 +23,9 @@ __pycache__/
 .idea/
 *.swp
 
-# Customer memory (local demo data)
-memory.sqlite3
+# Customer memory (local demo data). Any sqlite file, not just the default
+# name: MEMORY_FILE moves it, and a container points it at /data.
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm

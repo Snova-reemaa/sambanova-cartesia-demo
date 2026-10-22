@@ -2822,7 +2822,13 @@ def main():
     app.on_startup.append(on_startup)
 
     port = int(os.getenv("PORT", "8080"))
-    print(f"\n  listening on http://localhost:{port}")
+    # Loopback by default, so running it on a laptop does not put it on the
+    # network. A container sets HOST=0.0.0.0 because the kubelet reaches it
+    # from outside the pod's own namespace.
+    host = os.getenv("HOST", "127.0.0.1")
+    shown = "localhost" if host in ("127.0.0.1", "0.0.0.0", "") else host
+    print(f"\n  listening on http://{shown}:{port}" + (f" (bound to {host})"
+                                                        if host != "127.0.0.1" else ""))
     # Only ever print one we made up. A passphrase set in .env is a secret,
     # and in a container this line goes wherever the pod's stdout goes.
     if GENERATED_PASSPHRASE:
@@ -2830,7 +2836,7 @@ def main():
         print("  (generated for this run — set DEMO_PASSPHRASE in .env to fix it)")
     else:
         print("  passphrase: set from DEMO_PASSPHRASE")
-    web.run_app(app, host="127.0.0.1", port=port, print=None)
+    web.run_app(app, host=host, port=port, print=None)
 
 
 if __name__ == "__main__":
