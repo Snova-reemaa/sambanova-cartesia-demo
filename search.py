@@ -221,11 +221,16 @@ if __name__ == "__main__":
 
     print(f"provider: {name}")
     if name in keyed:
-        # Never print the key itself, just enough to confirm it was picked up.
-        value = os.getenv(keyed[name], "")
-        print(f"{keyed[name]}: set, {len(value)} chars, ends {value[-4:]!r}")
+        # Whether it is there, and nothing else about it. The last four
+        # characters were being printed, which is four more than anyone
+        # needs and four fewer than nobody.
+        print(f"{keyed[name]}: set")
     else:
         print("no search key found — using the keyless DuckDuckGo fallback")
+
+    if not os.getenv("RUN_LIVE_TESTS"):
+        print("\nthis would spend a real search request — set RUN_LIVE_TESTS=1 to run it")
+        raise SystemExit
 
     found = asyncio.get_event_loop().run_until_complete(search(query))
     print(f"\n{query!r} -> {len(found['results'])} results")
