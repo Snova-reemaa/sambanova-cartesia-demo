@@ -89,12 +89,33 @@ async def main():
             if not ok:
                 failures.append("all on one socket")
 
+            # Hanging up. A tab closing is the commonest way a call ends,
+            # and it used to raise "Cannot write to closing transport" out
+            # of whichever write happened to be in flight.
+            for when in (0.0, 0.05, 0.2, 0.5, 1.0, 2.0):
+                ws = await http.ws_connect(f"{server.base}/ws")
+                if when:
+                    await ws.receive()
+                    await ws.send_json({"type": "prompt", "text": "where is order 44812",
+                                        "call": False, "search": False})
+                    await asyncio.sleep(when)
+                await ws.close()
+            print("  ok   survived: six hang-ups, from instant to mid-reply")
+
+            # And the server is still serving afterwards.
+            async with http.ws_connect(f"{server.base}/ws") as ws:
+                await ws.receive()
+                ok = await still_alive(ws)
+            print(f"  {'ok  ' if ok else 'FAIL'} still serving after the hang-ups")
+            if not ok:
+                failures.append("dead after hang-ups")
+
         crashes = server.tracebacks()
         print(f"  {'ok  ' if not crashes else 'FAIL'} server logged {crashes} tracebacks")
         if crashes:
             failures.append(f"{crashes} tracebacks")
 
-    total = len(BAD_FRAMES) + 2
+    total = len(BAD_FRAMES) + 4
     print(f"\n  {total - len(failures)}/{total} correct")
     return 1 if failures else 0
 

@@ -17,6 +17,17 @@ import secrets
 import time
 
 from aiohttp import web, WSMsgType
+
+# Named differently across aiohttp versions, and absent from some, so the
+# write guard below builds its tuple from whatever this one actually has.
+_GONE = [ConnectionResetError, ConnectionError, RuntimeError,
+         asyncio.InvalidStateError]
+for _name in ("ClientConnectionResetError", "ClientConnectionError",
+              "ServerDisconnectedError"):
+    _exc = getattr(__import__("aiohttp"), _name, None)
+    if isinstance(_exc, type) and issubclass(_exc, BaseException):
+        _GONE.append(_exc)
+SOCKET_GONE = tuple(_GONE)
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -788,21 +799,36 @@ class Channel:
     frames carry no other way to say which answer they belong to.
     """
 
+    # A browser tab being closed is not an error, and it is the commonest way
+    # a call ends. Checking `closed` before taking the lock left a gap the
+    # width of a lock acquisition: the socket could go while a write waited
+    # its turn, and aiohttp raised "Cannot write to closing transport" out of
+    # whatever happened to be speaking. Every write goes through here, the
+    # check happens inside the lock, and a connection that has gone away ends
+    # the writing quietly.
     def __init__(self, ws):
         self.ws = ws
         self.lock = asyncio.Lock()
 
-    async def event(self, payload):
+    async def _send(self, write):
+        """True if it went, False if the socket has gone."""
         if self.ws.closed:
-            return
+            return False
         async with self.lock:
-            await self.ws.send_json(payload)
+            if self.ws.closed:
+                return False
+            try:
+                await write()
+            except SOCKET_GONE:
+                return False
+        return True
+
+    async def event(self, payload):
+        return await self._send(lambda: self.ws.send_json(payload))
 
     async def audio(self, turn_id, pcm):
-        if self.ws.closed:
-            return
-        async with self.lock:
-            await self.ws.send_bytes(turn_id.to_bytes(2, "big") + pcm)
+        return await self._send(
+            lambda: self.ws.send_bytes(turn_id.to_bytes(2, "big") + pcm))
 
 
 # ================================================================ session
@@ -2338,7 +2364,10 @@ async def websocket_handler(request):
             audio_trouble = safe_error(exc, "speech")
     setup_ms = (time.perf_counter() - t_setup) * 1000
 
-    await ws.send_json(
+    # Through the channel like everything else. This one sits immediately
+    # after the TTS connection, the slowest part of setting a call up, so it
+    # is the write most likely to find the tab already gone.
+    await chan.event(
         {
             "type": "ready",
             "socket_setup_ms": setup_ms,
@@ -2366,6 +2395,11 @@ async def websocket_handler(request):
             ),
         }
     )
+    if ws.closed:
+        # They closed the tab while synthesis was connecting. Nothing below
+        # has started yet, so there is nothing to unwind.
+        await tts.close()
+        return ws
 
     def drop_drafts(keep=None):
         for did in [d for d in session.drafts if d != keep]:
