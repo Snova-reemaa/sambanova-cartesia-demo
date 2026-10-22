@@ -118,6 +118,38 @@ async def main():
         app.policies.VERSION = was
         app.SESSIONS.pop("a-token-that-agreed-to-v1", None)
 
+    # Nothing the browser loads may come from anywhere else. The privacy
+    # notice lists who receives what, and a stylesheet quietly pulling a
+    # font from Google makes that list wrong without anyone editing it.
+    import re as _re
+    EXTERNAL = _re.compile(rb"https?://(?!127\.0\.0\.1|localhost)[\w.-]+")
+    ALLOWED_IN_TEXT = (b"github.com", b"schibsted", b"googlefonts",
+                       b"scripts.sil.org", b"openfontlicense")
+
+    with Server() as server:
+        async with aiohttp.ClientSession() as http:
+            _, _, cookie = await post(http, server, passphrase=PASSPHRASE,
+                                      consent="yes")
+            headers = {"Cookie": f"{cookie[0]}={cookie[1]}"}
+            offenders = []
+            for path in ("/", "/login", "/terms", "/privacy",
+                         "/static/style.css", "/static/fonts/fonts.css",
+                         "/static/app.js", "/static/field.js"):
+                async with http.get(f"{server.base}{path}",
+                                    headers=headers) as r:
+                    body = await r.read()
+                for hit in set(EXTERNAL.findall(body)):
+                    if not any(a in hit.lower() for a in ALLOWED_IN_TEXT):
+                        offenders.append(f"{path} -> {hit.decode()}")
+            results.append((f"nothing is loaded from another host"
+                            f"{' — ' + '; '.join(offenders[:3]) if offenders else ''}",
+                            not offenders))
+            # And specifically the one that used to be there.
+            async with http.get(f"{server.base}/privacy") as r:
+                notice = (await r.read()).lower()
+            results.append(("the privacy notice no longer claims Google Fonts",
+                            b"google fonts" not in notice))
+
     # The spoken disclosure. It has to happen on the first turn of every
     # call whatever shape that turn is, and never twice.
     import json as _json

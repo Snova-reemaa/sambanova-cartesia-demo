@@ -20,8 +20,10 @@ DRAFT_BANNER = ("Draft, pending review by SambaNova Legal. "
 
 # Who receives what. Checked against the code rather than remembered:
 # server.py and sambanova.py for the model, cartesia_tts.py for the voice,
-# search.py for the providers, and the <link> tags in static/*.html for the
-# fonts. If you add a service, add it here in the same breath.
+# and search.py for the providers. The typefaces used to be on this list,
+# loaded from Google on every page view; they are served from static/fonts
+# now, so nothing about a visitor reaches Google before they have agreed to
+# anything. If you add a service, add it here in the same breath.
 PROCESSORS = [
     ("SambaNova",
      "Runs the language model and reads any photo you send. Receives what "
@@ -38,9 +40,6 @@ PROCESSORS = [
      "Only when the agent searches the web, and only the search phrase it "
      "composed. Which company depends on configuration — Tavily, Brave, "
      "Serper, Exa or DuckDuckGo."),
-    ("Google Fonts",
-     "The two typefaces the page uses are loaded from Google, so Google sees "
-     "your IP address and browser when the page opens. Nothing else."),
 ]
 
 COLLECTED = [
