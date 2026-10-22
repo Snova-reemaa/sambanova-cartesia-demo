@@ -1136,6 +1136,30 @@ def parse_write_up(text):
     return out
 
 
+# Work that outlives the socket it was started from. Held in a set because
+# asyncio keeps only a weak reference to a running task and will collect one
+# nobody is holding, mid-flight.
+BACKGROUND = set()
+
+
+def in_background(coro, what, seconds=30):
+    """Run something after the caller has gone, without making them wait."""
+    async def run():
+        try:
+            await asyncio.wait_for(coro, seconds)
+        except asyncio.TimeoutError:
+            print(f"  ! {what} gave up after {seconds}s")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log_error(exc, what)
+
+    task = asyncio.ensure_future(run())
+    BACKGROUND.add(task)
+    task.add_done_callback(BACKGROUND.discard)
+    return task
+
+
 async def remember_call(llm, session, note=None):
     """Write the call to the caller's history, once, if they were verified."""
     c = session.caller
@@ -2654,12 +2678,12 @@ async def websocket_handler(request):
             task.cancel()
         if running:
             await asyncio.gather(*running.values(), return_exceptions=True)
-        # A refresh or a closed tab ends the call as surely as hanging up does:
-        # write it to the caller's history so the next call remembers it.
-        try:
-            await remember_call(llm, session)
-        except Exception as exc:
-            log_error(exc, "saving to memory on disconnect")
+        # A refresh or a closed tab ends the call as surely as hanging up
+        # does: write it to the caller's history so the next call remembers
+        # it. Not awaited — summarising a call is a round trip to the model,
+        # and it was happening in the teardown of a socket whose owner had
+        # already gone, holding the handler open for seconds at a time.
+        in_background(remember_call(llm, session), "saving the call to memory")
         if conn is not None:
             try:
                 await manager.__aexit__(None, None, None)
