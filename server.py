@@ -2918,23 +2918,37 @@ def is_https(request):
     return request.headers.get("X-Forwarded-Proto", request.scheme) == "https"
 
 
-def authorised(request):
+def session_for(request):
+    """The live session behind this request, or None."""
     token = request.cookies.get(COOKIE_NAME)
     if not token:
-        return False
-    # Pruning here rather than on a timer: every request is an opportunity,
-    # and a server with no requests has nothing to prune for.
+        return None
     now = time.time()
     if len(SESSIONS) > 1:
-        for old_token in [t for t, until in SESSIONS.items() if until <= now]:
-            SESSIONS.pop(old_token, None)
-    until = SESSIONS.get(token)
-    if until is None:
-        return False
-    if until <= now:
+        for old_token, held in list(SESSIONS.items()):
+            if held["until"] <= now:
+                SESSIONS.pop(old_token, None)
+    held = SESSIONS.get(token)
+    if held is None:
+        return None
+    if held["until"] <= now:
         SESSIONS.pop(token, None)
-        return False
-    return True
+        return None
+    return held
+
+
+def consented(request):
+    """Agreed, and to the wording currently being served.
+
+    A new version is a new agreement: consent to text nobody can read any
+    more is not consent to the text on the page now.
+    """
+    held = session_for(request)
+    return bool(held) and held.get("policy") == policies.VERSION
+
+
+def authorised(request):
+    return session_for(request) is not None
 
 
 @web.middleware
@@ -2964,6 +2978,11 @@ async def gate(request, handler):
         return await handler(request)
 
     if authorised(request):
+        # Signed in, but to older wording: ask again rather than carry on.
+        if not consented(request):
+            if request.path == "/ws":
+                return web.Response(status=403, text="consent required")
+            raise web.HTTPFound("/login?changed=1")
         return await handler(request)
 
     if request.path == "/ws":
@@ -2983,8 +3002,20 @@ async def login(request):
     if not hmac.compare_digest(given, PASSPHRASE):
         raise web.HTTPFound("/login?bad=1")
 
+    # Checked here as well as in the page. The box is a convenience; this is
+    # the part that cannot be skipped by posting the form directly.
+    if (data.get("consent") or "").strip().lower() not in ("yes", "on", "true", "1"):
+        raise web.HTTPFound("/login?noconsent=1")
+
     token = secrets.token_urlsafe(32)
-    SESSIONS[token] = time.time() + SESSION_HOURS * 3600
+    now = time.time()
+    SESSIONS[token] = {
+        "until": now + SESSION_HOURS * 3600,
+        "consent_at": now,
+        "policy": policies.VERSION,
+    }
+    print(f"  consent recorded, policy {policies.VERSION}, "
+          f"{time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(now))} UTC")
 
     response = web.HTTPFound("/")
     response.set_cookie(

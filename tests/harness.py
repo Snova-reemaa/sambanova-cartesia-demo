@@ -139,5 +139,11 @@ def stop_if_refused(text, where=""):
 
 
 async def sign_in(session, server):
+    """Sign in the way the login page does: passphrase and agreement.
+
+    Consent is required, so a suite that only sends the passphrase gets a
+    redirect and then fails on everything after. Which is the gate working.
+    """
     await session.post(f"{server.base}/login",
-                       data={"passphrase": PASSPHRASE}, allow_redirects=False)
+                       data={"passphrase": PASSPHRASE, "consent": "yes"},
+                       allow_redirects=False)

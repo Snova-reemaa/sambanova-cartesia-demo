@@ -54,6 +54,16 @@
   .gate button:hover { background: #fff; }
   .bad { font-size: 14px; font-weight: 600; color: var(--bad) !important; }
   .fine { font-size: 13px !important; color: var(--faint) !important; }
+  .agree {
+    display: flex; gap: 10px; align-items: flex-start;
+    width: min(520px, 100%);
+    margin: 14px 0 2px; padding: 0 8px; text-align: left;
+    font-size: 13px; line-height: 1.5; color: var(--muted);
+    cursor: pointer;
+  }
+  .agree input { width: 16px; height: 16px; margin: 2px 0 0; flex: none; cursor: pointer; }
+  .agree a { color: var(--tts); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
 </style>
 </head>
 <body>
@@ -62,21 +72,39 @@
   <h1>VoxNova</h1>
   <p>SambaNova and Cartesia voice agent demo. Enter the passphrase you were given.</p>
 
-  <form method="post" action="/login">
+  <form method="post" action="/login" id="gatehere">
     <input type="password" name="passphrase" placeholder="Passphrase" aria-label="Passphrase"
            autocomplete="current-password" autofocus required>
-    <button type="submit">Enter</button>
+    <button type="submit" id="enter" disabled>Enter</button>
   </form>
 
+  <label class="agree" for="consent">
+    <input type="checkbox" name="consent" value="yes" id="consent" form="gatehere" required>
+    <span>I agree to the <a href="/terms" target="_blank" rel="noopener">Terms of Use</a>
+      and the <a href="/privacy" target="_blank" rel="noopener">Privacy Notice</a></span>
+  </label>
+
   <p class="bad" id="bad" hidden>Wrong passphrase.</p>
+  <p class="bad" id="noconsent" hidden>Please agree to the Terms and Privacy Notice.</p>
+  <p class="bad" id="changed" hidden>The terms have changed since you last agreed.
+    Please read them and agree again.</p>
   <p class="fine">Use Chrome or Edge for the microphone.</p>
 </div>
 
 <script src="/static/field.js"></script>
 <script>
-  if (new URLSearchParams(location.search).has('bad')) {
-    document.getElementById('bad').hidden = false;
-  }
+  const why = new URLSearchParams(location.search);
+  if (why.has('bad')) document.getElementById('bad').hidden = false;
+  if (why.has('noconsent')) document.getElementById('noconsent').hidden = false;
+  if (why.has('changed')) document.getElementById('changed').hidden = false;
+
+  // The button follows the box. The server checks as well — this only
+  // saves someone the round trip.
+  const consent = document.getElementById('consent');
+  const enter = document.getElementById('enter');
+  const sync = () => { enter.disabled = !consent.checked; };
+  consent.addEventListener('change', sync);
+  sync();
 </script>
 </body>
 </html>

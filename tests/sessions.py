@@ -19,7 +19,8 @@ from tests.harness import PASSPHRASE, Server                   # noqa: E402
 
 async def sign_in(http, server):
     """Returns the session cookie, or None if the passphrase was refused."""
-    async with http.post(f"{server.base}/login", data={"passphrase": PASSPHRASE},
+    async with http.post(f"{server.base}/login",
+                         data={"passphrase": PASSPHRASE, "consent": "yes"},
                          allow_redirects=False) as r:
         for name, morsel in r.cookies.items():
             if "session" in name:
