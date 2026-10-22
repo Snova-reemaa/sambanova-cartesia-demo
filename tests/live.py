@@ -14,7 +14,7 @@ import sys
 import aiohttp
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tests.harness import Server, sign_in                      # noqa: E402
+from tests.harness import ProviderRefused, Server, sign_in, stop_if_refused                      # noqa: E402
 
 
 def wanted():
@@ -88,6 +88,10 @@ class Caller:
                 out["held"].append(event.get("reason"))
             elif kind == "error":
                 out["error"] = event.get("message")
+                # The server sanitises provider errors before they reach the
+                # browser, so the wording is ours; match it anyway, and the
+                # server's own log carries the provider's text.
+                stop_if_refused(out["error"], "the server reported")
             elif kind == "done" and out["reply"] is None:
                 out["reply"] = event.get("reply") or ""
                 metrics = event.get("metrics") or {}
@@ -115,6 +119,14 @@ def run(coro_factory, audio=False):
             jar = aiohttp.CookieJar(unsafe=True)
             async with aiohttp.ClientSession(cookie_jar=jar) as http:
                 await sign_in(http, server)
-                return report(await coro_factory(http, server))
+                try:
+                    return report(await coro_factory(http, server))
+                except ProviderRefused as refused:
+                    print(f"\n  !! STOPPED — {refused}")
+                    print("  !! Not a pass and not a failure: the provider "
+                          "would not serve us.")
+                    print("  !! Nothing here tells you anything about the "
+                          "agent. Fix the account and run it again.")
+                    return 2
 
     return asyncio.run(main())

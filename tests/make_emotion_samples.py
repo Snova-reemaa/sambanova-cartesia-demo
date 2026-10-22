@@ -18,6 +18,7 @@ import sys
 import wave
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from tests.harness import paid_api_trouble                     # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "listening", "emotion")
@@ -98,6 +99,18 @@ async def main(only):
                             stream=True):
                         pcm += getattr(chunk, "audio", b"") or b""
                 except Exception as exc:
+                    trouble = paid_api_trouble(exc)
+                    if trouble:
+                        # Not a result about emotion. Stop, rather than fill
+                        # the rest of the run with empty files that read
+                        # exactly like "the control did nothing".
+                        print(f"\n  !! STOPPED — {trouble}: {str(exc)[:90]}")
+                        print("  !! Nothing recorded from here on. This says "
+                              "nothing about emotion;")
+                        print("  !! it says the account cannot be charged. "
+                              "Top up and rerun.")
+                        await socket.close()
+                        return 2
                     note = f"  REFUSED: {str(exc)[:60]}"
                 finally:
                     await socket.close()

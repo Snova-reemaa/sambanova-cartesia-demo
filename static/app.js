@@ -1371,6 +1371,7 @@ function onEvent(m) {
       ui.socketNote.textContent = `socket warm in ${Math.round(m.socket_setup_ms)} ms`;
       ui.connText.textContent = 'ready';
       fillPickers(m);
+      audioAvailable = m.audio !== false;
       if (m.audio === false) {
         // Text still works; say so plainly rather than leaving silence
         // looking like a bug.
@@ -1386,6 +1387,24 @@ function onEvent(m) {
       ui.send.disabled = false;
       ui.mic.disabled = !SpeechCtor;
       break;
+
+    case 'audio_off': {
+      // Synthesis gave out part way through the call — credit ran out, most
+      // often. The server emitted this and nothing listened for it, so the
+      // voice simply stopped and the caller was left watching a reply
+      // arrive in silence, with no way to tell that from a bug.
+      audioAvailable = false;
+      ui.connDot.className = 'dot warn';
+      ui.connText.textContent = 'ready, text only';
+      ui.hint.className = 'hint mono warn';
+      ui.hint.textContent = m.message
+        ? `${m.message} Replies are text only from here.`
+        : 'The voice stopped working — replies are text only from here.';
+      ui.pickVoice.disabled = true;
+      const turn = turns.get(m.turn_id);
+      if (turn) note(turn, 'voice unavailable — this reply is text only', 'x');
+      break;
+    }
 
     case 'reheard':
       reheard = m;
@@ -2447,6 +2466,10 @@ ui.replayCall.addEventListener('click', async () => {
 // Set by the server when it repairs a transcript, consumed by the next
 // turn_start so the correction appears under what the caller said.
 let reheard = null;
+
+// Whether the voice is working at all. Set from the ready frame and
+// cleared if synthesis gives out mid-call.
+let audioAvailable = true;
 
 let liveTurn = null;
 

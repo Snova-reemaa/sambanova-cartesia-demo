@@ -30,5 +30,7 @@ __pycache__/
 *.sqlite3-wal
 *.sqlite3-shm
 
-# Audio recorded for listening to, not source
-listening/
+# Audio recorded for listening to, not source. The notes and the script
+# that records it are kept.
+listening/**/*.wav
+listening/**/*.pcm

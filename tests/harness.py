@@ -95,6 +95,49 @@ class Server:
         return False
 
 
+# A provider refusing to serve us is not a test result. It looks exactly
+# like a failure — empty replies, no audio, nothing matching — and reporting
+# it as one sends somebody hunting a bug in the agent. It is also not a
+# pass. Every suite that spends money stops on these and says which.
+# Both wordings: the provider's own, seen by a script calling the API
+# directly, and the server's sanitised version, which is all a test driving
+# the websocket ever gets. Missing the second meant the one a live suite
+# actually encounters would have sailed through as an ordinary failure.
+PAID_API_TROUBLE = (
+    ("out of credit", ("402", "ran out of credits", "credit limit",
+                       "upgrade your subscription", "balance_units",
+                       "payment required", "insufficient",
+                       "is out of credit")),
+    ("authentication rejected", ("401", "invalid_api_key", "incorrect api key",
+                                 "authentication_error", "unauthorized",
+                                 "invalid authentication",
+                                 "rejected our credentials")),
+    ("rate limited", ("429", "rate limit", "too many requests",
+                      "concurrency limit", "high demand",
+                      "is busy right now")),
+)
+
+
+class ProviderRefused(RuntimeError):
+    """A paid API would not serve us. Not a pass, not a fail."""
+
+
+def paid_api_trouble(text):
+    """Which kind of refusal this is, or None."""
+    low = str(text or "").lower()
+    for label, needles in PAID_API_TROUBLE:
+        if any(n in low for n in needles):
+            return label
+    return None
+
+
+def stop_if_refused(text, where=""):
+    label = paid_api_trouble(text)
+    if label:
+        raise ProviderRefused(
+            f"{label}{' — ' + where if where else ''}: {str(text)[:160]}")
+
+
 async def sign_in(session, server):
     await session.post(f"{server.base}/login",
                        data={"passphrase": PASSPHRASE}, allow_redirects=False)
