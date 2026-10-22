@@ -77,6 +77,12 @@ def _create(db):
             seeded    INTEGER NOT NULL DEFAULT 0
         );
     """)
+    # Added after the first databases existed, so it arrives by migration
+    # rather than by schema: questions the documentation could not answer,
+    # one line each, kept so the gaps are visible in aggregate.
+    have = {row[1] for row in db.execute("PRAGMA table_info(calls)")}
+    if "unanswered" not in have:
+        db.execute("ALTER TABLE calls ADD COLUMN unanswered TEXT")
 
 
 def _seed(db):
@@ -129,7 +135,8 @@ def history(email, limit=20):
     """Past calls, most recent first."""
     with _lock, _connect() as db:
         rows = db.execute(
-            "SELECT at, summary, outcome, actions, sentiment, seeded FROM calls "
+            "SELECT at, summary, outcome, actions, sentiment, unanswered, seeded "
+            "FROM calls "
             "WHERE email = ? ORDER BY at DESC, id DESC LIMIT ?",
             (email.lower(), limit)).fetchall()
         return [dict(r) for r in rows]
@@ -141,10 +148,11 @@ def save_call(email, at, fields):
         db.execute("INSERT OR IGNORE INTO customers (email, name) VALUES (?, ?)",
                    (email.lower(), email.split("@")[0]))
         db.execute(
-            "INSERT INTO calls (email, at, summary, outcome, actions, sentiment) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO calls (email, at, summary, outcome, actions, sentiment, "
+            "unanswered) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (email.lower(), at, fields.get("summary") or "Call with no summary.",
-             fields.get("outcome"), fields.get("actions"), fields.get("sentiment")))
+             fields.get("outcome"), fields.get("actions"), fields.get("sentiment"),
+             fields.get("unanswered")))
 
 
 def as_context(name, calls):

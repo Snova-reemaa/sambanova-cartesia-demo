@@ -458,8 +458,9 @@ def policy_prompt(hits):
         "Read the question again and check it is actually answered above. These "
         "sections were picked by keyword and may be about something adjacent "
         "rather than what was asked. If the specific thing they want is not "
-        "stated, say you will check and come back to them — do not reason from "
-        "the nearest related policy to a plausible answer.\n"
+        "stated, say plainly that you do not have it and offer to put them "
+        "through to the team who would — do not promise to find out, and do "
+        "not reason from the nearest related policy to a plausible answer.\n"
         "Where a section names the specific thing they asked about, it beats the "
         "general rule — an exclusion list applies even when a broader policy "
         "would have allowed it. Quoting the general policy over a stated "
@@ -471,11 +472,19 @@ def policy_prompt(hits):
     )
 
 
+# "I'll find out and come back to you" was a promise nobody kept: there is
+# no queue, no ticket and no callback, so the caller waited for something
+# that was never going to arrive. Saying plainly that we do not have it, and
+# offering the colleague who would, is both true and more use.
 NO_POLICY = (
-    "\nNothing in the company documentation covers what they just asked. Do not "
-    "invent an answer about company policy, hours, prices, delivery or warranty "
-    "— say you will find out and come back to them. Ordinary conversation and "
-    "general knowledge are still fine."
+    "\nNothing in the company documentation covers what they just asked. Do "
+    "not invent an answer about company policy, hours, prices, delivery or "
+    "warranty.\n"
+    "Say plainly that you do not have that information — not that you will "
+    "find out, not that you will come back to them, because nobody will. "
+    "Then offer to put them through to the team who would know, and transfer "
+    "them if they say yes. Ordinary conversation and general knowledge are "
+    "still fine."
 )
 
 
@@ -929,6 +938,8 @@ class Session:
         # Per language, because they do not all behave the same and one
         # refusal should not flatten the rest of the call.
         self.emotion_ok = {}
+        # Questions this call could not answer from anything it had.
+        self.unanswered = []
         self.audio_off = False   # synthesis gave out part way through the call
         self.just_named = False  # they said who they are and nothing else yet
         self.caller = None               # who is on the line, once an order is looked up
@@ -1194,6 +1205,11 @@ def caller_rules(session):
 
 WRAP_FIELDS = ("summary", "outcome", "actions", "sentiment", "quality")
 
+# Questions the documentation did not cover. Worth keeping: each one is
+# either a gap in the knowledge base or a thing this agent should not be
+# asked, and both are only visible in aggregate.
+UNANSWERED_FIELD = "unanswered"
+
 
 def parse_write_up(text):
     out = {}
@@ -1239,6 +1255,8 @@ async def remember_call(llm, session, note=None):
     if not note:
         return None
     fields = parse_write_up(note["text"])
+    if session.unanswered:
+        fields[UNANSWERED_FIELD] = " | ".join(session.unanswered[:20])
     memory.save_call(c["email"], time.strftime("%Y-%m-%d %H:%M"), fields)
     session.saved_turns = session.user_turns
     c["calls"] = memory.history(c["email"])
@@ -1294,15 +1312,29 @@ RETRY_RULE = (
     "anything being held back."
 )
 
+# Said when the checker pulled what the agent was about to say. The old
+# wording — "let me double-check that before I confirm it" — was the same
+# promise as "I'll find out and come back": there is nobody to check with
+# and no second attempt coming, so the caller was left waiting on it. These
+# say what is true, which is that we do not have it confirmed, and offer the
+# colleague who would.
 REPAIR = {
-    "en": "Actually, let me double-check one detail on that before I confirm it. ",
-    "ar": "في الحقيقة، خلّيني أتأكد من تفصيلة وحدة قبل ما أأكدها لك. ",
-    "es": "En realidad, déjame comprobar un detalle antes de confirmártelo. ",
-    "fr": "En fait, laissez-moi vérifier un détail avant de vous le confirmer. ",
-    "de": "Moment, lassen Sie mich ein Detail noch prüfen, bevor ich es bestätige. ",
-    "it": "Anzi, fammi verificare un dettaglio prima di confermartelo. ",
-    "pt": "Na verdade, deixe-me confirmar um detalhe antes de lhe dizer. ",
-    "nl": "Wacht, laat me één detail nog even controleren voordat ik het bevestig. ",
+    "en": "Actually, I don't have that confirmed, so I'd rather not guess. "
+          "I can put you through to the team who would know — shall I? ",
+    "ar": "في الحقيقة، ما عندي هذي المعلومة مؤكدة، وما أبي أخمّن. "
+          "أقدر أحوّلك على الفريق اللي يعرفها، تحب؟ ",
+    "es": "La verdad es que no tengo eso confirmado y prefiero no suponer. "
+          "Puedo pasarte con el equipo que lo sabría, ¿te parece? ",
+    "fr": "En fait, je n'ai pas cette information confirmée et je préfère ne "
+          "pas deviner. Je peux vous passer l'équipe qui saurait, voulez-vous ? ",
+    "de": "Ehrlich gesagt habe ich das nicht bestätigt, und raten möchte ich "
+          "nicht. Ich kann Sie an das Team weiterleiten, das es weiß — soll ich? ",
+    "it": "A dire il vero non ho quel dato confermato e preferisco non tirare a "
+          "indovinare. Posso passarti al team che lo saprebbe, vuoi? ",
+    "pt": "Na verdade não tenho essa informação confirmada e prefiro não "
+          "adivinhar. Posso passar para a equipa que saberia, quer? ",
+    "nl": "Eerlijk gezegd heb ik dat niet bevestigd en ik wil niet gokken. "
+          "Ik kan u doorverbinden met het team dat het weet — zal ik dat doen? ",
 }
 
 
@@ -2379,6 +2411,15 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
         if draft is not None and draft.task.done() and not draft.task.cancelled() \
                 and draft.task.exception() is None:
             draft.task.result().cancel()
+
+    # Nothing to answer from: no documentation matched, no order was looked
+    # up, no search ran. Either the knowledge base has a gap or this is not
+    # a thing the agent should be asked, and both are only visible in
+    # aggregate — so the question is kept with the call.
+    if (prompt and not intro and not interpreting
+            and not turn.kb_hits and turn.order is None and turn.search_s is None
+            and prompt not in session.unanswered):
+        session.unanswered.append(prompt)
 
     remember(reply)
 
