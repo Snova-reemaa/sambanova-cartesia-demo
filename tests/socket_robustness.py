@@ -89,6 +89,35 @@ async def main():
             if not ok:
                 failures.append("all on one socket")
 
+            # Oversized input. The turn must still start, on a trimmed
+            # prompt, rather than a megabyte going to the model.
+            async with http.ws_connect(f"{server.base}/ws") as ws:
+                await ws.receive()
+                await ws.send_json({"type": "prompt", "text": "x " * 300_000,
+                                    "call": False, "search": False})
+                ok = await still_alive(ws)
+            print(f"  {'ok  ' if ok else 'FAIL'} survived: a 600,000 character prompt")
+            if not ok:
+                failures.append("huge prompt")
+
+            # And a frame past the socket limit is refused without the
+            # server falling over.
+            try:
+                async with http.ws_connect(f"{server.base}/ws",
+                                           max_msg_size=0) as ws:
+                    await ws.receive()
+                    await ws.send_json({"type": "prompt",
+                                        "text": "y" * (17 * 1024 * 1024)})
+                    await asyncio.sleep(1.0)
+            except Exception:
+                pass
+            async with http.ws_connect(f"{server.base}/ws") as ws:
+                await ws.receive()
+                ok = await still_alive(ws)
+            print(f"  {'ok  ' if ok else 'FAIL'} still serving after an oversized frame")
+            if not ok:
+                failures.append("dead after oversized frame")
+
             # Hanging up. A tab closing is the commonest way a call ends,
             # and it used to raise "Cannot write to closing transport" out
             # of whichever write happened to be in flight.
@@ -115,7 +144,7 @@ async def main():
         if crashes:
             failures.append(f"{crashes} tracebacks")
 
-    total = len(BAD_FRAMES) + 4
+    total = len(BAD_FRAMES) + 6
     print(f"\n  {total - len(failures)}/{total} correct")
     return 1 if failures else 0
 

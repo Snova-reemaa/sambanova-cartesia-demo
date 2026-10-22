@@ -669,6 +669,13 @@ MAX_CONCURRENT = 4  # requests accepted in flight at once on one connection
 
 # One passphrase shared on a call, and a link that outlives it, is somebody
 # else spending your credits. These are per browser session.
+# What one websocket message may weigh, enforced by aiohttp before anything
+# is parsed, and what one spoken turn may say. Nobody dictates two thousand
+# characters; anything longer is a stuck recogniser or someone pasting a
+# book, and either way it is a prompt bill nobody meant to run up.
+MAX_MSG_BYTES = int(os.getenv("MAX_MESSAGE_BYTES", str(16 * 1024 * 1024)))
+MAX_PROMPT_CHARS = int(os.getenv("MAX_PROMPT_CHARS", "2000"))
+
 MAX_TURNS = int(os.getenv("MAX_TURNS_PER_SESSION", "60"))
 MAX_MINUTES = int(os.getenv("MAX_SESSION_MINUTES", "45"))
 
@@ -976,6 +983,24 @@ def resolve_language(session, prompt, forced):
 
 
 # ================================================================ memory
+
+def said_text(data, field="text"):
+    """What the caller said, as a string of a sane length.
+
+    The field arrives from a browser and need not be a string at all, and
+    nothing downstream expected to be handed a number.
+    """
+    raw = data.get(field)
+    if not isinstance(raw, str):
+        if raw is None or isinstance(raw, (dict, list, bool)):
+            return ""
+        raw = str(raw)
+    text = raw.strip()
+    if len(text) > MAX_PROMPT_CHARS:
+        print(f"  ~ trimmed a {len(text)} character message to {MAX_PROMPT_CHARS}")
+        text = text[:MAX_PROMPT_CHARS].rstrip()
+    return text
+
 
 def customer_emails():
     """Addresses on the order book, for snapping a misheard one back."""
@@ -2337,7 +2362,7 @@ async def carry_out(call, prompt, session, turn, turn_id, chan, sources, notes):
 # ================================================================ the socket
 
 async def websocket_handler(request):
-    ws = web.WebSocketResponse(heartbeat=25, max_msg_size=16 * 1024 * 1024)
+    ws = web.WebSocketResponse(heartbeat=25, max_msg_size=MAX_MSG_BYTES)
     await ws.prepare(request)
 
     llm = get_llm()
@@ -2487,7 +2512,7 @@ async def websocket_handler(request):
                     # The caller has paused mid-sentence (or stopped typing). Start
                     # answering what they have said so far; if that turns out to be
                     # the whole question, the answer is already on its way.
-                    text = clean_up(chan, (data.get("text") or "").strip())
+                    text = clean_up(chan, said_text(data))
                     did = data.get("id")
                     if not text or did is None or over_limit() or len(running) >= MAX_CONCURRENT:
                         continue
@@ -2507,7 +2532,7 @@ async def websocket_handler(request):
                     # next_turn_id, not turns_used: drafts and cancelled turns
                     # make them diverge, and the browser matches this against the
                     # turn_start that follows.
-                    prompt = clean_up(chan, (data.get("text") or "").strip(),
+                    prompt = clean_up(chan, said_text(data),
                                       tell=True, turn_id=next_turn_id)
                     if not prompt:
                         continue
@@ -2604,7 +2629,7 @@ async def websocket_handler(request):
                     if conn is None:
                         continue
                     # The assistant's own "which would you like first?" question.
-                    text = (data.get("text") or "").strip()
+                    text = said_text(data)
                     if not text:
                         continue
                     try:
