@@ -2410,158 +2410,177 @@ async def websocket_handler(request):
             except ValueError:
                 continue
 
+
+            if not isinstance(data, dict):
+                continue
             kind = data.get("type")
-
-            if kind == "prelook":
-                # The camera (or shared screen) already shows whatever they mean,
-                # so start reading it now rather than when they stop speaking.
-                pid = data.get("id")
-                frames = clean_attachments(data.get("images"))
-                if pid is None or not frames:
-                    continue
-                for old in [k for k in prelooks if k < pid - 2]:
-                    task = prelooks.pop(old)["task"]
-                    task.cancel()
-                look = SCREEN_LOOK if data.get("source") == "screen" else GENERIC_LOOK
-                prelooks[pid] = {
-                    "count": len(frames),
-                    "task": asyncio.ensure_future(describe_images(llm, frames, look)),
-                }
+            if not isinstance(kind, str):
                 continue
 
-            if kind == "draft":
-                # The caller has paused mid-sentence (or stopped typing). Start
-                # answering what they have said so far; if that turns out to be
-                # the whole question, the answer is already on its way.
-                text = clean_up(chan, (data.get("text") or "").strip())
-                did = data.get("id")
-                if not text or did is None or over_limit() or len(running) >= MAX_CONCURRENT:
-                    continue
-                opts = read_opts(data)
-                if opts["attachments"] or opts["mode"] == "interpret" or data.get("prelook"):
-                    continue
-                if session.caller and not session.caller["verified"] and memory.find_email(text):
-                    continue        # verifying changes the prompt; do it live
-                drop_drafts()
-                code = resolve_language(session, text, opts["language"])
-                session.drafts[did] = Draft(
-                    text, asyncio.ensure_future(prepare(llm, session, text, opts, code)),
-                    len(session.history), opts_key(opts), code)
-                continue
+            # One bad frame used to end the call. Only the JSON parse was
+            # guarded, so a payload that was not an object, a text field
+            # that was not a string, or an id that could not be a dict key
+            # raised straight out of this loop and took the socket with
+            # it: the caller lost the call and saw nothing, while the
+            # traceback went to a log nobody was watching. Anything a
+            # message gets wrong now costs that message and no more.
+            try:
 
-            if kind == "prompt":
-                # next_turn_id, not turns_used: drafts and cancelled turns
-                # make them diverge, and the browser matches this against the
-                # turn_start that follows.
-                prompt = clean_up(chan, (data.get("text") or "").strip(),
-                                  tell=True, turn_id=next_turn_id)
-                if not prompt:
+                if kind == "prelook":
+                    # The camera (or shared screen) already shows whatever they mean,
+                    # so start reading it now rather than when they stop speaking.
+                    pid = data.get("id")
+                    frames = clean_attachments(data.get("images"))
+                    if pid is None or not frames:
+                        continue
+                    for old in [k for k in prelooks if k < pid - 2]:
+                        task = prelooks.pop(old)["task"]
+                        task.cancel()
+                    look = SCREEN_LOOK if data.get("source") == "screen" else GENERIC_LOOK
+                    prelooks[pid] = {
+                        "count": len(frames),
+                        "task": asyncio.ensure_future(describe_images(llm, frames, look)),
+                    }
                     continue
 
-                if over_limit():
+                if kind == "draft":
+                    # The caller has paused mid-sentence (or stopped typing). Start
+                    # answering what they have said so far; if that turns out to be
+                    # the whole question, the answer is already on its way.
+                    text = clean_up(chan, (data.get("text") or "").strip())
+                    did = data.get("id")
+                    if not text or did is None or over_limit() or len(running) >= MAX_CONCURRENT:
+                        continue
+                    opts = read_opts(data)
+                    if opts["attachments"] or opts["mode"] == "interpret" or data.get("prelook"):
+                        continue
+                    if session.caller and not session.caller["verified"] and memory.find_email(text):
+                        continue        # verifying changes the prompt; do it live
                     drop_drafts()
-                    await chan.event({
-                        "type": "spent",
-                        "message": (
-                            f"This session has reached its limit of {MAX_TURNS} "
-                            f"questions." if session.turns_used >= MAX_TURNS else
-                            f"This session has been open {MAX_MINUTES} minutes."
-                        ) + " Reload the page to start a new one.",
-                    })
-                    continue
-                if len(running) >= MAX_CONCURRENT:
-                    await chan.event({
-                        "type": "rejected",
-                        "message": f"Already working on {MAX_CONCURRENT} requests.",
-                    })
+                    code = resolve_language(session, text, opts["language"])
+                    session.drafts[did] = Draft(
+                        text, asyncio.ensure_future(prepare(llm, session, text, opts, code)),
+                        len(session.history), opts_key(opts), code)
                     continue
 
-                opts = read_opts(data)
-                draft = session.drafts.pop(data.get("draft"), None) if data.get("draft") is not None else None
-                drop_drafts()
-                if draft is not None:
-                    code = resolve_language(session, prompt, opts["language"])
-                    if not draft.matches(prompt, session, opts_key(opts), code) \
-                            or opts["mode"] == "interpret":
-                        draft.cancel()
-                        draft = None
+                if kind == "prompt":
+                    # next_turn_id, not turns_used: drafts and cancelled turns
+                    # make them diverge, and the browser matches this against the
+                    # turn_start that follows.
+                    prompt = clean_up(chan, (data.get("text") or "").strip(),
+                                      tell=True, turn_id=next_turn_id)
+                    if not prompt:
+                        continue
 
-                turn_id = next_turn_id
-                next_turn_id += 1
-                session.turns_used += 1
-                interrupts[turn_id] = {}
-                coro = run_turn(
-                    chan, conn, llm, session, turn_id, prompt, opts,
-                    interrupts[turn_id], draft=draft,
-                    prelook=prelooks.pop(data["prelook"], None)
-                    if data.get("prelook") in prelooks else None,
-                )
-                running[turn_id] = asyncio.ensure_future(supervise(turn_id, coro, opts))
+                    if over_limit():
+                        drop_drafts()
+                        await chan.event({
+                            "type": "spent",
+                            "message": (
+                                f"This session has reached its limit of {MAX_TURNS} "
+                                f"questions." if session.turns_used >= MAX_TURNS else
+                                f"This session has been open {MAX_MINUTES} minutes."
+                            ) + " Reload the page to start a new one.",
+                        })
+                        continue
+                    if len(running) >= MAX_CONCURRENT:
+                        await chan.event({
+                            "type": "rejected",
+                            "message": f"Already working on {MAX_CONCURRENT} requests.",
+                        })
+                        continue
 
-            elif kind == "cancel":
-                # The caller talked over this turn, or pressed stop.
-                try:
-                    tid = int(data.get("turn_id"))
-                except (TypeError, ValueError):
-                    continue
-                heard = data.get("heard_chars")
-                heard = int(heard) if isinstance(heard, (int, float)) else None
-                task = running.get(tid)
-                if task is not None and not task.done():
-                    interrupts.setdefault(tid, {})["heard_chars"] = heard
-                    task.cancel()
-                elif tid in session.said and heard is not None:
-                    # Finished generating, but playback was cut short.
-                    msg_, full = session.said[tid]
-                    msg_["content"] = heard_part(full, heard)
-                continue
+                    opts = read_opts(data)
+                    draft = session.drafts.pop(data.get("draft"), None) if data.get("draft") is not None else None
+                    drop_drafts()
+                    if draft is not None:
+                        code = resolve_language(session, prompt, opts["language"])
+                        if not draft.matches(prompt, session, opts_key(opts), code) \
+                                or opts["mode"] == "interpret":
+                            draft.cancel()
+                            draft = None
 
-            elif kind == "wrapup":
-                try:
-                    note = await write_up(llm, session.history)
-                except Exception as exc:
-                    log_error(exc, "call write-up")
-                    note = None
-                saved = None
-                if note:
-                    session.cost.add(SUMMARY_MODEL, note.get("prompt_tokens") or 0,
-                                     note.get("completion_tokens") or 0)
+                    turn_id = next_turn_id
+                    next_turn_id += 1
+                    session.turns_used += 1
+                    interrupts[turn_id] = {}
+                    coro = run_turn(
+                        chan, conn, llm, session, turn_id, prompt, opts,
+                        interrupts[turn_id], draft=draft,
+                        prelook=prelooks.pop(data["prelook"], None)
+                        if data.get("prelook") in prelooks else None,
+                    )
+                    running[turn_id] = asyncio.ensure_future(supervise(turn_id, coro, opts))
+
+                elif kind == "cancel":
+                    # The caller talked over this turn, or pressed stop.
                     try:
-                        saved = await remember_call(llm, session, note)
+                        tid = int(data.get("turn_id"))
+                    except (TypeError, ValueError):
+                        continue
+                    heard = data.get("heard_chars")
+                    heard = int(heard) if isinstance(heard, (int, float)) else None
+                    task = running.get(tid)
+                    if task is not None and not task.done():
+                        interrupts.setdefault(tid, {})["heard_chars"] = heard
+                        task.cancel()
+                    elif tid in session.said and heard is not None:
+                        # Finished generating, but playback was cut short.
+                        msg_, full = session.said[tid]
+                        msg_["content"] = heard_part(full, heard)
+                    continue
+
+                elif kind == "wrapup":
+                    try:
+                        note = await write_up(llm, session.history)
                     except Exception as exc:
-                        log_error(exc, "saving to memory")
-                await chan.event({"type": "wrapup", "note": note,
-                                  "remembered": bool(saved),
-                                  "cost_call": call_cost(session),
-                                  "actions": session.actions,
-                                  "caller": session.caller.get("name") if session.caller else None})
-                if saved and session.caller:
-                    await chan.event(caller_event(session.caller, "verified"))
-                continue
-
-            elif kind == "memory_reset":
-                memory.reset()
-                session.caller = None
-                session.saved_turns = session.user_turns
-                await chan.event({"type": "memory", "reset": True})
-                continue
-
-            elif kind == "say":
-                if conn is None:
+                        log_error(exc, "call write-up")
+                        note = None
+                    saved = None
+                    if note:
+                        session.cost.add(SUMMARY_MODEL, note.get("prompt_tokens") or 0,
+                                         note.get("completion_tokens") or 0)
+                        try:
+                            saved = await remember_call(llm, session, note)
+                        except Exception as exc:
+                            log_error(exc, "saving to memory")
+                    await chan.event({"type": "wrapup", "note": note,
+                                      "remembered": bool(saved),
+                                      "cost_call": call_cost(session),
+                                      "actions": session.actions,
+                                      "caller": session.caller.get("name") if session.caller else None})
+                    if saved and session.caller:
+                        await chan.event(caller_event(session.caller, "verified"))
                     continue
-                # The assistant's own "which would you like first?" question.
-                text = (data.get("text") or "").strip()
-                if not text:
+
+                elif kind == "memory_reset":
+                    memory.reset()
+                    session.caller = None
+                    session.saved_turns = session.user_turns
+                    await chan.event({"type": "memory", "reset": True})
                     continue
-                try:
-                    await chan.event({"type": "say_start", "turn_id": 0})
-                    await synthesise(chan, conn, 0, text, pick_voice(data.get("voice_id")),
-                                     language=session.speaking["code"])
-                    await chan.event({"type": "say_done", "turn_id": 0})
-                except Exception as exc:
-                    log_error(exc, "spoken prompt")
-                    await chan.event({"type": "error", "turn_id": 0,
-                                      "message": safe_error(exc, "speaking")})
+
+                elif kind == "say":
+                    if conn is None:
+                        continue
+                    # The assistant's own "which would you like first?" question.
+                    text = (data.get("text") or "").strip()
+                    if not text:
+                        continue
+                    try:
+                        await chan.event({"type": "say_start", "turn_id": 0})
+                        await synthesise(chan, conn, 0, text, pick_voice(data.get("voice_id")),
+                                         language=session.speaking["code"])
+                        await chan.event({"type": "say_done", "turn_id": 0})
+                    except Exception as exc:
+                        log_error(exc, "spoken prompt")
+                        await chan.event({"type": "error", "turn_id": 0,
+                                          "message": safe_error(exc, "speaking")})
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log_error(exc, f"handling a {kind!r} message")
+                continue
     finally:
         drop_drafts()
         for entry in prelooks.values():
