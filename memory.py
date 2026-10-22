@@ -89,6 +89,18 @@ def _seed(db):
 
 def init():
     """Create the store on first run and seed it. Existing memory is kept."""
+    # MEMORY_FILE points at a mounted volume in a container, and sqlite will
+    # not create the directory for you — it says "unable to open database
+    # file" and the pod crash-loops on a message that names neither the path
+    # nor the reason.
+    folder = os.path.dirname(os.path.abspath(PATH))
+    if folder and not os.path.isdir(folder):
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except OSError as exc:
+            raise SystemExit(
+                f"cannot create the folder for MEMORY_FILE ({PATH}): {exc}. "
+                "In a container, check the volume is mounted there.")
     with _lock, _connect() as db:
         _create(db)
         if not db.execute("SELECT 1 FROM customers LIMIT 1").fetchone():
