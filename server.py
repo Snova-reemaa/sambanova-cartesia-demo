@@ -48,7 +48,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(HERE, "static")
 
 COOKIE_NAME = "voiceloop_session"
-SESSIONS = set()
+# token -> when it stops being valid. A set never forgot anything, so a pod
+# that stays up for weeks accumulates one entry per sign-in for ever, and a
+# cookie that had expired in the browser was still honoured if anyone kept a
+# copy of it. One lifetime governs both the cookie and the server's memory of
+# it, so they cannot drift apart.
+SESSION_HOURS = float(os.getenv("SESSION_HOURS", "12"))
+SESSIONS = {}
 
 # Every turn spends real API credit, so the app is never served ungated. Set
 # DEMO_PASSPHRASE to something you can read out on a call; otherwise one is
@@ -2652,7 +2658,21 @@ def is_https(request):
 
 def authorised(request):
     token = request.cookies.get(COOKIE_NAME)
-    return bool(token) and token in SESSIONS
+    if not token:
+        return False
+    # Pruning here rather than on a timer: every request is an opportunity,
+    # and a server with no requests has nothing to prune for.
+    now = time.time()
+    if len(SESSIONS) > 1:
+        for old_token in [t for t, until in SESSIONS.items() if until <= now]:
+            SESSIONS.pop(old_token, None)
+    until = SESSIONS.get(token)
+    if until is None:
+        return False
+    if until <= now:
+        SESSIONS.pop(token, None)
+        return False
+    return True
 
 
 @web.middleware
@@ -2700,7 +2720,7 @@ async def login(request):
         raise web.HTTPFound("/login?bad=1")
 
     token = secrets.token_urlsafe(32)
-    SESSIONS.add(token)
+    SESSIONS[token] = time.time() + SESSION_HOURS * 3600
 
     response = web.HTTPFound("/")
     response.set_cookie(
@@ -2708,7 +2728,7 @@ async def login(request):
         httponly=True,
         samesite="Lax",
         secure=is_https(request),
-        max_age=60 * 60 * 8,
+        max_age=int(SESSION_HOURS * 3600),
     )
     raise response
 
