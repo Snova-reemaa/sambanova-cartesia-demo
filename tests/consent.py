@@ -118,6 +118,58 @@ async def main():
         app.policies.VERSION = was
         app.SESSIONS.pop("a-token-that-agreed-to-v1", None)
 
+    # The spoken disclosure. It has to happen on the first turn of every
+    # call whatever shape that turn is, and never twice.
+    import json as _json
+
+    async def first_two(http, server, opener, call):
+        async def say(ws, text):
+            await ws.send_json({"type": "prompt", "text": text,
+                                "call": call, "search": False})
+            said = []
+            while True:
+                try:
+                    msg = await asyncio.wait_for(ws.receive(), timeout=25)
+                except asyncio.TimeoutError:
+                    break
+                if msg.type is not aiohttp.WSMsgType.TEXT:
+                    continue
+                event = _json.loads(msg.data)
+                if event["type"] == "token":
+                    said.append(event["text"])
+                if event["type"] in ("done", "error"):
+                    break
+            return "".join(said)
+
+        async with http.ws_connect(f"{server.base}/ws") as ws:
+            await ws.receive()
+            return await say(ws, opener), await say(ws, "and what about returns")
+
+    import server as app
+    with Server() as server:
+        jar = aiohttp.CookieJar(unsafe=True)
+        async with aiohttp.ClientSession(cookie_jar=jar) as http:
+            await post(http, server, passphrase=PASSPHRASE, consent="yes")
+            # Short turns, typed turns and spoken turns all take different
+            # paths through the opening of a call; the line rides on none
+            # of them and in front of all of them.
+            for label, opener, call in [("a one word opener", "hi", True),
+                                        ("typed, not on a call", "what are your hours", False),
+                                        ("a full question", "where is my order 44812 please", True)]:
+                one, two = await first_two(http, server, opener, call)
+                results.append((f"disclosed on the first turn — {label}",
+                                "AI assistant" in one))
+                results.append((f"not repeated on the second — {label}",
+                                "AI assistant" not in two))
+
+    # And it exists, in the caller's language, for all eight.
+    missing = [c for c in ("en", "es", "fr", "de", "it", "pt", "nl", "ar")
+               if c not in app.DISCLOSURE]
+    results.append((f"a disclosure in all eight languages{' — missing ' + str(missing) if missing else ''}",
+                    not missing))
+    results.append(("each one says it is an AI and that the call is kept",
+                    all(len(t) > 40 for t in app.DISCLOSURE.values())))
+
     for what, ok in results:
         print(f"  {'ok  ' if ok else 'FAIL'} {what}")
     bad = sum(not ok for _, ok in results)

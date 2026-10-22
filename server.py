@@ -275,6 +275,38 @@ SEARCHING_PHRASE = {
 }
 
 
+# Said once, at the top of the first call, before anything else. Short
+# enough not to be a speed bump and plain enough to be understood at speed:
+# what it is, and that the call is kept. It rides in front of the first
+# answer rather than being a turn of its own, so it costs the caller a
+# sentence rather than an exchange.
+DISCLOSURE = {
+    "en": "Just so you know, I'm an AI assistant, and this call may be saved "
+          "so I can remember you next time. ",
+    "es": "Para que lo sepas, soy un asistente de inteligencia artificial, y "
+          "esta llamada puede guardarse para recordarte la próxima vez. ",
+    "fr": "Pour information, je suis un assistant IA, et cet appel peut être "
+          "enregistré pour que je me souvienne de vous la prochaine fois. ",
+    "de": "Nur damit Sie es wissen: Ich bin ein KI-Assistent, und dieses "
+          "Gespräch wird möglicherweise gespeichert, damit ich mich beim "
+          "nächsten Mal an Sie erinnere. ",
+    "it": "Per tua informazione, sono un assistente di intelligenza "
+          "artificiale, e questa chiamata può essere salvata per ricordarti "
+          "la prossima volta. ",
+    "pt": "Só para saber, sou um assistente de inteligência artificial, e "
+          "esta chamada pode ser guardada para me lembrar de si da próxima "
+          "vez. ",
+    "nl": "Even ter info: ik ben een AI-assistent, en dit gesprek kan worden "
+          "bewaard zodat ik u de volgende keer herken. ",
+    "ar": "بس حاب أخبرك، أنا مساعد ذكاء اصطناعي، ويمكن تنحفظ هذي المكالمة "
+          "عشان أتذكرك المرة الجاية. ",
+}
+
+
+def disclosure(code):
+    return DISCLOSURE.get(code, DISCLOSURE["en"])
+
+
 def backchannel(recent, code="en"):
     """Pick an acknowledgement, avoiding the last couple used."""
     pool = BACKCHANNEL.get(code, BACKCHANNEL["en"])
@@ -941,6 +973,8 @@ class Session:
         self.emotion_ok = {}
         # Questions this call could not answer from anything it had.
         self.unanswered = []
+        # The AI-and-recording line, said once per call.
+        self.disclosed = False
         self.audio_off = False   # synthesis gave out part way through the call
         self.just_named = False  # they said who they are and nothing else yet
         self.caller = None               # who is on the line, once an order is looked up
@@ -1923,6 +1957,17 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
 
     async def generate_answer():
         prepared = None
+
+        # Before anything else this call produces. It was first written to
+        # ride in front of the holding phrase, which is wrong: that phrase
+        # is skipped for short turns, for attachments, when a speculative
+        # draft is used — which is most calls — and whenever the caller is
+        # not on a call at all. A line that has to be said cannot be
+        # attached to one that is optional.
+        if not session.disclosed and not intro and not interpreting:
+            session.disclosed = True
+            await mark_first()
+            await emit(disclosure(code))
 
         if draft is not None:
             try:
