@@ -118,6 +118,38 @@ async def main():
             if not ok:
                 failures.append("dead after oversized frame")
 
+            # Attachments that cannot be used must be named, not dropped
+            # in silence while the agent answers about the survivors.
+            tiny = "data:image/jpeg;base64," + "A" * 100
+            huge = "data:image/jpeg;base64," + "A" * 3_000_000
+            for images, expect, label in [
+                    ([tiny, huge, "nope"], True, "an oversized image and a non-image"),
+                    ([tiny] * 12, True, "more frames than the limit"),
+                    ([tiny, tiny], False, "two usable images (nothing to report)")]:
+                async with http.ws_connect(f"{server.base}/ws") as ws:
+                    await ws.receive()
+                    await ws.send_json({"type": "prompt", "text": "what is this",
+                                        "images": images, "call": False,
+                                        "search": False})
+                    told = False
+                    while True:
+                        try:
+                            msg = await asyncio.wait_for(ws.receive(), timeout=20)
+                        except asyncio.TimeoutError:
+                            break
+                        if msg.type is not aiohttp.WSMsgType.TEXT:
+                            continue
+                        import json as _json
+                        event = _json.loads(msg.data)
+                        if event.get("type") == "attachments_dropped":
+                            told = bool(event.get("reasons"))
+                        if event.get("type") in ("done", "error"):
+                            break
+                ok = told is expect
+                print(f"  {'ok  ' if ok else 'FAIL'} the caller is told about: {label}")
+                if not ok:
+                    failures.append(label)
+
             # Hanging up. A tab closing is the commonest way a call ends,
             # and it used to raise "Cannot write to closing transport" out
             # of whichever write happened to be in flight.
@@ -144,7 +176,7 @@ async def main():
         if crashes:
             failures.append(f"{crashes} tracebacks")
 
-    total = len(BAD_FRAMES) + 6
+    total = len(BAD_FRAMES) + 9
     print(f"\n  {total - len(failures)}/{total} correct")
     return 1 if failures else 0
 

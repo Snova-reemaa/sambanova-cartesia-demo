@@ -531,7 +531,16 @@ GENERIC_LOOK = (
 MAX_FRAMES = 8        # gemma read 6 frames in order reliably; 8 leaves headroom
 # Per frame, after the browser has resized it. Screen frames are sent larger
 # than camera frames — small text in a dialog has to survive the trip.
-MAX_IMAGE_BYTES = 2_500_000
+#
+# Eight of these has to fit through the websocket, and at 2.5MB it did not:
+# eight times that is 20MB against a 16MB frame limit, so a full batch was
+# impossible on paper. Unreachable in practice — every image goes through
+# the browser's resize first, and eight screen frames of pure noise, which
+# is the worst case JPEG has, measured 8.78MB — but two numbers that
+# contradict each other will eventually be believed by somebody. At 2MB the
+# arithmetic works out exactly to the frame limit, and it is still most of
+# an order of magnitude above anything measured.
+MAX_IMAGE_BYTES = int(os.getenv("MAX_IMAGE_BYTES", "2000000"))
 
 SCREEN_LOOK = (
     "This is the caller's screen. Say which app or site it is, quote any dialog, "
@@ -553,10 +562,33 @@ def looks_like_image(url):
 
 def clean_attachments(raw):
     """Keep only well-formed, reasonably sized image data URLs."""
+    kept, _ = inspect_attachments(raw)
+    return kept
+
+
+def inspect_attachments(raw):
+    """Returns (kept, what was dropped and why).
+
+    Dropping was silent: an image too large or not an image at all simply
+    was not there, the agent answered about the ones that survived, and the
+    caller had no way to know the photo they were asking about never
+    arrived.
+    """
     if not isinstance(raw, list):
-        return []
-    return [u for u in raw[:MAX_FRAMES]
-            if looks_like_image(u) and len(u) <= MAX_IMAGE_BYTES]
+        return [], ["the attachments were not a list"] if raw else []
+    kept, dropped = [], []
+    for url in raw[:MAX_FRAMES]:
+        if not looks_like_image(url):
+            dropped.append("one file was not a readable image")
+        elif len(url) > MAX_IMAGE_BYTES:
+            dropped.append(f"one image was too large "
+                           f"({len(url) // 1_000_000}MB, the limit is "
+                           f"{MAX_IMAGE_BYTES // 1_000_000}MB)")
+        else:
+            kept.append(url)
+    if len(raw) > MAX_FRAMES:
+        dropped.append(f"only the first {MAX_FRAMES} of {len(raw)} were used")
+    return kept, dropped
 
 
 def vision_question(prompt, count, screen=False):
@@ -683,7 +715,8 @@ MAX_CONCURRENT = 4  # requests accepted in flight at once on one connection
 # is parsed, and what one spoken turn may say. Nobody dictates two thousand
 # characters; anything longer is a stuck recogniser or someone pasting a
 # book, and either way it is a prompt bill nobody meant to run up.
-MAX_MSG_BYTES = int(os.getenv("MAX_MESSAGE_BYTES", str(16 * 1024 * 1024)))
+MAX_MSG_BYTES = int(os.getenv("MAX_MESSAGE_BYTES",
+                              str(MAX_FRAMES * MAX_IMAGE_BYTES)))
 MAX_PROMPT_CHARS = int(os.getenv("MAX_PROMPT_CHARS", "2000"))
 
 MAX_TURNS = int(os.getenv("MAX_TURNS_PER_SESSION", "60"))
@@ -962,6 +995,7 @@ def norm(text):
 
 
 def read_opts(data):
+    kept_images, dropped_images = inspect_attachments(data.get("images"))
     requested = data.get("model")
     auto = requested in (None, "", "auto")
     return {
@@ -969,7 +1003,8 @@ def read_opts(data):
         "auto": auto,
         "voice": data.get("voice_id"),
         "can_search": bool(data.get("search", True)),
-        "attachments": clean_attachments(data.get("images")),
+        "attachments": kept_images,
+        "dropped_images": dropped_images,
         "on_call": bool(data.get("call")),
         "language": data.get("language"),
         "check": bool(data.get("check", True)),
@@ -2545,7 +2580,10 @@ async def websocket_handler(request):
                     # The camera (or shared screen) already shows whatever they mean,
                     # so start reading it now rather than when they stop speaking.
                     pid = data.get("id")
-                    frames = clean_attachments(data.get("images"))
+                    frames, missed = inspect_attachments(data.get("images"))
+                    if missed:
+                        await chan.event({"type": "attachments_dropped",
+                                          "turn_id": 0, "reasons": missed})
                     if pid is None or not frames:
                         continue
                     for old in [k for k in prelooks if k < pid - 2]:
@@ -2584,6 +2622,15 @@ async def websocket_handler(request):
                     # turn_start that follows.
                     prompt = clean_up(chan, said_text(data),
                                       tell=True, turn_id=next_turn_id)
+                    opts_preview = read_opts(data)
+                    if opts_preview["dropped_images"]:
+                        # Say which pictures did not make it, before answering
+                        # about the ones that did.
+                        await chan.event({
+                            "type": "attachments_dropped",
+                            "turn_id": next_turn_id,
+                            "reasons": opts_preview["dropped_images"],
+                        })
                     if not prompt:
                         continue
 

@@ -1388,6 +1388,17 @@ function onEvent(m) {
       ui.mic.disabled = !SpeechCtor;
       break;
 
+    case 'attachments_dropped': {
+      // A picture that did not make it used to vanish without a word, and
+      // the agent answered about whichever ones survived.
+      const why = (m.reasons || []).join('; ');
+      ui.hint.className = 'hint mono warn';
+      ui.hint.textContent = why
+        ? `Some attachments were not sent: ${why}.`
+        : 'Some attachments were not sent.';
+      break;
+    }
+
     case 'audio_off': {
       // Synthesis gave out part way through the call — credit ran out, most
       // often. The server emitted this and nothing listened for it, so the
