@@ -23,7 +23,7 @@ import urllib.parse
 import aiohttp
 
 TIMEOUT = aiohttp.ClientTimeout(total=8)
-UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) VoiceLoopDemo/1.0"
+UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) VoxNovaDemo/1.0"
 MAX_RESULTS = 4
 
 

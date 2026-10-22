@@ -47,7 +47,9 @@ import smarts
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(HERE, "static")
 
-COOKIE_NAME = "voiceloop_session"
+# Renaming this invalidates sessions issued under the old name: anyone
+# holding one is sent back to the passphrase, which is the whole cost.
+COOKIE_NAME = "voxnova_session"
 # token -> when it stops being valid. A set never forgot anything, so a pod
 # that stays up for weeks accumulates one entry per sign-in for ever, and a
 # cookie that had expired in the browser was still honoured if anyone kept a

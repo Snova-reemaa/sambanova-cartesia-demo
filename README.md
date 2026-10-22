@@ -1,4 +1,7 @@
-# SambaNova → Cartesia voice demo
+# VoxNova
+
+A real-time voice support agent: SambaNova inference into
+Cartesia speech.
 
 Streams a reply out of SambaNova inference and straight into Cartesia speech
 synthesis, so audio starts playing while the language model is still talking.
