@@ -864,6 +864,9 @@ class Session:
         self.recent_fillers = []         # so the same acknowledgement is not used twice running
         self.mood = "neutral"
         self.controls_ok = VOICE_CONTROLS
+        # Per language, because they do not all behave the same and one
+        # refusal should not flatten the rest of the call.
+        self.emotion_ok = {}
         self.audio_off = False   # synthesis gave out part way through the call
         self.just_named = False  # they said who they are and nothing else yet
         self.caller = None               # who is on the line, once an order is looked up
@@ -2220,7 +2223,10 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
                         t.cancel()
                     raise
 
-            controls = (smarts.MOOD_VOICE.get(turn.mood)
+            # Pacing for every language, emotion only where it is wanted.
+            controls = (smarts.voice_controls(
+                            turn.mood, code,
+                            emotion_ok=session.emotion_ok.get(code, True))
                         if session.controls_ok and not interpreting else None)
             try:
                 await attempt(controls)
@@ -2245,9 +2251,19 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
                     await chan.event({"type": "audio_off", "turn_id": turn_id,
                                       "message": safe_error(exc, "speech")})
                 elif controls:
-                    log_error(exc, "voice controls refused; speaking without them")
-                    session.controls_ok = False
-                    await attempt(None)
+                    # One language refusing emotion used to switch the whole
+                    # session back to a flat voice, including the languages
+                    # that were perfectly happy with it. Drop it for this
+                    # language only and keep the pacing, which no model has
+                    # ever refused.
+                    log_error(exc, f"voice controls refused for {code}; "
+                                   "pacing only from here")
+                    session.emotion_ok[code] = False
+                    again = smarts.voice_controls(turn.mood, code, emotion_ok=False)
+                    if again == controls:
+                        session.controls_ok = False
+                        again = None
+                    await attempt(again)
                 else:
                     raise
 

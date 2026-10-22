@@ -191,14 +191,60 @@ MOOD_RULES = {
     "hurried": "The caller is in a hurry. Give the answer in one or two short sentences, nothing else.",
 }
 
-# How the voice itself changes. Cartesia's sonic-2 voice controls; anything the
-# account's model does not accept is dropped for the session automatically.
+# How the voice itself changes with the caller's mood.
+#
+# Two levers, and they are not equally portable. Speed works on every
+# language Cartesia speaks. Emotion is documented as English-only and in
+# beta — though the API accepts it for all eight of ours, which means only
+# that it does not refuse, not that it does anything useful. Whether it helps
+# or distorts the voice is a listening judgement, one language at a time.
 MOOD_VOICE = {
     "frustrated": {"speed": "slow", "emotion": ["positivity:low", "curiosity:low"]},
     "settling":   {"speed": "normal", "emotion": ["positivity"]},
     "confused":   {"speed": "slow", "emotion": ["positivity"]},
     "hurried":    {"speed": "fast"},
 }
+
+# Which languages emotion is sent for. Everything on by default, because the
+# API takes it everywhere; turn one off the moment it is heard to sound wrong
+# and that language keeps the speed change and the wording change, which work
+# regardless. EMOTION_LANGUAGES overrides the lot: a comma-separated list, or
+# "none".
+EMOTION_BY_DEFAULT = {
+    "en": True, "es": True, "fr": True, "de": True,
+    "it": True, "pt": True, "nl": True, "ar": True,
+}
+
+
+def _configured():
+    raw = (os.getenv("EMOTION_LANGUAGES") or "").strip().lower()
+    if not raw:
+        return dict(EMOTION_BY_DEFAULT)
+    if raw in ("none", "off", "0"):
+        return {code: False for code in EMOTION_BY_DEFAULT}
+    wanted = {c.strip() for c in raw.split(",") if c.strip()}
+    return {code: code in wanted for code in EMOTION_BY_DEFAULT}
+
+
+EMOTION_LANGUAGES = _configured()
+
+
+def voice_controls(mood, code="en", emotion_ok=None):
+    """What to ask the voice for on this turn, or None.
+
+    `emotion_ok` lets a call drop emotion for one language after the model
+    has refused it, without losing the pacing for that language or the
+    emotion for the others.
+    """
+    wanted = MOOD_VOICE.get(mood)
+    if not wanted:
+        return None
+    allowed = EMOTION_LANGUAGES.get(code, False)
+    if emotion_ok is not None:
+        allowed = allowed and emotion_ok
+    out = {key: value for key, value in wanted.items()
+           if key != "emotion" or allowed}
+    return out or None
 
 MOOD_SAYS = {
     "frustrated": "slower, calmer voice",
