@@ -38,6 +38,7 @@ OFFLINE_MODULES = [
 OFFLINE_SUITES = [
     ("tests/socket_robustness.py", "bad frames, hang-ups, oversized input"),
     ("tests/sessions.py", "sign-in tokens expire"),
+    ("tests/concurrency.py", "many callers at once are told, not hung"),
 ]
 
 LIVE_SUITES = [

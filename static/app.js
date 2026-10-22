@@ -1388,6 +1388,19 @@ function onEvent(m) {
       ui.mic.disabled = !SpeechCtor;
       break;
 
+    case 'busy': {
+      // Everything is queued behind other callers. Better to say so than
+      // leave somebody watching a spinner that will never resolve.
+      const turn = turns.get(m.turn_id);
+      if (turn && turn.node) {
+        turn.node.body.textContent = m.message;
+        showCursor(null);
+      }
+      ui.hint.className = 'hint mono warn';
+      ui.hint.textContent = m.message;
+      break;
+    }
+
     case 'attachments_dropped': {
       // A picture that did not make it used to vanish without a word, and
       // the agent answered about whichever ones survived.

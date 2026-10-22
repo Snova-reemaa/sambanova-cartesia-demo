@@ -729,6 +729,27 @@ MAX_MINUTES = int(os.getenv("MAX_SESSION_MINUTES", "45"))
 TTS_CONCURRENCY = int(os.getenv("CARTESIA_CONCURRENCY", "2"))
 TTS_SLOTS = None  # asyncio.Semaphore, created once the loop exists
 
+# Turns allowed to be talking to SambaNova at once, across the whole process
+# rather than per connection. MAX_CONCURRENT caps one caller at four; twenty
+# callers at four each is eighty, which is how a rate limit is met. A turn
+# that cannot get a slot waits briefly — most waits are a second or two,
+# because turns are short — and if the queue has not moved by then the
+# caller is told, which is the one thing that must not be a silent hang.
+MAX_LLM_AT_ONCE = int(os.getenv("MAX_CONCURRENT_LLM", "8"))
+LLM_QUEUE_SECONDS = float(os.getenv("LLM_QUEUE_SECONDS", "6"))
+LLM_SLOTS = None  # asyncio.Semaphore, created once the loop exists
+
+BUSY_SAYS = {
+    "en": "Sorry — a lot of people are asking at once. Give me a moment and ask again.",
+    "es": "Disculpa, hay mucha gente preguntando a la vez. Dame un momento e inténtalo otra vez.",
+    "fr": "Désolé, beaucoup de monde pose des questions en même temps. Un instant, puis réessayez.",
+    "de": "Entschuldigung, gerade fragen sehr viele gleichzeitig. Einen Moment, dann versuchen Sie es noch einmal.",
+    "it": "Scusa, in questo momento ci sono molte richieste insieme. Dammi un attimo e riprova.",
+    "pt": "Desculpe, há muita gente a perguntar ao mesmo tempo. Dê-me um momento e tente outra vez.",
+    "nl": "Sorry, er zijn op dit moment veel vragen tegelijk. Een moment, probeer het dan opnieuw.",
+    "ar": "آسف، في ناس كثير يسألون في نفس الوقت. أعطني لحظة وحاول مرة ثانية.",
+}
+
 # Filled once at startup so every browser session shares one lookup.
 CATALOG = {"models": [], "voices": []}
 
@@ -2325,6 +2346,24 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
             session.said.pop(old, None)
         del session.history[:-MAX_HISTORY]
 
+    # One slot for the whole turn, held across every model call it makes.
+    if LLM_SLOTS is not None:
+        try:
+            await asyncio.wait_for(LLM_SLOTS.acquire(), LLM_QUEUE_SECONDS)
+        except asyncio.TimeoutError:
+            # Saturated. Saying so is the point: a turn that quietly waits
+            # for ever is the failure this exists to prevent.
+            print(f"  ! turn {turn_id}: no model slot after "
+                  f"{LLM_QUEUE_SECONDS}s, {MAX_LLM_AT_ONCE} already running")
+            await chan.event({"type": "busy", "turn_id": turn_id,
+                              "message": BUSY_SAYS.get(code, BUSY_SAYS["en"])})
+            await chan.event({"type": "text_done", "turn_id": turn_id,
+                              "t": turn.now()})
+            return None
+        held_slot = True
+    else:
+        held_slot = False
+
     try:
         await asyncio.gather(generate(), synthesize())
     except asyncio.CancelledError:
@@ -2334,6 +2373,8 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
         remember(heard_part(reply, interrupt.get("heard_chars")))
         raise
     finally:
+        if held_slot:
+            LLM_SLOTS.release()
         gate.cancel()
         if draft is not None and draft.task.done() and not draft.task.cancelled() \
                 and draft.task.exception() is None:
@@ -2856,8 +2897,9 @@ async def login(request):
 
 
 async def on_startup(app):
-    global TTS_SLOTS
+    global TTS_SLOTS, LLM_SLOTS
     TTS_SLOTS = asyncio.Semaphore(TTS_CONCURRENCY)
+    LLM_SLOTS = asyncio.Semaphore(MAX_LLM_AT_ONCE)
     memory.init()
 
     llm = get_llm()
