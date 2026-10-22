@@ -191,6 +191,36 @@ def detect(text, current="en"):
     return best
 
 
+# The handful of words this job keeps needing, in each language.
+#
+# Telling the model which English words to avoid did not work — naming them
+# is what put them in reach. Giving it the words to *use* is the opposite
+# move: no English appears anywhere in the instruction, so there is nothing
+# to copy, and the vocabulary it needs is already in front of it at the
+# moment it would otherwise reach for "refund".
+GLOSSARY = {
+    "es": ("reembolso, pedido, entrega, envío, seguimiento, garantía, "
+           "factura, devolución, sustitución, plazo"),
+    "fr": ("remboursement, commande, livraison, expédition, suivi, garantie, "
+           "facture, retour, remplacement, délai"),
+    "de": ("Rückerstattung, Bestellung, Lieferung, Sendung, "
+           "Sendungsverfolgung, Garantie, Rechnung, Rückgabe, Ersatz, Frist"),
+    "it": ("rimborso, ordine, consegna, spedizione, tracciamento, garanzia, "
+           "fattura, reso, sostituzione, tempi"),
+    "pt": ("reembolso, encomenda, entrega, envio, rastreio, garantia, "
+           "fatura, devolução, substituição, prazo"),
+    "nl": ("terugbetaling, bestelling, levering, zending, volgnummer, "
+           "garantie, factuur, retour, vervanging, termijn"),
+    "ar": ("استرداد المبلغ، الطلب، التوصيل، الشحنة، تتبع الشحنة، الضمان، "
+           "الفاتورة، الإرجاع، الاستبدال، المدة"),
+}
+
+
+def glossary(code):
+    """The words for this job in this language, or "" for English."""
+    return GLOSSARY.get(code, "")
+
+
 def name(code):
     return NAMES.get(code, "English")
 

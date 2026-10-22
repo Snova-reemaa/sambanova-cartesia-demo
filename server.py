@@ -384,7 +384,7 @@ def language_rule(code):
     # copying it. The list is gone anyway, because a prohibition that names
     # its own counter-examples is a bad bet, but the leak it was aimed at is
     # handled by NON_ENGLISH_TEMPERATURE below, not by this paragraph.
-    return rule + (
+    rule += (
         f"\nWrite every single word in {name}, in {name} script — including any "
         "term you would reach for in English out of habit. Never start a word "
         "in one script and finish it in another, and never use Chinese, "
@@ -392,6 +392,14 @@ def language_rule(code):
         f"describe the thing in {name} rather than borrowing from another "
         "language."
     )
+    # The words this job keeps needing, so they are in reach at the moment
+    # the model would otherwise fall back on the English. A Dutch reply said
+    # "refund" where it should have said terugbetaling; the word it needed
+    # was never in front of it.
+    words = languages.glossary(code)
+    if words:
+        rule += f"\nThe {name} words for this work: {words}."
+    return rule
 
 
 # English turns are left on the provider's own default: the variety is what
