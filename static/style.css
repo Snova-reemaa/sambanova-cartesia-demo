@@ -851,3 +851,43 @@ body.sharing #callview { object-fit: contain; }
 }
 @keyframes notice { 50% { outline-color: transparent; } }
 @media (prefers-reduced-motion: reduce) { .wants-attention { animation: none; } }
+
+/* ===================================================== policy pages */
+
+/* Plain reading pages, served without signing in. Deliberately unlike the
+   app: nobody should mistake the terms for part of the demo. */
+body.policy { background: var(--deeper); padding: 0; }
+.policysheet {
+  max-width: 62ch;
+  margin: 0 auto;
+  padding: 56px 24px 96px;
+  color: var(--paper);
+  font-size: 15px;
+  line-height: 1.65;
+}
+.policysheet h1 {
+  font-family: var(--display);
+  font-size: clamp(26px, 4vw, 38px);
+  letter-spacing: -0.02em;
+  margin: 0 0 4px;
+}
+.policysheet h2 {
+  font-family: var(--display);
+  font-size: 17px;
+  margin: 34px 0 8px;
+  color: var(--paper);
+}
+.policysheet p { margin: 0 0 12px; color: var(--muted); }
+.policysheet ul { margin: 0 0 14px; padding-left: 18px; }
+.policysheet li { margin: 0 0 8px; color: var(--muted); }
+.policysheet strong { color: var(--paper); font-weight: 600; }
+/* The draft warning is the first paragraph and the one people skip. */
+.policysheet > p:first-of-type {
+  border-left: 3px solid var(--llm);
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, .04);
+  border-radius: 0 8px 8px 0;
+  color: var(--paper);
+}
+.policyback { margin-top: 40px; }
+.policyback a { color: var(--tts); }

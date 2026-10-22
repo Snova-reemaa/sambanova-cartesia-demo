@@ -41,6 +41,7 @@ import languages
 import heard
 import memory
 import orders
+import policies
 import pricing
 import smarts
 
@@ -2853,6 +2854,63 @@ async def index(request):
     return web.FileResponse(os.path.join(STATIC, "index.html"))
 
 
+# A very small amount of markdown, because the policies are written as text
+# and a dependency to render them would be a dependency to review.
+def as_html(text, title):
+    out, para = [], []
+
+    def flush():
+        # The source is wrapped for reading, so consecutive lines are one
+        # paragraph. Emitting one <p> per line broke every sentence in three.
+        if para:
+            out.append(f"<p>{bold(escape(' '.join(para)))}</p>")
+            para.clear()
+
+    for line in text.splitlines():
+        if line.startswith("## "):
+            flush()
+            out.append(f"<h2>{escape(line[3:])}</h2>")
+        elif line.startswith("# "):
+            flush()
+            out.append(f"<h1>{escape(line[2:])}</h1>")
+        elif line.startswith("- "):
+            flush()
+            out.append(f"<li>{bold(escape(line[2:]))}</li>")
+        elif line.strip():
+            para.append(line.strip())
+        else:
+            flush()
+    flush()
+    body = "\n".join(out).replace("</li>\n<li>", "</li><li>")
+    body = re.sub(r"(<li>.*?</li>)", r"<ul>\1</ul>", body, flags=re.S)
+    return (f"<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+            f"<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            f"<title>{escape(title)} — VoxNova</title>"
+            f"<link rel=\"stylesheet\" href=\"/static/style.css\"></head>"
+            f"<body class=\"policy\"><main class=\"policysheet\">{body}"
+            f"<p class=\"policyback\"><a href=\"/login\">Back</a></p>"
+            f"</main></body></html>")
+
+
+def escape(text):
+    return (text.replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def bold(text):
+    return re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
+
+
+async def terms(request):
+    return web.Response(text=as_html(policies.terms_text(), "Terms of Use"),
+                        content_type="text/html")
+
+
+async def privacy(request):
+    return web.Response(text=as_html(policies.privacy_text(), "Privacy Notice"),
+                        content_type="text/html")
+
+
 # ------------------------------------------------------------------ access
 
 def is_https(request):
@@ -2891,7 +2949,8 @@ async def fresh_static(request, handler):
     # /login was missing here, so a blank response cached while the server was
     # down kept being served after it came back — a white page with no title,
     # on a server returning a perfectly good one.
-    if request.path.startswith("/static") or request.path in ("/", "/login"):
+    if request.path.startswith("/static") or request.path in (
+            "/", "/login", "/terms", "/privacy"):
         response.headers["Cache-Control"] = "no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
     return response
@@ -2900,7 +2959,8 @@ async def fresh_static(request, handler):
 @web.middleware
 async def gate(request, handler):
     # /static holds no secrets and the login page needs the stylesheet.
-    if request.path.startswith("/static") or request.path == "/login":
+    if (request.path.startswith("/static")
+            or request.path in ("/login", "/terms", "/privacy")):
         return await handler(request)
 
     if authorised(request):
@@ -2972,6 +3032,8 @@ def main():
     app = web.Application(middlewares=[fresh_static, gate])
     app.router.add_get("/", index)
     app.router.add_get("/login", login)
+    app.router.add_get("/terms", terms)
+    app.router.add_get("/privacy", privacy)
     app.router.add_post("/login", login)
     app.router.add_get("/ws", websocket_handler)
     app.router.add_static("/static", STATIC)
