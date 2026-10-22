@@ -10,11 +10,15 @@ Identity is the email on an order, confirmed by the caller. Nobody signs up:
 a support line knows you by your order or your number, not by an account.
 """
 
+import hashlib
+import hmac
 import os
 import re
+import secrets
 import sqlite3
-import unicodedata
 import threading
+import time
+import unicodedata
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PATH = os.getenv("MEMORY_FILE") or os.path.join(HERE, "memory.sqlite3")
@@ -54,9 +58,23 @@ SEED_CALLS = [
 ]
 
 
+# How long a statement waits for another writer before giving up. One
+# process, one lock, short writes — but a container restarting while a
+# summary is being written is exactly when two want it at once.
+BUSY_SECONDS = float(os.getenv("MEMORY_BUSY_SECONDS", "5"))
+
+
 def _connect():
-    db = sqlite3.connect(PATH, timeout=5)
+    db = sqlite3.connect(PATH, timeout=BUSY_SECONDS)
     db.row_factory = sqlite3.Row
+    # Write-ahead logging, so a read never waits behind a write and a crash
+    # between the two leaves a recoverable file rather than a corrupt one.
+    # Set per connection because it is a property of the file, and setting
+    # it is idempotent.
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA synchronous=NORMAL")
+    db.execute(f"PRAGMA busy_timeout={int(BUSY_SECONDS * 1000)}")
+    db.execute("PRAGMA foreign_keys=ON")
     return db
 
 
@@ -77,12 +95,43 @@ def _create(db):
             seeded    INTEGER NOT NULL DEFAULT 0
         );
     """)
-    # Added after the first databases existed, so it arrives by migration
-    # rather than by schema: questions the documentation could not answer,
-    # one line each, kept so the gaps are visible in aggregate.
-    have = {row[1] for row in db.execute("PRAGMA table_info(calls)")}
-    if "unanswered" not in have:
-        db.execute("ALTER TABLE calls ADD COLUMN unanswered TEXT")
+    # Columns added after the first databases existed, so they arrive by
+    # migration rather than by schema. Adding one is additive and safe;
+    # existing rows get NULL and existing history is kept.
+    for table, column, kind in (
+            ("calls", "unanswered", "TEXT"),
+            ("calls", "orders", "TEXT"),
+            ("customers", "language", "TEXT"),
+            ("customers", "verified", "INTEGER NOT NULL DEFAULT 0"),
+            ("customers", "first_seen", "TEXT")):
+        have = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+        if column not in have:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+
+    db.executescript("""
+        -- One live code per email. Replaced, not accumulated: asking for a
+        -- second code invalidates the first, which is what a caller who
+        -- says "send it again" expects.
+        CREATE TABLE IF NOT EXISTS codes (
+            email        TEXT PRIMARY KEY,
+            code_hash    TEXT NOT NULL,
+            salt         TEXT NOT NULL,
+            expires_at   REAL NOT NULL,
+            attempts     INTEGER NOT NULL DEFAULT 0,
+            locked_until REAL NOT NULL DEFAULT 0
+        );
+        -- When codes were asked for, so three an hour can be counted. Rows
+        -- older than the window are swept rather than kept.
+        CREATE TABLE IF NOT EXISTS code_sends (
+            email TEXT NOT NULL,
+            at    REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS code_sends_email ON code_sends(email, at);
+    """)
+
+    # Seeded customers are known to be real; everyone created later has to
+    # prove it once.
+    db.execute("UPDATE customers SET verified = 1 WHERE verified IS NULL")
 
 
 def _seed(db):
@@ -309,6 +358,148 @@ def find_customer(text):
     hits = {e for e, first, last in _people()
             if (last and last in words) or (first and first in words)}
     return hits.pop() if len(hits) == 1 else None
+
+
+# ============================================================ verification
+#
+# A name and an email are a claim. Many people share a name and anyone can
+# type an address, so nothing personal is said until the caller reads back a
+# code sent to that address. The rules below are the whole of the protection
+# and each exists for a reason:
+#
+#   six digits          short enough to say out loud, 1 in a million to guess
+#   ten minutes         long enough to find an email, short enough to matter
+#   one use             a code read aloud in an open-plan office is spent
+#   three attempts      across voice and typing together, not three each
+#   fifteen minutes     the lockout, per email, after those three
+#   three an hour       so the address cannot be used to send mail repeatedly
+#   stored as a hash    the database never holds a live code
+#
+# The same answer goes back whether or not the address is on file, so this
+# cannot be used to find out who is a customer.
+
+CODE_LENGTH = 6
+CODE_MINUTES = float(os.getenv("CODE_MINUTES", "10"))
+CODE_ATTEMPTS = int(os.getenv("CODE_ATTEMPTS", "3"))
+LOCKOUT_MINUTES = float(os.getenv("CODE_LOCKOUT_MINUTES", "15"))
+CODES_PER_HOUR = int(os.getenv("CODES_PER_HOUR", "3"))
+
+
+def _hash(code, salt):
+    return hashlib.sha256(f"{salt}:{code}".encode()).hexdigest()
+
+
+def make_code(email):
+    """A fresh code for this address, or why not.
+
+    Returns (code, reason). Exactly one is set. The caller is told the same
+    thing either way — the reason is for the server's own decisions, never
+    for the caller.
+    """
+    email = (email or "").lower().strip()
+    if not email:
+        return None, "no email"
+    now = time.time()
+    with _lock, _connect() as db:
+        row = db.execute("SELECT locked_until FROM codes WHERE email = ?",
+                         (email,)).fetchone()
+        if row and row["locked_until"] > now:
+            return None, "locked"
+
+        db.execute("DELETE FROM code_sends WHERE at < ?", (now - 3600,))
+        sent = db.execute("SELECT COUNT(*) FROM code_sends WHERE email = ?",
+                          (email,)).fetchone()[0]
+        if sent >= CODES_PER_HOUR:
+            return None, "too many"
+
+        code = "".join(secrets.choice("0123456789") for _ in range(CODE_LENGTH))
+        salt = secrets.token_hex(8)
+        db.execute(
+            "INSERT INTO codes (email, code_hash, salt, expires_at, attempts, "
+            "locked_until) VALUES (?, ?, ?, ?, 0, 0) "
+            "ON CONFLICT(email) DO UPDATE SET code_hash = excluded.code_hash, "
+            "salt = excluded.salt, expires_at = excluded.expires_at, attempts = 0",
+            (email, _hash(code, salt), salt, now + CODE_MINUTES * 60))
+        db.execute("INSERT INTO code_sends (email, at) VALUES (?, ?)", (email, now))
+        return code, None
+
+
+def check_code(email, given):
+    """"ok", "wrong", "expired", "locked" or "none".
+
+    One attempt counter for the address, shared by whatever route the code
+    arrived on — saying it and typing it are the same three attempts.
+    """
+    email = (email or "").lower().strip()
+    digits = re.sub(r"\D", "", given or "")
+    now = time.time()
+    with _lock, _connect() as db:
+        row = db.execute(
+            "SELECT code_hash, salt, expires_at, attempts, locked_until "
+            "FROM codes WHERE email = ?", (email,)).fetchone()
+        if not row:
+            return "none"
+        if row["locked_until"] > now:
+            return "locked"
+        if row["expires_at"] <= now:
+            db.execute("DELETE FROM codes WHERE email = ?", (email,))
+            return "expired"
+
+        if hmac.compare_digest(row["code_hash"], _hash(digits, row["salt"])):
+            # Single use: gone the moment it works.
+            db.execute("DELETE FROM codes WHERE email = ?", (email,))
+            db.execute("UPDATE customers SET verified = 1 WHERE email = ?", (email,))
+            return "ok"
+
+        attempts = row["attempts"] + 1
+        if attempts >= CODE_ATTEMPTS:
+            db.execute(
+                "UPDATE codes SET attempts = ?, locked_until = ?, "
+                "code_hash = '', expires_at = 0 WHERE email = ?",
+                (attempts, now + LOCKOUT_MINUTES * 60, email))
+            return "locked"
+        db.execute("UPDATE codes SET attempts = ? WHERE email = ?", (attempts, email))
+        return "wrong"
+
+
+def attempts_left(email):
+    """For the page, so it can say how many tries remain."""
+    with _lock, _connect() as db:
+        row = db.execute("SELECT attempts, locked_until FROM codes WHERE email = ?",
+                         ((email or "").lower().strip(),)).fetchone()
+    if not row or row["locked_until"] > time.time():
+        return 0
+    return max(0, CODE_ATTEMPTS - row["attempts"])
+
+
+def forget(email):
+    """Everything held against one address, gone. Returns what was removed."""
+    email = (email or "").lower().strip()
+    with _lock, _connect() as db:
+        calls = db.execute("SELECT COUNT(*) FROM calls WHERE email = ?",
+                           (email,)).fetchone()[0]
+        known = db.execute("SELECT COUNT(*) FROM customers WHERE email = ?",
+                           (email,)).fetchone()[0]
+        db.execute("DELETE FROM calls WHERE email = ?", (email,))
+        db.execute("DELETE FROM codes WHERE email = ?", (email,))
+        db.execute("DELETE FROM code_sends WHERE email = ?", (email,))
+        db.execute("DELETE FROM customers WHERE email = ?", (email,))
+    return {"calls": calls, "customer": bool(known)}
+
+
+def purge_old(days=None):
+    """Drop calls past the retention period, and customers left with none."""
+    days = float(os.getenv("RETENTION_DAYS", "30") if days is None else days)
+    cutoff = time.strftime("%Y-%m-%d %H:%M",
+                           time.gmtime(time.time() - days * 86400))
+    with _lock, _connect() as db:
+        gone = db.execute("DELETE FROM calls WHERE at < ? AND seeded = 0",
+                          (cutoff,)).rowcount
+        orphans = db.execute(
+            "DELETE FROM customers WHERE verified = 0 AND email NOT IN "
+            "(SELECT email FROM calls)").rowcount
+        db.execute("DELETE FROM code_sends WHERE at < ?", (time.time() - 3600,))
+    return {"calls": gone, "customers": orphans}
 
 
 def mask(email):
