@@ -22,21 +22,43 @@ Updated after every committed piece. Offline tests: `venv/bin/python tests/run.p
 | Task 3 (part) | Returning-customer memory: verified callers get their history, nobody else |
 | Task 3 (part) | "Forget me" — verified callers only, deletes everything, says so |
 | Deploy | Dockerfile + Helm chart in the repo, settings wired into values.yaml |
-| Smoke | `tests/smoke.py` — 6/6 locally against the container's environment |
+| Smoke | `tests/smoke.py` — 6/6 against the real image in a pod-shaped container |
+| Deploy | Image built for linux/amd64 under Colima and run read-only as uid 1000: 6/6, memory survives a restart, 50 files, no secrets |
 | Voices | Native voice per language (`voices.py`), samples in `listening/voices/` |
 | Hardening | Malformed frames, hang-ups, oversized input, session expiry, guarded socket writes |
 
 ## In progress
 
-- Typed-code box in the page.
+Nothing. Everything committed through `fd6eac1`; the tree is clean and the
+offline suite is 409/409 across 13 suites.
 
-## Next, in order
+## Verified locally, as the pod will run it
 
-1. Typed-code box in the page
-3. Returning-customer memory across calls
-4. "Forget me"
-5. Deploy: Dockerfile and Helm chart into the repo, build, smoke test
-6. Native voice per language (config table, one sample each)
+Image `voxnova:fd6eac1`, built for linux/amd64 (so it runs under emulation
+on this Mac, which makes it slower here than it will be on the cluster) and
+run exactly as the chart does — read-only root, `tmpfs` at `/tmp`, a volume
+at `/data`, uid 1000, all capabilities dropped:
+
+- `tests/smoke.py` 6/6 against it
+- memory survives `docker restart`
+- the read-only root holds: the app writes only to `/data`
+- 50 files in the image, no `.env`, `.git`, `*.sqlite3*`, `kubeconfig`,
+  `listening/`, `tests/`, `deploy/` or `scripts/`
+
+One thing cost me most of this session and is worth knowing: a **stale
+`server.py` from an earlier run was still listening on port 8080**, so the
+smoke test was talking to it instead of the container and failing 3/6. If a
+run fails in a way that makes no sense, check `lsof -nP -iTCP:8080 -sTCP:LISTEN`
+before believing it.
+
+## Decide before this holds anything real
+
+**Retention is not running.** `RETENTION_DAYS` is set on the pod and
+`memory.purge_old` is written and tested, but nothing calls it, so call
+history is kept indefinitely. For the invented demo data that is fine; for
+anything else it is not. Wiring it to run on startup is a few lines, but it
+deletes data, so I have not done it without you. "Forget me" is live and
+tested and is unaffected.
 
 ## Blocked on you
 
@@ -44,23 +66,22 @@ Updated after every committed piece. Offline tests: `venv/bin/python tests/run.p
    are already granted under CP-3072 — no access request is needed. The
    kube context is `ai-starter-kits-dev-1` and the host is
    `aiskvoicedemo.cloud.snova.ai`.
-2. **`TRUSTED_PROXIES`** — the ingress controller's pod CIDR, from the
-   infra repo. The deploy script now refuses to run without it, because
-   empty means every caller behind the proxy shares one identity: three
-   wrong codes from anybody locks out everybody.
-   Also worth checking while you are in there: whether ingress-nginx has
-   `use-forwarded-headers` true. If it does, nginx appends to whatever the
-   client sent and the first entry is attacker-controlled — I take the
-   first, and would need to take the last instead.
+2. **DNS for `aiskvoicedemo.cloud.snova.ai`**, and the kubeconfig fetched
+   to a path outside the repo (`chmod 600`, `KUBECONFIG` in `.env`). Then
+   steps 3-8 of the walkthrough. Nothing has been pushed or deployed.
+   `TRUSTED_PROXIES=100.64.0.0/12` is settled, and because
+   `rke2-ingress-nginx` runs with `use-forwarded-headers: true` the app now
+   reads the rightmost untrusted `X-Forwarded-For` entry, with a test that a
+   spoofed header cannot change a caller's rate-limit key.
 3. **Auth0** — not built. See "Auth0, if you want it" below for exactly
    what it needs.
-3. **Listen to `listening/voices/*.wav`** and tell me which to change.
+4. **Listen to `listening/voices/*.wav`** and tell me which to change.
    Dutch has **no native voice on this account** — a Dutch caller gets an
    English voice speaking Dutch. Either Cartesia adds one or Dutch comes
    off the list of languages this claims to speak.
-4. **Cartesia credit** for the rest of the audio batch (`listening/PENDING.md`).
-4. **Rotate the SambaNova and Tavily keys** — they were in the zips.
-5. **Native review** of the Italian, Portuguese and Dutch letter names
+5. **Cartesia credit** for the rest of the audio batch (`listening/PENDING.md`).
+6. **Rotate the SambaNova and Tavily keys** — they were in the zips.
+7. **Native review** of the Italian, Portuguese and Dutch letter names
    (`NEEDS_NATIVE_REVIEW` in `slots.py`).
 
 ## Auth0, if you want it
