@@ -26,6 +26,8 @@ Updated after every committed piece. Offline tests: `venv/bin/python tests/run.p
 | Deploy | Image built for linux/amd64 under Colima and run read-only as uid 1000: 6/6, memory survives a restart, 48 files, no secrets |
 | Deploy | `voxnova:8b6c05b` pushed to the starter-kits registry, linux/amd64, digest `sha256:09016b57…`; 7/7 smoke against the pushed image |
 | Fix | `/terms` and `/privacy` scroll — they had inherited the call screen's `overflow:hidden`, so below the fold was unreachable on windows wider than 1180px |
+| Fix | Retention runs: sweep on startup then every `RETENTION_SWEEP_HOURS` (24), guarded and cancelled on shutdown, counts logged and never addresses. `/privacy` is now true |
+| Deploy | `voxnova:90946f2` pushed, linux/amd64, digest `sha256:40ba0d62…`; 7/7 smoke against the pushed image |
 | Voices | Native voice per language (`voices.py`), samples in `listening/voices/` |
 | Hardening | Malformed frames, hang-ups, oversized input, session expiry, guarded socket writes |
 
@@ -36,7 +38,7 @@ offline suite is 409/409 across 13 suites.
 
 ## Verified locally, as the pod will run it
 
-Image `voxnova:8b6c05b`, built for linux/amd64 (so it runs under emulation
+Image `voxnova:90946f2`, built for linux/amd64 (so it runs under emulation
 on this Mac, which makes it slower here than it will be on the cluster) and
 run exactly as the chart does — read-only root, `tmpfs` at `/tmp`, a volume
 at `/data`, uid 1000, all capabilities dropped:
@@ -52,19 +54,6 @@ One thing cost me most of this session and is worth knowing: a **stale
 smoke test was talking to it instead of the container and failing 3/6. If a
 run fails in a way that makes no sense, check `lsof -nP -iTCP:8080 -sTCP:LISTEN`
 before believing it.
-
-## Decide before this holds anything real
-
-**Retention is not running, and the privacy notice says it is.**
-`RETENTION_DAYS` is set on the pod and `memory.purge_old` is written and
-tested, but nothing calls it, so call history is kept indefinitely — while
-`/privacy` tells the caller "call summaries and the name and email attached
-to them are deleted after 30 days". That is a promise the deployment does
-not keep. Either wire the sweep or change the sentence; it should not ship
-as it stands. For the invented demo data that is fine; for
-anything else it is not. Wiring it to run on startup is a few lines, but it
-deletes data, so I have not done it without you. "Forget me" is live and
-tested and is unaffected.
 
 ## Blocked on you
 
@@ -83,7 +72,7 @@ tested and is unaffected.
    Deploy with the tag that was pushed and tested, not with HEAD:
 
    ```bash
-   scripts/deploy-dev.sh 8b6c05b
+   scripts/deploy-dev.sh 90946f2
    ```
 
    Left to default it would take HEAD's short SHA, which is a
