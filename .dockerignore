@@ -23,6 +23,8 @@ latency_report.html
 # Deployment files are not needed inside the image.
 deploy
 docs
+DEPLOY.md
+HANDOFF.md
 scripts
 Dockerfile
 .dockerignore
