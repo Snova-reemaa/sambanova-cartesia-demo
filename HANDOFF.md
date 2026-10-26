@@ -67,13 +67,23 @@ tested and is unaffected.
    are already granted under CP-3072 — no access request is needed. The
    kube context is `ai-starter-kits-dev-1` and the host is
    `aiskvoicedemo.cloud.snova.ai`.
-2. **The kubeconfig**, fetched to a path outside the repo (`chmod 600`,
-   `KUBECONFIG` in `.env`), and four settings in `.env` that
-   `./scripts/check-env.sh` still reports: `VOXNOVA_HOST` (set, but not to
-   `aiskvoicedemo.cloud.snova.ai`), `KUBECONFIG`, `TRUSTED_PROXIES` and
-   `DEMO_INBOX=1`. DNS is settled — the host cluster fills the record in
-   once the Ingress exists, so the hostname stays as above. The image is
-   pushed; nothing on the cluster has been touched.
+2. **The kubeconfig** — the one thing left. Fetch it to a path outside the
+   repo, `chmod 600`, and put the path in `.env` as `KUBECONFIG`; then
+   `./scripts/check-env.sh` is clean. `VOXNOVA_HOST`, `TRUSTED_PROXIES` and
+   `DEMO_INBOX` are set. DNS is settled — the host cluster fills the record
+   in once the Ingress exists, so the hostname stays
+   `aiskvoicedemo.cloud.snova.ai`. The image is pushed; nothing on the
+   cluster has been touched.
+
+   Deploy with the tag that was pushed and tested, not with HEAD:
+
+   ```bash
+   scripts/deploy-dev.sh 6598983
+   ```
+
+   Left to default it would take HEAD's short SHA, which is a
+   documentation-only commit that was never built or pushed, and step 2 of
+   the script would stop with "not in the registry".
    `TRUSTED_PROXIES=100.64.0.0/12` is settled, and because
    `rke2-ingress-nginx` runs with `use-forwarded-headers: true` the app now
    reads the rightmost untrusted `X-Forwarded-For` entry, with a test that a
