@@ -1,0 +1,74 @@
+"""One short line per language, in that language's own voice.
+
+For listening to, nothing more. Writes listening/voices/<lang>.wav.
+Spends a little Cartesia credit: eight short lines.
+"""
+import asyncio, os, sys, wave
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+from tests.harness import paid_api_trouble                    # noqa: E402
+import voices                                                 # noqa: E402
+
+OUT = os.path.join(ROOT, "listening", "voices")
+RATE = 44100
+LINES = {
+    "en": "Hello, you're through to support. I can see your order here — how can I help?",
+    "es": "Hola, ha llamado a atención al cliente. Veo su pedido aquí. ¿En qué puedo ayudarle?",
+    "fr": "Bonjour, vous êtes au service client. Je vois votre commande. Comment puis-je vous aider ?",
+    "de": "Guten Tag, Sie sind beim Kundenservice. Ich sehe Ihre Bestellung. Wie kann ich helfen?",
+    "it": "Buongiorno, è in contatto con l'assistenza. Vedo il suo ordine. Come posso aiutarla?",
+    "pt": "Olá, ligou para o apoio ao cliente. Estou a ver a sua encomenda. Como posso ajudar?",
+    "nl": "Hallo, u spreekt met de klantenservice. Ik zie uw bestelling. Waarmee kan ik helpen?",
+    "ar": "مرحبًا، وصلت إلى خدمة العملاء. أرى طلبك هنا. كيف أقدر أساعدك؟",
+}
+
+async def main(only):
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(os.path.join(ROOT, ".env"))
+    except Exception:
+        pass
+    if not os.getenv("RUN_LIVE_TESTS"):
+        print("  spends Cartesia credit — set RUN_LIVE_TESTS=1")
+        return 0
+    from cartesia import AsyncCartesia
+    model = os.getenv("CARTESIA_MODEL", "sonic-3.6")
+    client = AsyncCartesia(api_key=os.environ["CARTESIA_API_KEY"])
+    os.makedirs(OUT, exist_ok=True)
+    try:
+        for code, line in LINES.items():
+            if only and code not in only:
+                continue
+            vid, lang = voices.for_language(code)
+            ws = await client.tts.websocket()
+            pcm = bytearray()
+            try:
+                async for chunk in await ws.send(
+                        model_id=model, transcript=line,
+                        voice={"mode": "id", "id": vid}, language=lang,
+                        output_format={"container": "raw",
+                                       "encoding": "pcm_s16le",
+                                       "sample_rate": RATE},
+                        stream=True):
+                    pcm += getattr(chunk, "audio", b"") or b""
+            except Exception as exc:
+                trouble = paid_api_trouble(exc)
+                print(f"  !! STOPPED — {trouble or type(exc).__name__}: {str(exc)[:70]}")
+                print("  !! Says nothing about the voices. Top up and rerun.")
+                await ws.close()
+                return 2
+            finally:
+                await ws.close()
+            path = os.path.join(OUT, f"{code}.wav")
+            with wave.open(path, "wb") as f:
+                f.setnchannels(1); f.setsampwidth(2); f.setframerate(RATE)
+                f.writeframes(bytes(pcm))
+            flag = "  <- no native voice, English voice speaking Dutch" if code in voices.MISSING else ""
+            print(f"  {code}  {voices.name_for(code):26} {len(pcm)/(RATE*2):4.1f}s{flag}")
+    finally:
+        await client.close()
+    print(f"\n  written to {OUT}")
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(asyncio.run(main(set(sys.argv[1:]))))

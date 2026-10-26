@@ -47,6 +47,7 @@ import delivery
 import pricing
 import slots
 import smarts
+import voices
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(HERE, "static")
@@ -1995,6 +1996,11 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
 
     # A specialist speaks in their own voice for the rest of the call.
     voice_id = session.voices.get(session.persona) if session.persona != "front" else None
+    # A native voice for the language being spoken, unless a specialist's
+    # voice or the picker has already chosen one. One English voice reading
+    # all eight is why Spanish sounded like an American speaking Spanish.
+    if not voice_id and not opts.get("voice"):
+        voice_id = voices.for_language(code)[0]
     voice_id = voice_id or pick_voice(opts["voice"])
     reply = ""
     notes = []

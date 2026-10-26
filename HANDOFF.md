@@ -21,6 +21,9 @@ Updated after every committed piece. Offline tests: `venv/bin/python tests/run.p
 | Task 3 (part) | Typed-code box: voice first, appears after one miss, shares the attempt count |
 | Task 3 (part) | Returning-customer memory: verified callers get their history, nobody else |
 | Task 3 (part) | "Forget me" — verified callers only, deletes everything, says so |
+| Deploy | Dockerfile + Helm chart in the repo, settings wired into values.yaml |
+| Smoke | `tests/smoke.py` — 6/6 locally against the container's environment |
+| Voices | Native voice per language (`voices.py`), samples in `listening/voices/` |
 | Hardening | Malformed frames, hang-ups, oversized input, session expiry, guarded socket writes |
 
 ## In progress
@@ -43,7 +46,11 @@ Updated after every committed piece. Offline tests: `venv/bin/python tests/run.p
 2. **`TRUSTED_PROXIES`** — the ingress controller's pod CIDR. Without it
    every caller behind the proxy shares one caller key, so the per-caller
    limits apply to everybody at once.
-3. **Cartesia credit** for the deferred audio batch (`listening/PENDING.md`).
+3. **Listen to `listening/voices/*.wav`** and tell me which to change.
+   Dutch has **no native voice on this account** — a Dutch caller gets an
+   English voice speaking Dutch. Either Cartesia adds one or Dutch comes
+   off the list of languages this claims to speak.
+4. **Cartesia credit** for the rest of the audio batch (`listening/PENDING.md`).
 4. **Rotate the SambaNova and Tavily keys** — they were in the zips.
 5. **Native review** of the Italian, Portuguese and Dutch letter names
    (`NEEDS_NATIVE_REVIEW` in `slots.py`).
