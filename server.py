@@ -3329,11 +3329,56 @@ async def login(request):
     raise response
 
 
+# How often the retention sweep runs. The period is not the policy: the
+# policy is RETENTION_DAYS, and the sweep only decides how soon after a
+# record ages out it actually goes.
+SWEEP_HOURS = float(os.getenv("RETENTION_SWEEP_HOURS", "24"))
+
+
+def sweep_once():
+    """One pass, reported as counts. Never the addresses themselves — this
+    line goes to the pod's stdout, where a deleted customer's email would
+    outlive the customer."""
+    swept = memory.purge_old()
+    if swept["calls"] or swept["customers"] or swept["codes"]:
+        print(f"  retention: {swept['calls']} call(s), "
+              f"{swept['customers']} customer(s), {swept['codes']} code(s) "
+              f"removed, older than {memory.RETENTION_DAYS:g} days")
+    return swept
+
+
+async def retention(app):
+    """Sweep on startup and then every SWEEP_HOURS, for as long as we run.
+
+    /privacy tells the caller their summary, name and email are deleted
+    after RETENTION_DAYS. Nothing enforced that until this existed: the
+    sweep was written and tested but never called, so the notice described
+    something that did not happen.
+
+    A failed sweep must not take the server with it — the pod would
+    crash-loop on a full disk or a locked database and nobody could call
+    at all, which is worse than history being a day late. So every pass is
+    guarded and the loop carries on to the next one.
+    """
+    while True:
+        try:
+            await asyncio.to_thread(sweep_once)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log_error(exc, "retention sweep")
+        try:
+            await asyncio.sleep(SWEEP_HOURS * 3600)
+        except asyncio.CancelledError:
+            raise
+
+
 async def on_startup(app):
     global TTS_SLOTS, LLM_SLOTS
     TTS_SLOTS = asyncio.Semaphore(TTS_CONCURRENCY)
     LLM_SLOTS = asyncio.Semaphore(MAX_LLM_AT_ONCE)
     memory.init()
+    app["retention"] = asyncio.create_task(retention(app))
 
     llm = get_llm()
     tts = get_tts()
@@ -3354,6 +3399,22 @@ async def on_startup(app):
     print(f"  customer memory in {os.path.basename(memory.PATH)}")
     print(f"  {len(KB)} knowledge sections loaded"
           + ("" if len(KB) else " — answers about policy will be refused, not invented"))
+    print(f"  keeping call history {memory.RETENTION_DAYS:g} days, swept every "
+          f"{SWEEP_HOURS:g}h")
+
+
+async def on_cleanup(app):
+    """Stop the sweep before the loop closes, so shutdown is not a cancelled
+    task warning on the way out."""
+    task = app.get("retention")
+    if task:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            log_error(exc, "stopping the retention sweep")
 
 
 def main():
@@ -3375,6 +3436,7 @@ def main():
     app.router.add_get("/ws", websocket_handler)
     app.router.add_static("/static", STATIC)
     app.on_startup.append(on_startup)
+    app.on_cleanup.append(on_cleanup)
 
     port = int(os.getenv("PORT", "8080"))
     # Loopback by default, so running it on a laptop does not put it on the

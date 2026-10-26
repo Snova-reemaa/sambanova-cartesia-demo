@@ -184,6 +184,51 @@ def main():
     check("so retention does not sweep them away",
           kept["customers"] == 0 and m10.customer("a.novak@example.com"))
 
+    # Retention, against a clock we hold still, so the boundary is tested
+    # rather than whatever today happens to be. /privacy promises the call
+    # summary and the name and email attached to it are gone after
+    # RETENTION_DAYS; this is the check that the promise is kept.
+    class FakeClock:
+        """Real time module, except that now() is wherever we put it."""
+        def __init__(self, now):
+            self.now = now
+        def time(self):
+            return self.now
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    m11 = fresh()
+    frozen = time.time()
+    m11.time = FakeClock(frozen)
+    day = 86400
+    stamp = lambda ago: time.strftime("%Y-%m-%d %H:%M", time.gmtime(frozen - ago))
+    old_caller, new_caller = "old@example.com", "recent@example.com"
+    for who, ago in ((old_caller, 31 * day), (new_caller, 2 * day)):
+        m11.save_call(who, stamp(ago), {"summary": f"call from {ago // day} days ago"})
+    # A live code and a spent one, to show what the sweep does to each.
+    m11.make_code(old_caller, caller="someone")
+    swept = m11.purge_old(days=30)
+
+    check("retention drops a call older than the window",
+          not m11.history(old_caller))
+    check("and the customer it belonged to", m11.customer(old_caller) is None)
+    check("and the codes held against them",
+          not m11._connect().execute(
+              "SELECT 1 FROM codes WHERE email = ?", (old_caller,)).fetchone())
+    check("and says how many of each", swept["calls"] == 1 and swept["customers"] == 1)
+    check("a call inside the window stays",
+          [c["summary"] for c in m11.history(new_caller)] == ["call from 2 days ago"])
+    check("with its customer", (m11.customer(new_caller) or {}).get("email") == new_caller)
+    check("and the demo customers are never swept",
+          m11.customer("r.patel@example.com") and m11.customer("a.novak@example.com"))
+
+    # Wind the clock on instead of waiting: the call that was inside the
+    # window is now outside it.
+    m11.time.now = frozen + 29 * day
+    again = m11.purge_old(days=30)
+    check("the same call is swept once the clock moves past the window",
+          not m11.history(new_caller) and again["calls"] == 1)
+
     # Retention.
     m9 = fresh()
     old_email = "a.novak@example.com"

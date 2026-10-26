@@ -594,19 +594,47 @@ def forget(email):
     return {"calls": calls, "customer": bool(known)}
 
 
+RETENTION_DAYS = float(os.getenv("RETENTION_DAYS", "30"))
+
+
 def purge_old(days=None):
-    """Drop calls past the retention period, and customers left with none."""
-    days = float(os.getenv("RETENTION_DAYS", "30") if days is None else days)
-    cutoff = time.strftime("%Y-%m-%d %H:%M",
-                           time.gmtime(time.time() - days * 86400))
+    """Drop calls past the retention period, and customers left with none.
+
+    This is what makes the sentence in /privacy true — "call summaries and
+    the name and email attached to them are deleted after 30 days" — so
+    what it deletes is a promise, not a tidy-up.
+
+    The demo customers are the one exception, and they are recognised by
+    being on the seed list. Protecting them by `verified = 0`, as this did
+    at first, got the test backwards: verifying is what a real caller does,
+    so the rule kept every real name forever and swept only the fixtures.
+
+    Codes and send counts go with the customer. A one-time code outlives
+    its account otherwise, and the email's lockout with it.
+    """
+    now = time.time()
+    days = RETENTION_DAYS if days is None else float(days)
+    cutoff = time.strftime("%Y-%m-%d %H:%M", time.gmtime(now - days * 86400))
+    keep = [email for email, _ in SEED_CUSTOMERS]
+    holes = ",".join("?" * len(keep))
     with _lock, _connect() as db:
         gone = db.execute("DELETE FROM calls WHERE at < ? AND seeded = 0",
                           (cutoff,)).rowcount
-        orphans = db.execute(
-            "DELETE FROM customers WHERE verified = 0 AND email NOT IN "
-            "(SELECT email FROM calls)").rowcount
-        db.execute("DELETE FROM code_sends WHERE at < ?", (time.time() - 3600,))
-    return {"calls": gone, "customers": orphans}
+        stale = [row[0] for row in db.execute(
+            f"SELECT email FROM customers WHERE email NOT IN ({holes}) "
+            "AND email NOT IN (SELECT email FROM calls)", keep)]
+        for email in stale:
+            db.execute("DELETE FROM customers WHERE email = ?", (email,))
+            db.execute("DELETE FROM codes WHERE email = ?", (email,))
+            db.execute("DELETE FROM code_sends WHERE email = ?", (email,))
+        # Spent codes, whose lockout has also run out, are of no use to
+        # anybody: an unexpired lockout is left alone so that purging is
+        # never a way to clear one.
+        codes = db.execute(
+            "DELETE FROM codes WHERE expires_at < ? AND locked_until < ?",
+            (now, now)).rowcount
+        db.execute("DELETE FROM code_sends WHERE at < ?", (now - 3600,))
+    return {"calls": gone, "customers": len(stale), "codes": codes}
 
 
 def mask(email):
