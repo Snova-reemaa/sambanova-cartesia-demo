@@ -56,7 +56,7 @@ fi
 KUBE_CONTEXT="${KUBE_CONTEXT:-aisk-dev-1}"
 NAMESPACE="${NAMESPACE:-default}"
 if [ -z "${VOXNOVA_HOST:-}" ]; then
-    echo "error: VOXNOVA_HOST is not set (the *.cloud.snova.ai name to serve on; ask Tamas which one)" >&2
+    echo "error: VOXNOVA_HOST is not set — the full hostname for the aiskvoicedemo slot (an existing *.cloud.snova.ai name; Tamas has it)" >&2
     exit 1
 fi
 kc() { kubectl --context "$KUBE_CONTEXT" -n "$NAMESPACE" "$@"; }

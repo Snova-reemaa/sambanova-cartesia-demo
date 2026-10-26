@@ -40,12 +40,14 @@ Updated after every committed piece. Offline tests: `venv/bin/python tests/run.p
 
 ## Blocked on you
 
-1. **Which cluster, namespace and ingress host.** The chart you sent needs
-   `ingress.host` and expects the `voxnova-keys` secret and the
-   `acp-starterkits-dev-gar-secret` pull secret to exist.
+1. **Deploy.** `DEPLOY.md` has the commands. Needs the full hostname for the
+   `aiskvoicedemo` slot, and the `acp-starterkits-dev-gar-secret` pull
+   secret present in `default`.
 2. **`TRUSTED_PROXIES`** — the ingress controller's pod CIDR. Without it
-   every caller behind the proxy shares one caller key, so the per-caller
-   limits apply to everybody at once.
+   every caller behind the proxy shares one caller key, so three wrong
+   codes from anybody locks out everybody.
+3. **Auth0** — not built. See "Auth0, if you want it" below for exactly
+   what it needs.
 3. **Listen to `listening/voices/*.wav`** and tell me which to change.
    Dutch has **no native voice on this account** — a Dutch caller gets an
    English voice speaking Dutch. Either Cartesia adds one or Dutch comes
@@ -54,6 +56,34 @@ Updated after every committed piece. Offline tests: `venv/bin/python tests/run.p
 4. **Rotate the SambaNova and Tavily keys** — they were in the zips.
 5. **Native review** of the Italian, Portuguese and Dutch letter names
    (`NEEDS_NATIVE_REVIEW` in `slots.py`).
+
+## Auth0, if you want it
+
+Not implemented, and nothing in the app knows about it. What it would need:
+
+**Does it replace the passphrase?** It should. They do the same job — a gate
+in front of a demo — and keeping both means two things to get past and two
+places to get wrong. Auth0 gives you per-person identity, which also fixes
+the one real weakness of the current limits: the caller key is session plus
+IP, and with a shared passphrase anybody can get a fresh session by signing
+in again. With real accounts it would key on the user.
+
+**Redirect / callback URLs** for the Auth0 application
+(`https://<aiskvoicedemo host>` throughout):
+
+- Allowed Callback URLs: `https://<host>/auth/callback`
+- Allowed Logout URLs: `https://<host>/login`
+- Allowed Web Origins: `https://<host>`
+- Application type: Regular Web Application
+
+**Environment variables** it would read:
+
+- `AUTH0_DOMAIN`, `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET`
+- `AUTH0_AUDIENCE` (only if an API is involved; not needed for login alone)
+- `SESSION_SECRET` for signing the session cookie
+
+The consent gate stays either way: agreeing to the terms is separate from
+proving who you are, and the record of consent is per session.
 
 ## Deferred backlog
 

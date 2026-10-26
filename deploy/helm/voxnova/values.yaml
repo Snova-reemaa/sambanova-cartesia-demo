@@ -39,8 +39,9 @@ env:
 ingress:
   enabled: true
   className: nginx
-  # Required. New domains are limited for now, so this reuses an existing *.cloud.snova.ai name:
-  # confirm which one with Tamas, then pass it as --set ingress.host=... or VOXNOVA_HOST in .env.
+  # The "aiskvoicedemo" slot. Set to the full hostname for it — Tamas has
+  # the exact name; it is an existing *.cloud.snova.ai entry, not a new
+  # domain. Pass as --set ingress.host=... or VOXNOVA_HOST in .env.
   host: ""
   tls:
     secretName: cloud-snova-ai-tls   # the cluster's wildcard certificate for cloud.snova.ai (https; the mic needs it)
