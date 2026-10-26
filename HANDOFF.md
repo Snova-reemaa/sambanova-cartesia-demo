@@ -16,18 +16,17 @@ Updated after every committed piece. Offline tests: `venv/bin/python tests/run.p
 | Task 3 (part) | `slots.py` — validation per field type, 68 checks |
 | Task 3 (part) | `flow.py` — code-driven state machine, 42 checks; live eval 29/30 |
 | Task 3 (part) | Caller key = session + X-Forwarded-For, trusted only from our proxy |
+| Task 3 (part) | Verification wired in: name or address starts a code, reading it back verifies, history only then |
+| Task 3 (part) | Code delivery — demo inbox on, SMTP written and off |
 | Hardening | Malformed frames, hang-ups, oversized input, session expiry, guarded socket writes |
 
 ## In progress
 
-- **Code delivery backends** (`delivery.py`) — written, not yet committed or
-  wired to the server. Demo inbox returns the code for on-screen display;
-  SMTP is written and off, because there is no approved sender.
+- Typed-code box in the page.
 
 ## Next, in order
 
-1. Wire `flow.py` + `delivery.py` into the websocket handler
-2. Typed-code box in the page
+1. Typed-code box in the page
 3. Returning-customer memory across calls
 4. "Forget me"
 5. Deploy: Dockerfile and Helm chart into the repo, build, smoke test

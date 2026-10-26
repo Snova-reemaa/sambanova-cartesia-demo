@@ -43,7 +43,9 @@ import heard
 import memory
 import orders
 import policies
+import delivery
 import pricing
+import slots
 import smarts
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -976,6 +978,13 @@ class Session:
         self.unanswered = []
         # The AI-and-recording line, said once per call.
         self.disclosed = False
+        # Session plus address, set when the socket opens. Every attempt
+        # and request limit is counted against it.
+        self.key = None
+        # The code we are waiting to hear, if any.
+        self.awaiting_code = False
+        # True only on the turn the code checked out.
+        self.just_verified = False
         self.audio_off = False   # synthesis gave out part way through the call
         self.just_named = False  # they said who they are and nothing else yet
         self.caller = None               # who is on the line, once an order is looked up
@@ -1151,6 +1160,37 @@ def clean_up(chan, text, tell=False, turn_id=None):
     return fixed
 
 
+def hear_code(session, said):
+    """A code read out, or typed. Returns an event, or None if not a code.
+
+    Both routes land here, so they share one attempt counter — three
+    between them, not three each.
+    """
+    if not session.awaiting_code or not session.caller:
+        return None
+    checked = slots.check_code(said)
+    if not checked.ok:
+        return None
+    c = session.caller
+    verdict = memory.check_code(c["email"], checked.value, caller=session.key)
+    if verdict == "ok":
+        person = memory.customer(c["email"]) or {}
+        c.update(verified=True, name=person.get("name") or c.get("claimed"),
+                 calls=memory.history(c["email"]), mismatch=False)
+        session.awaiting_code = False
+        session.just_verified = True
+        return caller_event(c, "verified")
+    if verdict == "locked":
+        session.awaiting_code = False
+        c["throttled"] = True
+        return caller_event(c, "too_many")
+    event = caller_event(c, "wrong_code")
+    event["left"] = memory.attempts_left(c["email"], caller=session.key)
+    # One miss and the box appears, as agreed: voice first, typing after.
+    event["show_typed"] = True
+    return event
+
+
 def identify(session, prompt):
     """Work out who is on the phone. Returns an event or None.
 
@@ -1178,10 +1218,13 @@ def identify(session, prompt):
         person = memory.customer(email)
         if not person:
             return None
-        calls = memory.history(email)
-        session.caller = {"email": email.lower(), "order": None, "verified": True,
-                          "name": person["name"], "calls": calls, "mismatch": False}
-        return caller_event(session.caller, "verified")
+        # Known, but not yet proven to be them. A name and an address are
+        # a claim; the code is what makes it a fact. Nothing personal is
+        # attached to the session until it checks out.
+        session.caller = {"email": email.lower(), "order": None,
+                          "verified": False, "name": None, "calls": [],
+                          "mismatch": False, "claimed": person["name"]}
+        return start_verification(session)
     if email == c["email"]:
         person = memory.customer(email) or {"name": email.split("@")[0]}
         c.update(verified=True, name=person["name"], calls=memory.history(email),
@@ -1190,6 +1233,39 @@ def identify(session, prompt):
     c["mismatch"] = True
     c["attempts"] = c.get("attempts", 0) + 1
     return caller_event(c, "mismatch")
+
+
+def start_verification(session):
+    """Send a code, or say plainly that we cannot.
+
+    The same thing is said whether or not the address is on file, and the
+    code is only ever made for one that is — so this cannot be used to
+    find out who is a customer.
+    """
+    c = session.caller
+    if not delivery.available():
+        # Openly absent, never silently skipped.
+        c["unavailable"] = True
+        return caller_event(c, "unavailable")
+    code, why = memory.make_code(c["email"], caller=session.key)
+    if code:
+        sent, on_screen = delivery.send_code(
+            c["email"], code, minutes=memory.CODE_MINUTES)
+        if sent:
+            session.awaiting_code = True
+            event = caller_event(c, "code_sent")
+            if on_screen:
+                # The demo inbox, and labelled as such wherever it shows.
+                event["demo_code"] = on_screen
+                event["demo_note"] = ("Demo mode: code shown on screen. "
+                                      "In production it's emailed.")
+            return event
+    if why in ("locked", "caller locked", "too many", "caller asked too often"):
+        c["throttled"] = True
+        return caller_event(c, "too_many")
+    # Unknown address, or nothing could be sent. Same words either way.
+    session.awaiting_code = True
+    return caller_event(c, "code_sent")
 
 
 def caller_event(c, status):
@@ -1210,8 +1286,18 @@ def caller_rules(session):
     if not c:
         return ""
     if c["verified"]:
+        # The caller's last words were six digits. Without this the model
+        # either looks them up as an order number or answers them as a
+        # question — "I don't have any information about a code like that"
+        # — when what just happened is that they got in.
+        just_now = ("\nThose six digits were the code, and it was right: "
+                    "they are now verified. Say nothing about the code at "
+                    "all. Treat this turn as the moment they have just "
+                    "introduced themselves — greet them by name, warmly and "
+                    "briefly, and ask what you can do for them.\n"
+                    if session.just_verified else "")
         return (
-            "\n" + memory.as_context(c["name"], c.get("calls") or []) +
+            just_now + "\n" + memory.as_context(c["name"], c.get("calls") or []) +
             "\nUse this the way a good agent who remembers them would: if a previous "
             "call is relevant, bring it up once, briefly and in your own words — "
             "for example what was promised last time and whether it happened. Never "
@@ -1225,6 +1311,28 @@ def caller_rules(session):
             "it came through once as \"our dot patel\" — and repeating that at them "
             "sounds like you did not understand. Greet them by name and carry on."
         )
+    # Waiting on a code. What the agent may say here is fixed, because it
+    # is the one place a wrong word leaks whether an address is on file.
+    if c.get("unavailable"):
+        return ("\nVerification is not set up on this deployment, so you "
+                "cannot confirm who they are and must not share anything "
+                "from a previous call. Say that you can't pull up their "
+                "account right now, and help them with what they need "
+                "anyway. Do not imply you will try again later.")
+    if c.get("throttled"):
+        return ("\nThere have been too many code attempts. Say that you "
+                "can't try again just yet, ask them to give it a quarter of "
+                "an hour, and help with anything that does not need their "
+                "account.")
+    if session.awaiting_code:
+        return ("\nYou have told them: if that address is on file, a six "
+                "digit code has been sent to it. Keep to that wording — "
+                "never say whether the address exists, how many people "
+                "share a name, or anything about them.\n"
+                "Ask them to read the code back. Say nothing about their "
+                "account or previous calls until it checks out. If they "
+                "cannot find it, say it may take a moment and that they can "
+                "type it into the box on the page instead.")
     if c.get("mismatch"):
         return (
             f"\nThe email the caller gave does not match order {c['order']}. Tell them "
@@ -1848,7 +1956,10 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
 
     # Identity first: a caller who has just confirmed their email changes what
     # the model is told, which is also why a draft made before it is no use.
-    who = None if (interpreting or intro) else identify(session, prompt)
+    who = None
+    if not interpreting and not intro:
+        session.just_verified = False
+        who = hear_code(session, prompt) or identify(session, prompt)
     session.just_named = bool(who)
     if who:
         if draft:
@@ -2582,6 +2693,7 @@ async def websocket_handler(request):
     llm = get_llm()
     tts = get_tts()
     session = Session()
+    session.key = caller_key(request)
     chan = Channel(ws)
     running = {}       # turn_id -> task
     next_turn_id = 1
