@@ -30,6 +30,8 @@ const ui = {
   interpSwap: el('interp-swap'), share: el('share'), callShare: el('call-share'),
   shareBar: el('share-bar'), shareStop: el('share-stop'), audioNote: el('m-audio-note'),
   callerPanel: el('caller-panel'), callerTitle: el('caller-title'),
+  codeBox: el('codebox'), codeInput: el('code-input'), codeSend: el('code-send'),
+  codeNote: el('code-note'), demoInbox: el('demo-inbox'), demoCode: el('demo-code'),
   callerStatus: el('caller-status'), callerCalls: el('caller-calls'),
   memoryReset: el('memory-reset'),
   visuals: el('visuals'), replayCall: el('replay-call'),
@@ -635,6 +637,37 @@ function showCaller(m) {
       }
       ui.callerCalls.append(li);
     });
+    hideCodeBox();
+  } else if (m.status === 'code_sent') {
+    ui.callerTitle.textContent = 'Caller';
+    ui.callerStatus.textContent =
+      'If that address is on file, a six digit code has been sent to it. '
+      + 'Read it out, or type it below.';
+    // Voice first: the box only appears once saying it has failed, which
+    // is what the server tells us with show_typed.
+    if (m.demo_code) {
+      ui.demoInbox.hidden = false;
+      ui.demoCode.textContent = m.demo_code;
+    }
+  } else if (m.status === 'wrong_code') {
+    ui.callerTitle.textContent = 'Caller';
+    const left = typeof m.left === 'number' ? m.left : null;
+    ui.callerStatus.textContent = left
+      ? `That code did not match. ${left} ${left === 1 ? 'try' : 'tries'} left.`
+      : 'That code did not match.';
+    if (m.show_typed) showCodeBox();
+  } else if (m.status === 'too_many') {
+    ui.callerTitle.textContent = 'Caller';
+    ui.callerStatus.textContent =
+      'Too many attempts. Try again in about fifteen minutes — '
+      + 'everything that does not need the account still works.';
+    hideCodeBox();
+  } else if (m.status === 'unavailable') {
+    ui.callerTitle.textContent = 'Caller';
+    ui.callerStatus.textContent =
+      'Verification is not configured on this deployment, so nothing from '
+      + 'a previous call is shared.';
+    hideCodeBox();
   } else if (m.status === 'mismatch') {
     ui.callerTitle.textContent = 'Caller not verified';
     ui.callerStatus.textContent = `That email does not match order ${m.order}. Nothing from their history is shared.`;
@@ -643,6 +676,42 @@ function showCaller(m) {
     ui.callerStatus.textContent = `Order ${m.order} belongs to ${m.email}. Waiting for the caller to confirm that email before their history is used.`;
   }
 }
+
+function showCodeBox() {
+  ui.codeBox.hidden = false;
+  ui.codeInput.focus();
+}
+
+function hideCodeBox() {
+  ui.codeBox.hidden = true;
+  ui.demoInbox.hidden = true;
+  ui.codeInput.value = '';
+  ui.codeNote.textContent = '';
+  ui.codeNote.className = 'codenote';
+}
+
+function sendTypedCode() {
+  const digits = (ui.codeInput.value || '').replace(/\D/g, '');
+  if (digits.length !== 6) {
+    ui.codeNote.textContent = 'Six digits.';
+    ui.codeNote.className = 'codenote bad';
+    return;
+  }
+  // Through the same door as a spoken one, so they share the attempt
+  // count — three between them, not three each.
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'prompt', text: digits, call: false,
+                             search: false, typed_code: true }));
+  }
+  ui.codeInput.value = '';
+  ui.codeNote.textContent = 'Checking…';
+  ui.codeNote.className = 'codenote';
+}
+
+ui.codeSend.addEventListener('click', sendTypedCode);
+ui.codeInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); sendTypedCode(); }
+});
 
 ui.memoryReset.addEventListener('click', () => {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'memory_reset' }));

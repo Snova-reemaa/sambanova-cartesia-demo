@@ -80,6 +80,23 @@
       <h2 id="caller-title">Caller</h2>
       <p class="caller-status" id="caller-status"></p>
       <ol class="caller-calls" id="caller-calls"></ol>
+
+      <div class="codebox" id="codebox" hidden>
+        <label for="code-input">Enter the 6-digit code</label>
+        <div class="coderow">
+          <input id="code-input" inputmode="numeric" autocomplete="one-time-code"
+                 maxlength="7" placeholder="000000" aria-label="Verification code">
+          <button type="button" id="code-send">Check</button>
+        </div>
+        <p class="codenote" id="code-note"></p>
+      </div>
+
+      <div class="demoinbox" id="demo-inbox" hidden>
+        <p class="demoinbox-label">Demo mode: code shown on screen.
+          In production it's emailed.</p>
+        <p class="demoinbox-code" id="demo-code"></p>
+      </div>
+
       <button type="button" class="ghost" id="memory-reset">Reset memory</button>
     </section>
 

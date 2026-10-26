@@ -18,6 +18,7 @@ Updated after every committed piece. Offline tests: `venv/bin/python tests/run.p
 | Task 3 (part) | Caller key = session + X-Forwarded-For, trusted only from our proxy |
 | Task 3 (part) | Verification wired in: name or address starts a code, reading it back verifies, history only then |
 | Task 3 (part) | Code delivery — demo inbox on, SMTP written and off |
+| Task 3 (part) | Typed-code box: voice first, appears after one miss, shares the attempt count |
 | Hardening | Malformed frames, hang-ups, oversized input, session expiry, guarded socket writes |
 
 ## In progress
