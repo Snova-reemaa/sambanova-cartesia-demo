@@ -856,7 +856,21 @@ body.sharing #callview { object-fit: contain; }
 
 /* Plain reading pages, served without signing in. Deliberately unlike the
    app: nobody should mistake the terms for part of the demo. */
-body.policy { background: var(--deeper); padding: 0; }
+/* The call screen pins itself to the window: html and body are height 100%
+   and body is overflow:hidden, so the orb and the panels never scroll away
+   from under the caller. A policy page is a document, not a screen, and it
+   inherited that — everything below the fold was simply unreachable, with
+   no scrollbar and nothing to drag. Let the body grow with the text and let
+   the page scroll the ordinary way. The narrow media query already sets
+   body { overflow: auto }, so this only bit windows wider than 1180px;
+   .policy outranks it either way. */
+body.policy {
+  background: var(--deeper);
+  padding: 0;
+  height: auto;
+  min-height: 100%;
+  overflow: visible;
+}
 .policysheet {
   max-width: 62ch;
   margin: 0 auto;

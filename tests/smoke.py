@@ -70,6 +70,27 @@ async def main():
         async with http.get(f"{B}/static/fonts/schibsted-grotesk-400-latin.woff2") as r:
             ok = r.status==200 and int(r.headers.get("Content-Length","0"))>1000
         results.append(line("fonts served locally", ok))
+        # The call screen pins itself to the window with overflow:hidden on
+        # body, and the policy pages inherited it: everything below the fold
+        # was unreachable, with no scrollbar and nothing to drag. No browser
+        # here, so this checks the contract that made it work rather than the
+        # rendering — the pages still carry the class, and the class still
+        # releases the lock. A real browser at 1280x460 and 375x812 is what
+        # proved the pixels.
+        async with http.get(f"{B}/static/style.css") as r: css = await r.text()
+        rule = re.search(r"body\.policy\s*\{[^}]*\}", css)
+        why = []
+        if not rule:
+            why.append("no body.policy rule")
+        else:
+            for need in ("overflow: visible", "height: auto"):
+                if need not in rule.group(0):
+                    why.append(f"body.policy lacks {need}")
+        for path in ("/terms", "/privacy"):
+            async with http.get(f"{B}{path}") as r: page = await r.text()
+            if 'class="policy"' not in page:
+                why.append(f"{path} is not class=policy")
+        results.append(line("policy pages can scroll", not why, "; ".join(why[:2])))
     print(f"\n  {sum(results)}/{len(results)} passed")
     return 0 if all(results) else 1
 raise SystemExit(asyncio.run(main()))
