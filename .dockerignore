@@ -1,0 +1,33 @@
+# Secrets and local state: never in the image.
+.env
+.env.*
+!.env.example
+memory.sqlite3
+*.sqlite3
+
+# Local tooling and output.
+.git
+.github
+.claude
+venv
+.venv
+__pycache__
+*.pyc
+output
+recording
+*.zip
+.DS_Store
+latency_report.html
+
+# Deployment files are not needed inside the image.
+deploy
+docs
+scripts
+Dockerfile
+.dockerignore
+
+# Recorded audio and the notes about it.
+listening
+
+# The suites run against the source tree, not against the image.
+tests

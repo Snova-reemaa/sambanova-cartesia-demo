@@ -1,0 +1,35 @@
+{{- if .Values.ingress.enabled }}
+{{- $host := required "set ingress.host (an existing *.cloud.snova.ai name; confirm which with Tamas)" .Values.ingress.host }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "voxnova.name" . }}
+  labels: {{- include "voxnova.labels" . | nindent 4 }}
+  annotations:
+    # The voice streams over one WebSocket for the whole call. nginx-ingress upgrades WebSockets on
+    # its own, but closes any connection idle for 60 s by default, which would end a quiet call.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # Photos and video frames from the camera can be a few MB.
+    nginx.ingress.kubernetes.io/proxy-body-size: "25m"
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- with .Values.ingress.tls.secretName }}
+  tls:
+    - hosts: [{{ $host }}]
+      secretName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ $host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "voxnova.name" . }}
+                port: {name: http}
+{{- end }}

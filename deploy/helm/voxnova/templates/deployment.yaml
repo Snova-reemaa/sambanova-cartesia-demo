@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "voxnova.name" . }}
+  labels: {{- include "voxnova.labels" . | nindent 4 }}
+spec:
+  # One replica: login sessions and calls in progress live in the process's memory, and the
+  # SQLite memory file has one writer. Recreate, so two pods never hold the volume at once.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {{- include "voxnova.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "voxnova.labels" . | nindent 8 }}
+      annotations:
+        checksum/keys: {{ .Values.secretChecksum | quote }}
+    spec:
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecret }}
+      # Let a call in progress finish its sentence when the pod is replaced.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        fsGroup: 1000
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: voxnova
+          image: {{ include "voxnova.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - {name: http, containerPort: 8080}
+          env:
+            - {name: HOST, value: "0.0.0.0"}
+            - {name: PORT, value: "8080"}
+            - {name: MEMORY_FILE, value: /data/memory.sqlite3}
+            {{- range $name, $value := .Values.env }}
+            - {name: {{ $name }}, value: {{ $value | quote }}}
+            {{- end }}
+          {{- with .Values.apiKeysSecret }}
+          envFrom:
+            - secretRef: {name: {{ . }}}
+          {{- end }}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: tmp, mountPath: /tmp}
+          # /login is the one page served without signing in, so it is what the probes ask for.
+          readinessProbe:
+            httpGet: {path: /login, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet: {path: /login, port: http}
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 5
+          securityContext:
+            runAsUser: 1000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: {{ include "voxnova.name" . }}-data}
+        - {name: tmp, emptyDir: {}}

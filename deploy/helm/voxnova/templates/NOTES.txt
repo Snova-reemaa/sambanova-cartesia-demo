@@ -1,0 +1,8 @@
+VoxNova is deploying.
+
+  kubectl get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+  kubectl logs deploy/{{ include "voxnova.name" . }}
+
+{{- if .Values.ingress.enabled }}
+Then open https://{{ .Values.ingress.host }} (on the VPN) and sign in with DEMO_PASSPHRASE.
+{{- end }}

@@ -1,0 +1,64 @@
+# Modelled on sn-agent-swarms' chart: same registry, pull secret, ingress class and certificate.
+
+image:
+  registry: us-west2-docker.pkg.dev/acp-starterkits-development-57/oci-us-west2-starerkits
+  name: voxnova
+  tag: ""                      # the short git SHA the image was pushed under (scripts/deploy-dev.sh sets it)
+  pullPolicy: IfNotPresent
+
+# The registry login, an existing kubernetes.io/dockerconfigjson Secret (the same one sn-agent-swarms uses).
+imagePullSecret: acp-starterkits-dev-gar-secret
+
+# An existing Secret whose keys become environment variables of the app:
+# SAMBANOVA_API_KEY, CARTESIA_API_KEY, DEMO_PASSPHRASE, and optionally TAVILY_API_KEY / EXA_API_KEY.
+# scripts/deploy-dev.sh creates it from your .env. The app will not start without the first two.
+apiKeysSecret: voxnova-keys
+
+# Changes when the Secret's contents change, so the pod restarts and reads the new keys.
+# scripts/deploy-dev.sh sets it to a hash of the values (never the values themselves).
+secretChecksum: ""
+
+# Non-secret settings, passed to the app as environment variables. Anything in .env.example that is
+# not a key can go here, e.g. CARTESIA_MODEL, SAMBANOVA_MODEL, MAX_SESSION_MINUTES.
+env:
+  CARTESIA_MODEL: sonic-3.6
+  CARTESIA_MODEL_AR: sonic-3.6
+  # Verification. The demo inbox shows the code on the caller's own screen:
+  # it demonstrates the flow and proves nothing about identity. Switch it
+  # off and set SMTP_HOST/SMTP_FROM once there is an approved sender.
+  DEMO_INBOX: "1"
+  # Whose X-Forwarded-For is believed. Must be the ingress controller's pod
+  # CIDR: left empty, every caller behind the proxy shares one caller key
+  # and the per-caller limits apply to all of them at once.
+  TRUSTED_PROXIES: ""
+  # How long call history is kept.
+  RETENTION_DAYS: "30"
+  # Turns allowed to be talking to the model at once, across the pod.
+  MAX_CONCURRENT_LLM: "8"
+
+ingress:
+  enabled: true
+  className: nginx
+  # Required. New domains are limited for now, so this reuses an existing *.cloud.snova.ai name:
+  # confirm which one with Tamas, then pass it as --set ingress.host=... or VOXNOVA_HOST in .env.
+  host: ""
+  tls:
+    secretName: cloud-snova-ai-tls   # the cluster's wildcard certificate for cloud.snova.ai (https; the mic needs it)
+  annotations: {}
+
+# Which traffic may reach the pod. Only the app's port is open; `from` narrows who may use it.
+networkPolicy:
+  enabled: true
+  from: []
+
+# Customer memory (SQLite). One small volume, kept when the release is uninstalled.
+persistence:
+  size: 1Gi
+  storageClass: ""             # the cluster default
+
+resources:
+  requests: {cpu: 250m, memory: 256Mi}
+  limits: {memory: 1Gi}
+
+nodeSelector: {}
+tolerations: []

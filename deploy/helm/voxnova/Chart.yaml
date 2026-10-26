@@ -1,0 +1,6 @@
+apiVersion: v2
+name: voxnova
+description: "VoxNova: the SambaNova + Cartesia real-time voice agent demo, one pod"
+type: application
+version: 0.1.0
+appVersion: ""   # set at deploy time (--set image.tag) to the commit the image was built from
