@@ -179,6 +179,36 @@ def main():
     check("and keeps the recent one", "today" in left)
     check("and says how many it dropped", swept["calls"] >= 1)
 
+    # The caller key must not be forgeable. X-Forwarded-For is a request
+    # header like any other: a client that can set it gets a fresh key per
+    # request and every per-caller limit becomes decorative.
+    import asyncio
+    import aiohttp
+    from tests.harness import Server, sign_in
+
+    async def keys(trusted):
+        settings = {"EXPOSE_WHOAMI": "1"}
+        if trusted:
+            settings["TRUSTED_PROXIES"] = "127.0.0.1"
+        with Server(**settings) as server:
+            jar = aiohttp.CookieJar(unsafe=True)
+            async with aiohttp.ClientSession(cookie_jar=jar) as http:
+                await sign_in(http, server)
+                out = []
+                for spoof in (None, "203.0.113.9", "198.51.100.4"):
+                    headers = {"X-Forwarded-For": spoof} if spoof else {}
+                    async with http.get(f"{server.base}/whoami",
+                                        headers=headers) as r:
+                        out.append((await r.text()).strip())
+                return out
+
+    untrusted = asyncio.get_event_loop().run_until_complete(keys(False))
+    check("a spoofed X-Forwarded-For does not change the caller key",
+          len(set(untrusted)) == 1)
+    trusted = asyncio.get_event_loop().run_until_complete(keys(True))
+    check("but a trusted proxy's word is taken",
+          len(set(trusted)) > 1)
+
     for what, ok in results:
         print(f"  {'ok  ' if ok else 'FAIL'} {what}")
     bad = sum(not ok for _, ok in results)

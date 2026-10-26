@@ -8,6 +8,7 @@ user would feel rather than including a cold handshake.
 """
 
 import asyncio
+import hashlib
 import hmac
 import json
 import os
@@ -2958,6 +2959,40 @@ async def privacy(request):
 
 # ------------------------------------------------------------------ access
 
+# Only our own ingress may claim who the client is. X-Forwarded-For is a
+# request header like any other: a client that can set it gets a fresh
+# caller key per request and every per-caller limit becomes decorative.
+# TRUSTED_PROXIES lists the peers whose word is taken — in the cluster the
+# ingress controller's pod CIDR — and an empty list means trust nobody,
+# which is right on a laptop.
+TRUSTED_PROXIES = tuple(
+    p.strip() for p in (os.getenv("TRUSTED_PROXIES") or "").split(",")
+    if p.strip())
+
+
+def client_ip(request):
+    """The caller's address, as far as it can be trusted."""
+    peer = request.remote or ""
+    if TRUSTED_PROXIES and any(peer.startswith(prefix)
+                               for prefix in TRUSTED_PROXIES):
+        forwarded = request.headers.get("X-Forwarded-For", "")
+        first = forwarded.split(",")[0].strip()
+        if first:
+            return first
+    return peer
+
+
+def caller_key(request):
+    """Who is doing this, for the attempt and request limits.
+
+    Session and address together. The session alone is one logout from
+    being a different person; the address alone is a shared office.
+    """
+    token = request.cookies.get(COOKIE_NAME) or "-"
+    return hashlib.sha256(
+        f"{token}|{client_ip(request)}".encode()).hexdigest()[:32]
+
+
 def is_https(request):
     """True when the visitor reached us over TLS, including via a tunnel."""
     return request.headers.get("X-Forwarded-Proto", request.scheme) == "https"
@@ -3108,6 +3143,11 @@ def main():
     app = web.Application(middlewares=[fresh_static, gate])
     app.router.add_get("/", index)
     app.router.add_get("/login", login)
+    if os.getenv("EXPOSE_WHOAMI"):
+        # For the proxy-trust test only, and off unless asked for.
+        async def whoami(request):
+            return web.Response(text=caller_key(request))
+        app.router.add_get("/whoami", whoami)
     app.router.add_get("/terms", terms)
     app.router.add_get("/privacy", privacy)
     app.router.add_post("/login", login)
