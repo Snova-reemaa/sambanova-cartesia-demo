@@ -71,18 +71,33 @@ def main():
     check("a code read out loud, spaced and padded, still verifies",
           m3.check_code(carol, spoken) == "ok")
 
-    # Three attempts, shared, then locked — and the lock beats a right code.
+    # Three attempts shared between however the code arrives — saying it and
+    # typing it are the same three, which is what the caller key is for.
     m4 = fresh()
     dan = "a.novak@example.com"
-    code4, _ = m4.make_code(dan)
-    check("first wrong is just wrong", m4.check_code(dan, "000000") == "wrong")
-    check("two left", m4.attempts_left(dan) == 2)
-    check("second wrong is just wrong", m4.check_code(dan, "111111") == "wrong")
-    check("third wrong locks it", m4.check_code(dan, "222222") == "locked")
-    check("the right code is refused while locked",
-          m4.check_code(dan, code4) == "locked")
-    check("and a new code cannot be sent while locked",
-          m4.make_code(dan) == (None, "locked"))
+    me = "one-session"
+    code4, _ = m4.make_code(dan, caller=me)
+    check("first wrong is just wrong",
+          m4.check_code(dan, "000000", caller=me) == "wrong")
+    check("two left", m4.attempts_left(dan, caller=me) == 2)
+    check("second wrong is just wrong",
+          m4.check_code(dan, "111111", caller=me) == "wrong")
+    check("the third locks the caller",
+          m4.check_code(dan, "222222", caller=me) == "locked")
+    check("the right code is refused while they are locked",
+          m4.check_code(dan, code4, caller=me) == "locked")
+    check("and they cannot ask for another",
+          m4.make_code(dan, caller=me) == (None, "caller locked"))
+
+    # With no caller given there is no lockout to apply, so the protection
+    # has to come from the code itself: three wrong guesses and it is gone.
+    # Six digits with unlimited guesses would be no protection at all.
+    m4b = fresh()
+    code4b, _ = m4b.make_code(dan)
+    for guess in ("000000", "111111", "222222"):
+        m4b.check_code(dan, guess)
+    check("without a caller, the code is spent after three guesses",
+          m4b.check_code(dan, code4b) == "none")
 
     # Expiry.
     m5 = fresh(CODE_MINUTES=1 / 60)          # one second
@@ -105,6 +120,41 @@ def main():
     m7.make_code(two)
     check("a code for one address does not verify another",
           m7.check_code(two, code_one) in ("wrong", "none"))
+
+    # Denial of service against a real customer. Failing three times on
+    # somebody else's address must cost the person doing it, not the person
+    # whose address it is.
+    m10 = fresh()
+    victim = "r.patel@example.com"
+    attacker, real = "session-attacker", "session-the-actual-customer"
+    m10.make_code(victim, caller=attacker)
+    worst = [m10.check_code(victim, "000000", caller=attacker) for _ in range(3)]
+    check("three wrong guesses lock the guesser", worst[-1] == "locked")
+    check("the guesser cannot ask for another code",
+          m10.make_code(victim, caller=attacker)[1] == "caller locked")
+    code10, why10 = m10.make_code(victim, caller=real)
+    check("the real customer is untouched — still gets a code", bool(code10))
+    check("and it still verifies them",
+          m10.check_code(victim, code10, caller=real) == "ok")
+
+    # Spraying codes at many addresses. One caller, many targets.
+    m11 = fresh()
+    sprayer = "session-sprayer"
+    everyone = ["a.novak@example.com", "j.okafor@example.com",
+                "k.yamamoto@example.com", "l.haddad@example.com",
+                "d.ferreira@example.com", "m.lindqvist@example.com",
+                "s.bergstrom@example.com"]
+    reasons = [m11.make_code(who, caller=sprayer)[1] for who in everyone]
+    check("one caller is capped across all addresses",
+          reasons[-1] == "caller asked too often")
+
+    # And an address nobody has must never produce a code, or this becomes
+    # a way to send mail to strangers the day SMTP is turned on.
+    m12 = fresh()
+    stranger, why12 = m12.make_code("nobody@elsewhere.example", caller="s")
+    check("no code is made for an unknown address", stranger is None)
+    check("and the reason is kept server-side, not told to the caller",
+          why12 == "unknown")
 
     # Forgetting.
     m8 = fresh()

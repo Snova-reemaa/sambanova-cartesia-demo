@@ -127,7 +127,20 @@ def _create(db):
             at    REAL NOT NULL
         );
         CREATE INDEX IF NOT EXISTS code_sends_email ON code_sends(email, at);
+        -- Keyed on whoever is trying, not on whose address they are trying.
+        -- Locking the address lets anybody deny service to a real customer
+        -- by failing three times on it; locking the attempter does not.
+        CREATE TABLE IF NOT EXISTS callers (
+            caller       TEXT PRIMARY KEY,
+            fails        INTEGER NOT NULL DEFAULT 0,
+            locked_until REAL NOT NULL DEFAULT 0,
+            asked        INTEGER NOT NULL DEFAULT 0,
+            window_from  REAL NOT NULL DEFAULT 0
+        );
     """)
+    have = {row[1] for row in db.execute("PRAGMA table_info(code_sends)")}
+    if "caller" not in have:
+        db.execute("ALTER TABLE code_sends ADD COLUMN caller TEXT")
 
     # Seeded customers are known to be real; everyone created later has to
     # prove it once.
@@ -383,34 +396,97 @@ CODE_MINUTES = float(os.getenv("CODE_MINUTES", "10"))
 CODE_ATTEMPTS = int(os.getenv("CODE_ATTEMPTS", "3"))
 LOCKOUT_MINUTES = float(os.getenv("CODE_LOCKOUT_MINUTES", "15"))
 CODES_PER_HOUR = int(os.getenv("CODES_PER_HOUR", "3"))
+# Per caller, across every address they try. Without this one person can
+# ask for codes to a thousand addresses — harmless while the code appears
+# on their own screen, and a mail bomb pointed at strangers the day SMTP
+# is switched on.
+CODES_PER_CALLER_HOUR = int(os.getenv("CODES_PER_CALLER_HOUR", "6"))
 
 
 def _hash(code, salt):
     return hashlib.sha256(f"{salt}:{code}".encode()).hexdigest()
 
 
-def make_code(email):
+def caller_locked(caller):
+    """Is this caller barred from trying, and until when (0 if not)."""
+    if not caller:
+        return 0
+    with _lock, _connect() as db:
+        row = db.execute("SELECT locked_until FROM callers WHERE caller = ?",
+                         (caller,)).fetchone()
+    now = time.time()
+    return row["locked_until"] if row and row["locked_until"] > now else 0
+
+
+def _strike(db, caller, now):
+    """Count a failure against the caller. True once they are locked out."""
+    if not caller:
+        return False
+    row = db.execute("SELECT fails FROM callers WHERE caller = ?",
+                     (caller,)).fetchone()
+    fails = (row["fails"] if row else 0) + 1
+    until = now + LOCKOUT_MINUTES * 60 if fails >= CODE_ATTEMPTS else 0
+    db.execute(
+        "INSERT INTO callers (caller, fails, locked_until, asked, window_from) "
+        "VALUES (?, ?, ?, 0, ?) ON CONFLICT(caller) DO UPDATE SET "
+        "fails = ?, locked_until = ?",
+        (caller, fails, until, now, fails, until))
+    return fails >= CODE_ATTEMPTS
+
+
+def make_code(email, caller=None):
     """A fresh code for this address, or why not.
 
-    Returns (code, reason). Exactly one is set. The caller is told the same
-    thing either way — the reason is for the server's own decisions, never
-    for the caller.
+    Returns (code, reason). Exactly one is set, and the reason is for the
+    server's own decisions — the caller hears the same sentence whichever it
+    is, so this cannot be used to find out who is a customer.
+
+    A code is only generated for an address already on file. That is why the
+    sentence the caller hears is conditional: "if that address is on file, I
+    have sent a code to it." Generating one for any address typed at it
+    would make this a way to post mail at strangers from our infrastructure.
     """
     email = (email or "").lower().strip()
     if not email:
         return None, "no email"
     now = time.time()
     with _lock, _connect() as db:
-        row = db.execute("SELECT locked_until FROM codes WHERE email = ?",
-                         (email,)).fetchone()
-        if row and row["locked_until"] > now:
-            return None, "locked"
+        asked, window_from = 0, now
+        if caller:
+            row = db.execute(
+                "SELECT locked_until, asked, window_from FROM callers "
+                "WHERE caller = ?", (caller,)).fetchone()
+            if row and row["locked_until"] > now:
+                return None, "caller locked"
+            if row:
+                asked, window_from = row["asked"], row["window_from"]
+                if now - window_from > 3600:
+                    asked, window_from = 0, now
+            if asked >= CODES_PER_CALLER_HOUR:
+                return None, "caller asked too often"
 
         db.execute("DELETE FROM code_sends WHERE at < ?", (now - 3600,))
         sent = db.execute("SELECT COUNT(*) FROM code_sends WHERE email = ?",
                           (email,)).fetchone()[0]
         if sent >= CODES_PER_HOUR:
             return None, "too many"
+
+        known = db.execute("SELECT 1 FROM customers WHERE email = ?",
+                           (email,)).fetchone()
+
+        # Counted whether or not a code comes of it, so that asking about
+        # addresses that do not exist is not a free way around the cap.
+        if caller:
+            db.execute(
+                "INSERT INTO callers (caller, fails, locked_until, asked, "
+                "window_from) VALUES (?, 0, 0, ?, ?) ON CONFLICT(caller) DO "
+                "UPDATE SET asked = ?, window_from = ?",
+                (caller, asked + 1, window_from, asked + 1, window_from))
+        db.execute("INSERT INTO code_sends (email, at, caller) VALUES (?, ?, ?)",
+                   (email, now, caller))
+
+        if not known:
+            return None, "unknown"
 
         code = "".join(secrets.choice("0123456789") for _ in range(CODE_LENGTH))
         salt = secrets.token_hex(8)
@@ -420,56 +496,80 @@ def make_code(email):
             "ON CONFLICT(email) DO UPDATE SET code_hash = excluded.code_hash, "
             "salt = excluded.salt, expires_at = excluded.expires_at, attempts = 0",
             (email, _hash(code, salt), salt, now + CODE_MINUTES * 60))
-        db.execute("INSERT INTO code_sends (email, at) VALUES (?, ?)", (email, now))
         return code, None
 
 
-def check_code(email, given):
+def check_code(email, given, caller=None):
     """"ok", "wrong", "expired", "locked" or "none".
 
-    One attempt counter for the address, shared by whatever route the code
-    arrived on — saying it and typing it are the same three attempts.
+    Two counters doing two different jobs. The one on the address protects
+    the code: three wrong guesses and that code is dead, because six digits
+    is only a million and a live code should not survive being guessed at.
+    The one on the caller protects the customer: three wrong guesses and
+    this caller is barred for a quarter of an hour, whoever they were
+    guessing about.
+
+    Locking the address, which is what this did first, hands anybody a way
+    to deny service to a real customer — fail three times on their address,
+    wait, repeat. The address is the victim. The attempter is what to punish.
     """
     email = (email or "").lower().strip()
     digits = re.sub(r"\D", "", given or "")
     now = time.time()
     with _lock, _connect() as db:
+        if caller:
+            row = db.execute("SELECT locked_until FROM callers WHERE caller = ?",
+                             (caller,)).fetchone()
+            if row and row["locked_until"] > now:
+                return "locked"
+
         row = db.execute(
-            "SELECT code_hash, salt, expires_at, attempts, locked_until "
-            "FROM codes WHERE email = ?", (email,)).fetchone()
-        if not row:
+            "SELECT code_hash, salt, expires_at, attempts FROM codes "
+            "WHERE email = ?", (email,)).fetchone()
+        if not row or not row["code_hash"]:
+            _strike(db, caller, now)
             return "none"
-        if row["locked_until"] > now:
-            return "locked"
         if row["expires_at"] <= now:
             db.execute("DELETE FROM codes WHERE email = ?", (email,))
             return "expired"
 
         if hmac.compare_digest(row["code_hash"], _hash(digits, row["salt"])):
-            # Single use: gone the moment it works.
             db.execute("DELETE FROM codes WHERE email = ?", (email,))
-            db.execute("UPDATE customers SET verified = 1 WHERE email = ?", (email,))
+            db.execute("UPDATE customers SET verified = 1 WHERE email = ?",
+                       (email,))
+            if caller:
+                db.execute("UPDATE callers SET fails = 0 WHERE caller = ?",
+                           (caller,))
             return "ok"
 
         attempts = row["attempts"] + 1
+        locked_out = _strike(db, caller, now)
         if attempts >= CODE_ATTEMPTS:
-            db.execute(
-                "UPDATE codes SET attempts = ?, locked_until = ?, "
-                "code_hash = '', expires_at = 0 WHERE email = ?",
-                (attempts, now + LOCKOUT_MINUTES * 60, email))
-            return "locked"
-        db.execute("UPDATE codes SET attempts = ? WHERE email = ?", (attempts, email))
-        return "wrong"
+            # The code is spent, not the address. The real customer can ask
+            # for another, which is the difference between protecting a
+            # secret and denying somebody service.
+            db.execute("DELETE FROM codes WHERE email = ?", (email,))
+        else:
+            db.execute("UPDATE codes SET attempts = ? WHERE email = ?",
+                       (attempts, email))
+        return "locked" if locked_out else "wrong"
 
 
-def attempts_left(email):
-    """For the page, so it can say how many tries remain."""
+def attempts_left(email, caller=None):
+    """How many tries remain, for the page to show. The lower of the two."""
+    now = time.time()
     with _lock, _connect() as db:
-        row = db.execute("SELECT attempts, locked_until FROM codes WHERE email = ?",
-                         ((email or "").lower().strip(),)).fetchone()
-    if not row or row["locked_until"] > time.time():
+        by_code = db.execute("SELECT attempts FROM codes WHERE email = ?",
+                             ((email or "").lower().strip(),)).fetchone()
+        by_caller = db.execute(
+            "SELECT fails, locked_until FROM callers WHERE caller = ?",
+            (caller,)).fetchone() if caller else None
+    if by_caller and by_caller["locked_until"] > now:
         return 0
-    return max(0, CODE_ATTEMPTS - row["attempts"])
+    left = CODE_ATTEMPTS - (by_code["attempts"] if by_code else 0)
+    if by_caller:
+        left = min(left, CODE_ATTEMPTS - by_caller["fails"])
+    return max(0, left)
 
 
 def forget(email):
