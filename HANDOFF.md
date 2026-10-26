@@ -24,7 +24,8 @@ Updated after every committed piece. Offline tests: `venv/bin/python tests/run.p
 | Deploy | Dockerfile + Helm chart in the repo, settings wired into values.yaml |
 | Smoke | `tests/smoke.py` — 6/6 against the real image in a pod-shaped container |
 | Deploy | Image built for linux/amd64 under Colima and run read-only as uid 1000: 6/6, memory survives a restart, 48 files, no secrets |
-| Deploy | `voxnova:6598983` pushed to the starter-kits registry, linux/amd64, digest `sha256:3b9a5222…` |
+| Deploy | `voxnova:8b6c05b` pushed to the starter-kits registry, linux/amd64, digest `sha256:09016b57…`; 7/7 smoke against the pushed image |
+| Fix | `/terms` and `/privacy` scroll — they had inherited the call screen's `overflow:hidden`, so below the fold was unreachable on windows wider than 1180px |
 | Voices | Native voice per language (`voices.py`), samples in `listening/voices/` |
 | Hardening | Malformed frames, hang-ups, oversized input, session expiry, guarded socket writes |
 
@@ -35,12 +36,12 @@ offline suite is 409/409 across 13 suites.
 
 ## Verified locally, as the pod will run it
 
-Image `voxnova:6598983`, built for linux/amd64 (so it runs under emulation
+Image `voxnova:8b6c05b`, built for linux/amd64 (so it runs under emulation
 on this Mac, which makes it slower here than it will be on the cluster) and
 run exactly as the chart does — read-only root, `tmpfs` at `/tmp`, a volume
 at `/data`, uid 1000, all capabilities dropped:
 
-- `tests/smoke.py` 6/6 against it
+- `tests/smoke.py` 7/7 against it
 - memory survives `docker restart`
 - the read-only root holds: the app writes only to `/data`
 - 48 files in the image, no `.env`, `.git`, `*.sqlite3*`, `kubeconfig`,
@@ -54,9 +55,13 @@ before believing it.
 
 ## Decide before this holds anything real
 
-**Retention is not running.** `RETENTION_DAYS` is set on the pod and
-`memory.purge_old` is written and tested, but nothing calls it, so call
-history is kept indefinitely. For the invented demo data that is fine; for
+**Retention is not running, and the privacy notice says it is.**
+`RETENTION_DAYS` is set on the pod and `memory.purge_old` is written and
+tested, but nothing calls it, so call history is kept indefinitely — while
+`/privacy` tells the caller "call summaries and the name and email attached
+to them are deleted after 30 days". That is a promise the deployment does
+not keep. Either wire the sweep or change the sentence; it should not ship
+as it stands. For the invented demo data that is fine; for
 anything else it is not. Wiring it to run on startup is a few lines, but it
 deletes data, so I have not done it without you. "Forget me" is live and
 tested and is unaffected.
@@ -78,7 +83,7 @@ tested and is unaffected.
    Deploy with the tag that was pushed and tested, not with HEAD:
 
    ```bash
-   scripts/deploy-dev.sh 6598983
+   scripts/deploy-dev.sh 8b6c05b
    ```
 
    Left to default it would take HEAD's short SHA, which is a
