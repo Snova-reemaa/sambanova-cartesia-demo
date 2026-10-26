@@ -236,3 +236,70 @@ class Conversation:
             self.typed = True
             return {"then": "offer_typed", "attempts": self.misses}
         return {"then": "retry", "attempts": self.misses}
+
+
+# ------------------------------------------------------- asking the model
+#
+# The model's half, kept here so the live eval and the server use the same
+# one. Two calls, both narrow: pull the slot out of a sentence, or say the
+# sentence was not an answer at all.
+
+EXTRACT_RULE = (
+    "You are taking one piece of information from what a caller just said, "
+    "on a support call.\n"
+    "You have been asked for exactly one thing: {asking}.\n"
+    "If their reply contains it, call the tool with it, copied as they said "
+    "it — do not correct spelling, do not expand or tidy it.\n"
+    "If their reply is a question, a refusal, or about something else "
+    "entirely, call the tool with an empty string. Answering the wrong "
+    "question is worse than answering none."
+)
+
+CONFIRM_RULE = (
+    "A caller has just been read something back and asked whether it is "
+    "right: \"{say}\".\n"
+    "Call the tool with agreed true if they agreed, false if they "
+    "disagreed or corrected it. A correction — \"no, it's...\" — is false."
+)
+
+
+async def extract(llm, model, conversation, said, asking=None):
+    """What the caller just gave for the current step, or "".
+
+    Returns (value, agreed). One of the two is meaningful depending on
+    whether a read-back is pending; the other is None.
+    """
+    from sambanova import stream_tools
+
+    schema = conversation.schema_for()
+    if not schema:
+        return None, None
+    pending = bool(conversation.pending)
+    if pending:
+        rule = CONFIRM_RULE.format(say=conversation.pending[2])
+        name = "confirm"
+    else:
+        rule = EXTRACT_RULE.format(
+            asking=asking or conversation.current.ask or conversation.current.field)
+        name = "give"
+
+    tool = [{"type": "function",
+             "function": {"name": name,
+                          "description": "Hand back what the caller said.",
+                          "parameters": schema}}]
+    got = {}
+    async for kind, payload in stream_tools(
+            llm, [{"role": "system", "content": rule},
+                  {"role": "user", "content": said}],
+            model=model, tools=tool, temperature=0):
+        if kind == "tool":
+            import json
+            try:
+                got = json.loads(payload.get("arguments") or "{}") or {}
+            except ValueError:
+                got = {}
+    if pending:
+        return None, bool(got.get("agreed"))
+    field = conversation.current.field
+    value = got.get(field)
+    return (value.strip() if isinstance(value, str) else ""), None

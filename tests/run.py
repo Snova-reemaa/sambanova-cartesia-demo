@@ -49,6 +49,7 @@ LIVE_SUITES = [
     ("tests/live_languages.py", "replies stay in the caller's language"),
     ("tests/live_escalation.py", "the right person takes the call"),
     ("tests/live_unexpected.py", "questions nobody planned for"),
+    ("tests/live_protocol.py", "scripted awkward callers, against the model"),
     ("tests/live_audio.py", "a turn comes back as audio (spends Cartesia)"),
 ]
 

@@ -115,6 +115,11 @@ PAID_API_TROUBLE = (
     ("rate limited", ("429", "rate limit", "too many requests",
                       "concurrency limit", "high demand",
                       "is busy right now")),
+    # Not a refusal and not a result. A provider that did not answer in
+    # time tells you nothing about the agent, and a run that ends in a
+    # traceback reads like the agent crashed.
+    ("timed out", ("timed out", "timeout", "apitimeouterror",
+                   "read timeout", "connection aborted")),
 )
 
 
