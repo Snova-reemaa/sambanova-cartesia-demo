@@ -42,6 +42,7 @@ OFFLINE_SUITES = [
     ("tests/concurrency.py", "many callers at once are told, not hung"),
     ("tests/consent.py", "nobody gets in without agreeing"),
     ("tests/verification.py", "one-time codes, lockout, retention, deletion"),
+    ("tests/protocol.py", "code holds the step, the model cannot move it"),
 ]
 
 LIVE_SUITES = [

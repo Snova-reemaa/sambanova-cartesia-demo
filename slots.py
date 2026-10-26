@@ -85,16 +85,20 @@ SYMBOLS_BY_LANGUAGE = {
            "+": "زائد", "'": "فاصلة عليا"},
 }
 
-# Letter names, where they can be written with confidence. An email is
-# always Latin characters whatever the call is in, so the question is only
-# what those letters are called.
+# Letter names. An email is always Latin characters whatever the call is
+# in, so the question is only what those letters are called.
 #
-# Italian, Portuguese, Dutch and Arabic are deliberately absent. Arabic
-# speakers conventionally use the English names for Latin letters, and for
-# the other three I would be guessing — a guessed letter name read out at a
-# caller is worse than the English one they will recognise. The symbols are
-# still localised for all eight, which is the part that carries most of the
-# meaning. A native speaker can fill these in; the gap is here, not hidden.
+# NEEDS NATIVE REVIEW: it, pt and nl were written from the standard
+# alphabets and have not been checked by anyone who speaks them. Where a
+# letter has more than one common name the commoner one is used — Italian
+# j is "i lunga" rather than "gei", Dutch y is "ypsilon" rather than
+# "Griekse ij", Portuguese k is "capa" rather than "cá". If a caller is
+# read something that sounds wrong, this is the list to correct.
+#
+# Arabic is absent on purpose rather than for want of review: Arabic
+# speakers conventionally use the English names for Latin letters, so an
+# email spelled in Arabic letter names would be the surprising choice. Its
+# symbols are localised like everything else.
 # Comma separated, not space separated: "uve doble" and "i grec" are two
 # words each, and splitting on spaces shifted every letter after w by one —
 # Spanish x came out as "doble".
@@ -105,7 +109,17 @@ LETTERS_BY_LANGUAGE = {
           "esse,té,u,vé,double vé,iks,i grec,zède",
     "de": "a,be,ce,de,e,ef,ge,ha,i,jot,ka,el,em,en,o,pe,ku,er,es,te,u,vau,"
           "we,iks,ypsilon,zett",
+    "it": "a,bi,ci,di,e,effe,gi,acca,i,i lunga,cappa,elle,emme,enne,o,pi,cu,"
+          "erre,esse,ti,u,vu,doppia vu,ics,ipsilon,zeta",
+    "pt": "á,bê,cê,dê,é,efe,gê,agá,i,jota,capa,ele,eme,ene,ó,pê,quê,erre,"
+          "esse,tê,u,vê,dáblio,xis,ípsilon,zê",
+    "nl": "aa,bee,see,dee,ee,ef,gee,haa,ie,jee,kaa,el,em,en,oo,pee,kuu,er,"
+          "es,tee,uu,vee,wee,iks,ypsilon,zet",
 }
+
+# Written from the standard alphabets, not checked by a native speaker.
+# Named here so the gap is visible to whoever reads the output and winces.
+NEEDS_NATIVE_REVIEW = ("it", "pt", "nl")
 SAY_LETTER_BY_LANGUAGE = {}
 for _code, _names in LETTERS_BY_LANGUAGE.items():
     _parts = [n.strip() for n in _names.split(",")]
