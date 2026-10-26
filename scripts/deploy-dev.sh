@@ -37,7 +37,7 @@ done
 log() { echo "==> $*"; }
 
 # --- .env: only these names are taken, and the environment wins over the file ----------------
-ENV_NAMES=" VOXNOVA_HOST KUBE_CONTEXT NAMESPACE $KEY_NAMES "
+ENV_NAMES=" VOXNOVA_HOST KUBE_CONTEXT NAMESPACE TRUSTED_PROXIES $KEY_NAMES "
 from_file=""
 if [ -f .env ]; then
     while IFS= read -r line || [ -n "$line" ]; do
@@ -56,8 +56,35 @@ fi
 KUBE_CONTEXT="${KUBE_CONTEXT:-ai-starter-kits-dev-1}"
 NAMESPACE="${NAMESPACE:-default}"
 if [ -z "${VOXNOVA_HOST:-}" ]; then
-    echo "error: VOXNOVA_HOST is not set — the full hostname for the aiskvoicedemo slot (an existing *.cloud.snova.ai name; Tamas has it)" >&2
+    echo "error: VOXNOVA_HOST is not set — the full hostname for the aiskvoicedemo slot" >&2
     exit 1
+fi
+
+# Behind the ingress every request arrives from the ingress pod. Without
+# this the app cannot tell callers apart, so they share one identity:
+# three wrong verification codes from anybody locks out everybody for
+# fifteen minutes, and six code requests exhausts the hour for the whole
+# deployment. That is a quiet failure — everything looks fine until two
+# people use it at once — so it is a refusal rather than a warning.
+if [ -z "${TRUSTED_PROXIES:-}" ]; then
+    cat >&2 <<'NOTE'
+error: TRUSTED_PROXIES is not set.
+
+  It must be the ingress controller's pod CIDR, or a prefix of it, so the
+  app can tell one caller from another behind the proxy. Left empty, every
+  caller shares one rate-limit identity and three wrong codes from anybody
+  locks out everybody.
+
+  Find it with:
+    kubectl --context "$KUBE_CONTEXT" -n ingress-nginx get pods       -o jsonpath='{.items[*].status.podIP}'
+
+  Then put it in .env, e.g.  TRUSTED_PROXIES=10.4.
+
+  To deploy without it anyway (single-tester demo only):
+    ALLOW_SHARED_CALLER_KEY=1 scripts/deploy-dev.sh
+NOTE
+    [ -n "${ALLOW_SHARED_CALLER_KEY:-}" ] || exit 1
+    log "ALLOW_SHARED_CALLER_KEY set — deploying with one shared caller key"
 fi
 kc() { kubectl --context "$KUBE_CONTEXT" -n "$NAMESPACE" "$@"; }
 
@@ -116,6 +143,7 @@ fi
 helm_args=(upgrade --install "$RELEASE" deploy/helm/voxnova
     --kube-context "$KUBE_CONTEXT" --namespace "$NAMESPACE"
     --set "image.tag=$TAG" --set "ingress.host=$VOXNOVA_HOST"
+    --set "env.TRUSTED_PROXIES=${TRUSTED_PROXIES:-}"
     ${checksum_args[@]+"${checksum_args[@]}"} --wait --timeout 5m)
 [ "$DRY_RUN" = 1 ] && helm_args+=(--dry-run=server)
 log "helm upgrade --install $RELEASE (tag $TAG)"
