@@ -40,12 +40,18 @@ Updated after every committed piece. Offline tests: `venv/bin/python tests/run.p
 
 ## Blocked on you
 
-1. **Deploy.** `DEPLOY.md` has the commands. Needs the full hostname for the
-   `aiskvoicedemo` slot, and the `acp-starterkits-dev-gar-secret` pull
-   secret present in `default`.
-2. **`TRUSTED_PROXIES`** — the ingress controller's pod CIDR. Without it
-   every caller behind the proxy shares one caller key, so three wrong
-   codes from anybody locks out everybody.
+1. **Deploy.** `DEPLOY.md` has the commands. Cluster and registry access
+   are already granted under CP-3072 — no access request is needed. The
+   kube context is `ai-starter-kits-dev-1` and the host is
+   `aiskvoicedemo.cloud.snova.ai`.
+2. **`TRUSTED_PROXIES`** — the ingress controller's pod CIDR, from the
+   infra repo. The deploy script now refuses to run without it, because
+   empty means every caller behind the proxy shares one identity: three
+   wrong codes from anybody locks out everybody.
+   Also worth checking while you are in there: whether ingress-nginx has
+   `use-forwarded-headers` true. If it does, nginx appends to whatever the
+   client sent and the first entry is attacker-controlled — I take the
+   first, and would need to take the last instead.
 3. **Auth0** — not built. See "Auth0, if you want it" below for exactly
    what it needs.
 3. **Listen to `listening/voices/*.wav`** and tell me which to change.

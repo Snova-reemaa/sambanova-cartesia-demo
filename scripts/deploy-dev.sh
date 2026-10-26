@@ -8,7 +8,7 @@
 #   scripts/deploy-dev.sh --no-keys       # leave the key Secret as it is
 #
 # Settings come from the environment, else from .env (read as data, never run):
-#   VOXNOVA_HOST (required: the *.cloud.snova.ai name to serve on), KUBE_CONTEXT (default aisk-dev-1),
+#   VOXNOVA_HOST (required: the *.cloud.snova.ai name to serve on), KUBE_CONTEXT (default ai-starter-kits-dev-1),
 #   NAMESPACE (default default), and the keys SAMBANOVA_API_KEY, CARTESIA_API_KEY, DEMO_PASSPHRASE,
 #   TAVILY_API_KEY, EXA_API_KEY.
 
@@ -53,7 +53,7 @@ if [ -f .env ]; then
 fi
 [ -n "$from_file" ] && log "From .env:$from_file"
 
-KUBE_CONTEXT="${KUBE_CONTEXT:-aisk-dev-1}"
+KUBE_CONTEXT="${KUBE_CONTEXT:-ai-starter-kits-dev-1}"
 NAMESPACE="${NAMESPACE:-default}"
 if [ -z "${VOXNOVA_HOST:-}" ]; then
     echo "error: VOXNOVA_HOST is not set — the full hostname for the aiskvoicedemo slot (an existing *.cloud.snova.ai name; Tamas has it)" >&2

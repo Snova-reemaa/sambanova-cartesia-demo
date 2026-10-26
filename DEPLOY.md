@@ -11,7 +11,7 @@ You need:
   `*.cloud.snova.ai` name — not a new domain)
 - push access to
   `us-west2-docker.pkg.dev/acp-starterkits-development-57/oci-us-west2-starerkits`
-- `kubectl` context `aisk-dev-1`, namespace `default`
+- `kubectl` context `ai-starter-kits-dev-1`, namespace `default`
 - a `.env` with the keys below (never committed, never in the image)
 
 ## 1. Build and push
@@ -30,7 +30,7 @@ VOXNOVA_HOST=<the aiskvoicedemo hostname> scripts/deploy-dev.sh
 ```
 
 Reads `.env`, creates or updates the secret, and runs `helm upgrade
---install` against context `aisk-dev-1`, namespace `default`.
+--install` against context `ai-starter-kits-dev-1`, namespace `default`.
 
 ## 3. Secrets — names and keys, no values
 
@@ -115,7 +115,7 @@ Retention deletes call history after `RETENTION_DAYS` (default 30).
 ## Rolling back
 
 ```bash
-helm --kube-context aisk-dev-1 -n default rollback voxnova
+helm --kube-context ai-starter-kits-dev-1 -n default rollback voxnova
 ```
 
 The volume is not touched by a rollback.
