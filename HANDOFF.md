@@ -23,7 +23,8 @@ Updated after every committed piece. Offline tests: `venv/bin/python tests/run.p
 | Task 3 (part) | "Forget me" — verified callers only, deletes everything, says so |
 | Deploy | Dockerfile + Helm chart in the repo, settings wired into values.yaml |
 | Smoke | `tests/smoke.py` — 6/6 against the real image in a pod-shaped container |
-| Deploy | Image built for linux/amd64 under Colima and run read-only as uid 1000: 6/6, memory survives a restart, 50 files, no secrets |
+| Deploy | Image built for linux/amd64 under Colima and run read-only as uid 1000: 6/6, memory survives a restart, 48 files, no secrets |
+| Deploy | `voxnova:6598983` pushed to the starter-kits registry, linux/amd64, digest `sha256:3b9a5222…` |
 | Voices | Native voice per language (`voices.py`), samples in `listening/voices/` |
 | Hardening | Malformed frames, hang-ups, oversized input, session expiry, guarded socket writes |
 
@@ -34,7 +35,7 @@ offline suite is 409/409 across 13 suites.
 
 ## Verified locally, as the pod will run it
 
-Image `voxnova:fd6eac1`, built for linux/amd64 (so it runs under emulation
+Image `voxnova:6598983`, built for linux/amd64 (so it runs under emulation
 on this Mac, which makes it slower here than it will be on the cluster) and
 run exactly as the chart does — read-only root, `tmpfs` at `/tmp`, a volume
 at `/data`, uid 1000, all capabilities dropped:
@@ -42,8 +43,8 @@ at `/data`, uid 1000, all capabilities dropped:
 - `tests/smoke.py` 6/6 against it
 - memory survives `docker restart`
 - the read-only root holds: the app writes only to `/data`
-- 50 files in the image, no `.env`, `.git`, `*.sqlite3*`, `kubeconfig`,
-  `listening/`, `tests/`, `deploy/` or `scripts/`
+- 48 files in the image, no `.env`, `.git`, `*.sqlite3*`, `kubeconfig`,
+  `listening/`, `tests/`, `deploy/`, `scripts/`, `DEPLOY.md` or `HANDOFF.md`
 
 One thing cost me most of this session and is worth knowing: a **stale
 `server.py` from an earlier run was still listening on port 8080**, so the
@@ -66,9 +67,13 @@ tested and is unaffected.
    are already granted under CP-3072 — no access request is needed. The
    kube context is `ai-starter-kits-dev-1` and the host is
    `aiskvoicedemo.cloud.snova.ai`.
-2. **DNS for `aiskvoicedemo.cloud.snova.ai`**, and the kubeconfig fetched
-   to a path outside the repo (`chmod 600`, `KUBECONFIG` in `.env`). Then
-   steps 3-8 of the walkthrough. Nothing has been pushed or deployed.
+2. **The kubeconfig**, fetched to a path outside the repo (`chmod 600`,
+   `KUBECONFIG` in `.env`), and four settings in `.env` that
+   `./scripts/check-env.sh` still reports: `VOXNOVA_HOST` (set, but not to
+   `aiskvoicedemo.cloud.snova.ai`), `KUBECONFIG`, `TRUSTED_PROXIES` and
+   `DEMO_INBOX=1`. DNS is settled — the host cluster fills the record in
+   once the Ingress exists, so the hostname stays as above. The image is
+   pushed; nothing on the cluster has been touched.
    `TRUSTED_PROXIES=100.64.0.0/12` is settled, and because
    `rke2-ingress-nginx` runs with `use-forwarded-headers: true` the app now
    reads the rightmost untrusted `X-Forwarded-For` entry, with a test that a
