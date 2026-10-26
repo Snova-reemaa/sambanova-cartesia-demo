@@ -31,7 +31,8 @@ env:
   # CIDR: left empty, every caller behind the proxy shares one caller key
   # and the per-caller limits apply to all of them at once.
   TRUSTED_PROXIES: ""
-  # How long call history is kept.
+  # How long call history is kept, once the sweep is wired up: memory.purge_old
+  # is written and tested but nothing calls it yet, so this has no effect today.
   RETENTION_DAYS: "30"
   # Turns allowed to be talking to the model at once, across the pod.
   MAX_CONCURRENT_LLM: "8"

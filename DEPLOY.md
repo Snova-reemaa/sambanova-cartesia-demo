@@ -128,7 +128,13 @@ without authentication by design.
 
 A 1Gi PVC mounted at `/data`, holding `memory.sqlite3` — customer names,
 addresses and call summaries. It is kept when the release is uninstalled.
-Retention deletes call history after `RETENTION_DAYS` (default 30).
+
+**Retention is not running yet.** `RETENTION_DAYS` is set on the pod and the
+sweep is written and tested (`memory.purge_old`), but nothing calls it, so
+call history is currently kept until someone deletes it. A caller asking to
+be forgotten is handled immediately and in full — that path is live and
+tested. Before this holds anything beyond the invented demo data, either
+wire the sweep to run on startup or delete the volume between demos.
 
 ## Rolling back
 
