@@ -5,14 +5,30 @@ volume. Namespace `default`, the `aiskvoicedemo` ingress slot.
 
 ## Before you start
 
-You need:
+This is a **vcluster on on-prem RKE2**, not GKE, so there is no
+`gcloud container clusters get-credentials`. The kubeconfig is a file:
 
-- the full hostname for the **aiskvoicedemo** slot (an existing
-  `*.cloud.snova.ai` name — not a new domain)
+```bash
+gsutil cp gs://acp-development-us-west2-4-to/vclusters/\
+vcluster-ai-starter-kits-dev-1/kubeconfig-<you>@sambanovasystems.com.yaml \
+  ~/.kube/voxnova-dev.yaml
+chmod 600 ~/.kube/voxnova-dev.yaml
+```
+
+If that 404s, find yours: `gsutil ls gs://sn-user-kubeconfigs-0/`
+
+Keep it **outside the repo**. It is a credential: never printed, never
+committed. Put the path in `.env` as `KUBECONFIG`; the deploy script reads
+the context name out of the file rather than assuming it, because a
+vcluster's context is not necessarily the cluster's name.
+
+You also need:
+
+- the **aiskvoicedemo.cloud.snova.ai** DNS entry resolving
 - push access to
   `us-west2-docker.pkg.dev/acp-starterkits-development-57/oci-us-west2-starerkits`
-- `kubectl` context `ai-starter-kits-dev-1`, namespace `default`
-- a `.env` with the keys below (never committed, never in the image)
+- a `.env` with the keys below. Check it with `./scripts/check-env.sh`,
+  which reports names and presence only and never prints a value.
 
 ## 1. Build and push
 
@@ -53,29 +69,31 @@ Also needed, and **not** created by the script — it must already exist in
 
 ## 4. TRUSTED_PROXIES — please do not skip this
 
-Set `env.TRUSTED_PROXIES` in `values.yaml` to the **ingress controller's pod
-CIDR**.
-
-The app counts verification attempts and code requests per caller, and works
-out who the caller is from the session cookie plus their IP address. Behind
-an ingress every request arrives from the ingress pod, so without this
-**every caller shares one identity**: three wrong codes from anybody locks
-out everybody for fifteen minutes, and six code requests exhausts the hourly
-allowance for the whole deployment.
-
-`X-Forwarded-For` is only believed from a peer listed here. That is
-deliberate — it is a request header like any other, and trusting it from
-anywhere lets a client mint a fresh identity per request and make the limits
-meaningless.
-
-Find the CIDR with:
-
-```bash
-kubectl -n ingress-nginx get pods -o jsonpath='{.items[*].status.podIP}'
+```
+TRUSTED_PROXIES=100.64.0.0/12
 ```
 
-A prefix is enough, e.g. `TRUSTED_PROXIES: "10.4."`. Several are
-comma-separated.
+That is the pod CIDR. The deploy script refuses to run without it.
+
+The app counts verification attempts and code requests per caller, and works
+out who the caller is from the session cookie plus their address. Behind an
+ingress every request arrives from the ingress pod, so without this **every
+caller shares one identity**: three wrong codes from anybody locks out
+everybody for fifteen minutes, and six code requests exhausts the hour for
+the whole deployment. It looks fine until two people use it at once.
+
+One detail that matters here. `rke2-ingress-nginx` (in `kube-system`, not
+`ingress-nginx`) runs with `use-forwarded-headers: "true"`, so it *appends*
+the address it saw to whatever `X-Forwarded-For` the client sent:
+
+```
+X-Forwarded-For: <anything the client made up>, <the real address>
+```
+
+The app therefore reads the **rightmost** entry that is not itself inside
+`TRUSTED_PROXIES`, not the first. Reading the first would let any client put
+an address at the front and get a fresh identity per request. There is a
+test for exactly that in `tests/verification.py`.
 
 ## 5. Check it
 

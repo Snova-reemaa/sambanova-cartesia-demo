@@ -37,7 +37,7 @@ done
 log() { echo "==> $*"; }
 
 # --- .env: only these names are taken, and the environment wins over the file ----------------
-ENV_NAMES=" VOXNOVA_HOST KUBE_CONTEXT NAMESPACE TRUSTED_PROXIES $KEY_NAMES "
+ENV_NAMES=" VOXNOVA_HOST KUBE_CONTEXT NAMESPACE TRUSTED_PROXIES KUBECONFIG $KEY_NAMES "
 from_file=""
 if [ -f .env ]; then
     while IFS= read -r line || [ -n "$line" ]; do
@@ -53,6 +53,20 @@ if [ -f .env ]; then
 fi
 [ -n "$from_file" ] && log "From .env:$from_file"
 
+# A vcluster on on-prem RKE2, not GKE: the kubeconfig is a file fetched
+# from storage rather than something gcloud writes. Keep it outside the
+# repo and chmod 600 — it is a credential.
+if [ -n "${KUBECONFIG:-}" ]; then
+    [ -f "$KUBECONFIG" ] || { echo "error: KUBECONFIG=$KUBECONFIG does not exist" >&2; exit 1; }
+    export KUBECONFIG
+    # The context in that file is whatever the vcluster called itself,
+    # which is not necessarily the cluster's name. Read it rather than
+    # assume it.
+    if [ -z "${KUBE_CONTEXT:-}" ]; then
+        KUBE_CONTEXT="$(kubectl config current-context 2>/dev/null)"
+        [ -n "$KUBE_CONTEXT" ] && log "Context from kubeconfig: $KUBE_CONTEXT"
+    fi
+fi
 KUBE_CONTEXT="${KUBE_CONTEXT:-ai-starter-kits-dev-1}"
 NAMESPACE="${NAMESPACE:-default}"
 if [ -z "${VOXNOVA_HOST:-}" ]; then

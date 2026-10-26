@@ -10,6 +10,7 @@ user would feel rather than including a cold handshake.
 import asyncio
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import random
@@ -3138,27 +3139,68 @@ async def privacy(request):
 
 # ------------------------------------------------------------------ access
 
-# Only our own ingress may claim who the client is. X-Forwarded-For is a
-# request header like any other: a client that can set it gets a fresh
-# caller key per request and every per-caller limit becomes decorative.
-# TRUSTED_PROXIES lists the peers whose word is taken — in the cluster the
-# ingress controller's pod CIDR — and an empty list means trust nobody,
-# which is right on a laptop.
+# Only our own ingress may claim who the client is.
+#
+# rke2-ingress-nginx runs with use-forwarded-headers=true, which means it
+# *appends* the peer it actually saw to whatever X-Forwarded-For the client
+# sent. So the header arriving here looks like:
+#
+#     <anything the client made up>, <the address nginx really saw>
+#
+# The trustworthy entry is the rightmost one, not the first. Reading the
+# first — which is what this did — means a client can put any address it
+# likes at the front and get a different rate-limit identity for every
+# request, which makes three-attempts-then-locked meaningless.
+#
+# The general rule is "rightmost address that is not itself one of ours":
+# walk from the right, skip our own proxies, take the first one left.
 TRUSTED_PROXIES = tuple(
     p.strip() for p in (os.getenv("TRUSTED_PROXIES") or "").split(",")
     if p.strip())
 
 
+def _networks():
+    """TRUSTED_PROXIES as networks. A bare address counts as a /32."""
+    out = []
+    for entry in TRUSTED_PROXIES:
+        try:
+            out.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            print(f"  ! TRUSTED_PROXIES: {entry!r} is not an address or a "
+                  "CIDR and is ignored")
+    return tuple(out)
+
+
+TRUSTED_NETWORKS = _networks()
+
+
+def _is_ours(address):
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    return any(ip in network for network in TRUSTED_NETWORKS)
+
+
 def client_ip(request):
-    """The caller's address, as far as it can be trusted."""
+    """The caller's address, as far as it can be trusted.
+
+    Returns the peer unless that peer is one of ours, in which case the
+    rightmost address in X-Forwarded-For that is not also one of ours.
+    """
     peer = request.remote or ""
-    if TRUSTED_PROXIES and any(peer.startswith(prefix)
-                               for prefix in TRUSTED_PROXIES):
-        forwarded = request.headers.get("X-Forwarded-For", "")
-        first = forwarded.split(",")[0].strip()
-        if first:
-            return first
-    return peer
+    if not TRUSTED_NETWORKS or not _is_ours(peer):
+        # Not behind a proxy we know, so the header is just something the
+        # client sent and is ignored entirely.
+        return peer
+    chain = [part.strip() for part
+             in request.headers.get("X-Forwarded-For", "").split(",")
+             if part.strip()]
+    for address in reversed(chain):
+        if not _is_ours(address):
+            return address
+    # Everything in the chain is ours, or there was no chain.
+    return chain[-1] if chain else peer
 
 
 def caller_key(request):

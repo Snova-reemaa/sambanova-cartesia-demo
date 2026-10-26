@@ -179,35 +179,54 @@ def main():
     check("and keeps the recent one", "today" in left)
     check("and says how many it dropped", swept["calls"] >= 1)
 
-    # The caller key must not be forgeable. X-Forwarded-For is a request
-    # header like any other: a client that can set it gets a fresh key per
-    # request and every per-caller limit becomes decorative.
-    import asyncio
-    import aiohttp
-    from tests.harness import Server, sign_in
+    # The caller key must not be forgeable. rke2-ingress-nginx runs with
+    # use-forwarded-headers=true, so it appends the peer it saw to
+    # whatever the client sent: the trustworthy entry is the rightmost,
+    # and reading the leftmost — which this did at first — lets a client
+    # mint a new identity per request and makes every limit decorative.
+    import ipaddress                                           # noqa: F401
+    import server as app
 
-    async def keys(trusted):
-        settings = {"EXPOSE_WHOAMI": "1"}
-        if trusted:
-            settings["TRUSTED_PROXIES"] = "127.0.0.1"
-        with Server(**settings) as server:
-            jar = aiohttp.CookieJar(unsafe=True)
-            async with aiohttp.ClientSession(cookie_jar=jar) as http:
-                await sign_in(http, server)
-                out = []
-                for spoof in (None, "203.0.113.9", "198.51.100.4"):
-                    headers = {"X-Forwarded-For": spoof} if spoof else {}
-                    async with http.get(f"{server.base}/whoami",
-                                        headers=headers) as r:
-                        out.append((await r.text()).strip())
-                return out
+    class FakeRequest:
+        def __init__(self, peer, forwarded=None, token="a-session"):
+            self.remote = peer
+            self.headers = {"X-Forwarded-For": forwarded} if forwarded else {}
+            self.cookies = {app.COOKIE_NAME: token}
 
-    untrusted = asyncio.get_event_loop().run_until_complete(keys(False))
-    check("a spoofed X-Forwarded-For does not change the caller key",
-          len(set(untrusted)) == 1)
-    trusted = asyncio.get_event_loop().run_until_complete(keys(True))
-    check("but a trusted proxy's word is taken",
-          len(set(trusted)) > 1)
+    was_networks = app.TRUSTED_NETWORKS
+    try:
+        app.TRUSTED_NETWORKS = (ipaddress.ip_network("100.64.0.0/12"),)
+
+        check("behind the ingress, the appended address is the caller",
+              app.client_ip(FakeRequest("100.64.3.7", "198.51.100.5"))
+              == "198.51.100.5")
+        check("a spoofed entry in front of it is ignored",
+              app.client_ip(FakeRequest("100.64.3.7", "1.2.3.4, 198.51.100.5"))
+              == "198.51.100.5")
+        check("so is a whole spoofed chain",
+              app.client_ip(FakeRequest(
+                  "100.64.3.7", "9.9.9.9, 8.8.8.8, 203.0.113.77"))
+              == "203.0.113.77")
+        check("and claiming to be the ingress does not help",
+              app.client_ip(FakeRequest(
+                  "100.64.3.7", "100.64.0.1, 203.0.113.77")) == "203.0.113.77")
+        check("a direct connection ignores the header entirely",
+              app.client_ip(FakeRequest("198.51.100.5", "1.2.3.4"))
+              == "198.51.100.5")
+
+        # The point of all of it: one caller, one key, whatever they send.
+        forged = {app.caller_key(FakeRequest("100.64.3.7", xff))
+                  for xff in ("198.51.100.5", "1.2.3.4, 198.51.100.5",
+                              "7.7.7.7, 8.8.8.8, 198.51.100.5",
+                              "100.64.9.9, 198.51.100.5")}
+        check("one caller keeps one rate-limit key however they spoof",
+              len(forged) == 1)
+        # And two real callers are still told apart.
+        check("two different callers still get different keys",
+              app.caller_key(FakeRequest("100.64.3.7", "198.51.100.5"))
+              != app.caller_key(FakeRequest("100.64.3.7", "203.0.113.9")))
+    finally:
+        app.TRUSTED_NETWORKS = was_networks
 
     for what, ok in results:
         print(f"  {'ok  ' if ok else 'FAIL'} {what}")
