@@ -168,6 +168,22 @@ def main():
     other = m8.history("j.okafor@example.com")
     check("and leaves everybody else alone", len(other) >= 1)
 
+    # The demo customers are fixtures, not callers who have to prove
+    # themselves, and retention deletes any customer left unverified with no
+    # calls. Seeding them unverified means a fresh deployment quietly loses
+    # the five who have no seeded call the first time retention runs. It was
+    # invisible in development because the column arrived by migration: an
+    # older database got NULL and a now-dead UPDATE caught it, while a new
+    # one gets the column's DEFAULT 0 and nothing catches it.
+    m10 = fresh()
+    with m10._connect() as db:
+        unproven = [row[0] for row in db.execute(
+            "SELECT email FROM customers WHERE verified = 0")]
+    check("seeded customers start out verified", not unproven)
+    kept = m10.purge_old(days=30)
+    check("so retention does not sweep them away",
+          kept["customers"] == 0 and m10.customer("a.novak@example.com"))
+
     # Retention.
     m9 = fresh()
     old_email = "a.novak@example.com"

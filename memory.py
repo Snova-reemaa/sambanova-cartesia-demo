@@ -143,13 +143,20 @@ def _create(db):
         db.execute("ALTER TABLE code_sends ADD COLUMN caller TEXT")
 
     # Seeded customers are known to be real; everyone created later has to
-    # prove it once.
-    db.execute("UPDATE customers SET verified = 1 WHERE verified IS NULL")
+    # prove it once. Matching on the seed list rather than on NULL: the
+    # column is declared NOT NULL DEFAULT 0, so a row added after it existed
+    # is 0 and never NULL, and a WHERE verified IS NULL here caught only the
+    # databases old enough to predate the column. A fresh one kept its demo
+    # customers unverified, and retention deletes an unverified customer
+    # with no calls.
+    db.executemany("UPDATE customers SET verified = 1 WHERE email = ?",
+                   [(email,) for email, _ in SEED_CUSTOMERS])
 
 
 def _seed(db):
-    db.executemany("INSERT OR IGNORE INTO customers (email, name) VALUES (?, ?)",
-                   SEED_CUSTOMERS)
+    db.executemany(
+        "INSERT OR IGNORE INTO customers (email, name, verified) VALUES (?, ?, 1)",
+        SEED_CUSTOMERS)
     db.executemany(
         "INSERT INTO calls (email, at, summary, outcome, actions, sentiment, seeded) "
         "VALUES (?, ?, ?, ?, ?, ?, 1)", SEED_CALLS)
