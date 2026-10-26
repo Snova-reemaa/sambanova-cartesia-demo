@@ -33,6 +33,7 @@ OFFLINE_MODULES = [
     ("memory", "caller identification"),
     ("orders", "order numbers said out loud"),
     ("knowledge_base", "retrieval"),
+    ("slots", "what a valid answer is, per field type"),
 ]
 
 OFFLINE_SUITES = [
