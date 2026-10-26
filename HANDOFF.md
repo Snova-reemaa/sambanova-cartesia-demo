@@ -19,6 +19,8 @@ Updated after every committed piece. Offline tests: `venv/bin/python tests/run.p
 | Task 3 (part) | Verification wired in: name or address starts a code, reading it back verifies, history only then |
 | Task 3 (part) | Code delivery — demo inbox on, SMTP written and off |
 | Task 3 (part) | Typed-code box: voice first, appears after one miss, shares the attempt count |
+| Task 3 (part) | Returning-customer memory: verified callers get their history, nobody else |
+| Task 3 (part) | "Forget me" — verified callers only, deletes everything, says so |
 | Hardening | Malformed frames, hang-ups, oversized input, session expiry, guarded socket writes |
 
 ## In progress

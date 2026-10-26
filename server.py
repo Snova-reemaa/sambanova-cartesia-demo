@@ -985,6 +985,8 @@ class Session:
         self.awaiting_code = False
         # True only on the turn the code checked out.
         self.just_verified = False
+        # Set on the turn a record is deleted, so the answer says so.
+        self.just_forgot = None
         self.audio_off = False   # synthesis gave out part way through the call
         self.just_named = False  # they said who they are and nothing else yet
         self.caller = None               # who is on the line, once an order is looked up
@@ -1158,6 +1160,48 @@ def clean_up(chan, text, tell=False, turn_id=None):
             "changes": [{"from": b, "to": a} for b, a in changes],
         }))
     return fixed
+
+
+FORGET = re.compile(
+    r"\b(forget me|delete my (data|details|record|account|history)|"
+    r"remove my (data|details|record|account)|erase my (data|record)|"
+    r"wipe my (data|record)|don'?t keep (my|anything))\b", re.I)
+
+FORGOTTEN = {
+    "en": "Done — everything I had about you is deleted. ",
+    "es": "Hecho: he borrado todo lo que tenía sobre usted. ",
+    "fr": "C'est fait : tout ce que j'avais sur vous est supprimé. ",
+    "de": "Erledigt — alles, was ich über Sie hatte, ist gelöscht. ",
+    "it": "Fatto: ho cancellato tutto quello che avevo su di lei. ",
+    "pt": "Feito — apaguei tudo o que tinha sobre si. ",
+    "nl": "Gedaan — alles wat ik over u had is verwijderd. ",
+    "ar": "تم — حذفت كل ما كان عندي عنك. ",
+}
+
+
+def wants_forgetting(session, said):
+    """Returns an event when their record has just been deleted.
+
+    Only from a verified caller. Anyone can say "forget me"; deleting
+    somebody's history because an unverified voice asked would be the
+    same hole as handing it over to one.
+    """
+    if not FORGET.search(said or ""):
+        return None
+    c = session.caller
+    if not c or not c.get("verified"):
+        return {"type": "forget", "done": False,
+                "message": "They asked to be forgotten but have not been "
+                           "verified. Tell them you can do that once you "
+                           "know who they are, and offer to send a code."}
+    removed = memory.forget(c["email"])
+    session.caller = None
+    session.awaiting_code = False
+    session.unanswered = []
+    return {"type": "forget", "done": True, "removed": removed["calls"],
+            "message": "Their record is deleted: calls, name and address, "
+                       "all of it. Say so plainly in one sentence and do "
+                       "not offer to put it back."}
 
 
 def hear_code(session, said):
@@ -1822,6 +1866,8 @@ async def prepare(llm, session, prompt, opts, code, extras=(), intro=None):
     # came back in English until the language was restated after them.
     if code != "en":
         convo.append({"role": "system", "content": speak_in(code)})
+    if getattr(session, "just_forgot", None):
+        convo.append({"role": "system", "content": session.just_forgot})
     p.convo = convo
 
     if p.route["tier"] == "deep":
@@ -1959,6 +2005,21 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
     who = None
     if not interpreting and not intro:
         session.just_verified = False
+        session.just_forgot = None
+        # Deleting happens here, in code, before the model sees the turn.
+        # What the model does is say so — emit is not defined this early,
+        # and a fixed sentence pushed in front of the answer would be a
+        # worse shape than telling it what just happened.
+        forget = wants_forgetting(session, prompt)
+        if forget:
+            await chan.event({"type": "caller",
+                              "status": "forgotten" if forget["done"]
+                              else "forget_refused"})
+            notes.append(forget["message"])
+            # The last word, because NO_POLICY comes after everything else
+            # and would otherwise have the agent say it does not know how
+            # to delete anything, on the turn it has just deleted it all.
+            session.just_forgot = forget["message"]
         who = hear_code(session, prompt) or identify(session, prompt)
     session.just_named = bool(who)
     if who:
