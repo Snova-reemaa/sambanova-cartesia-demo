@@ -129,12 +129,17 @@ without authentication by design.
 A 1Gi PVC mounted at `/data`, holding `memory.sqlite3` — customer names,
 addresses and call summaries. It is kept when the release is uninstalled.
 
-**Retention is not running yet.** `RETENTION_DAYS` is set on the pod and the
-sweep is written and tested (`memory.purge_old`), but nothing calls it, so
-call history is currently kept until someone deletes it. A caller asking to
-be forgotten is handled immediately and in full — that path is live and
-tested. Before this holds anything beyond the invented demo data, either
-wire the sweep to run on startup or delete the volume between demos.
+Retention runs in the pod: a sweep on startup and then every
+`RETENTION_SWEEP_HOURS` (default 24). It deletes calls older than
+`RETENTION_DAYS` (default 30), any customer left with no calls, and the
+verification codes and send counts held against them. The eight demo
+customers are exempt, by name, so the demo still works after a month. A
+failed sweep is logged and the next one still runs — it cannot crash-loop
+the pod. The log gives counts only, never an address.
+
+`/privacy` tells the caller the same period, read from the same variable,
+so changing `RETENTION_DAYS` changes both together. A caller asking to be
+forgotten is handled immediately, separately from the sweep.
 
 ## Rolling back
 
