@@ -65,20 +65,101 @@ SAY_LETTER = {
 SAY_SYMBOL = {".": "dot", "@": "at", "-": "dash", "_": "underscore",
               "+": "plus", "'": "apostrophe"}
 
+# The same, per language. These are the words that matter most when an
+# address is read back — a Spanish caller hearing "r dot patel at example
+# dot com" is being read English, badly.
+SYMBOLS_BY_LANGUAGE = {
+    "es": {".": "punto", "@": "arroba", "-": "guion", "_": "guion bajo",
+           "+": "más", "'": "apóstrofo"},
+    "fr": {".": "point", "@": "arobase", "-": "tiret", "_": "tiret bas",
+           "+": "plus", "'": "apostrophe"},
+    "de": {".": "Punkt", "@": "at", "-": "Bindestrich", "_": "Unterstrich",
+           "+": "plus", "'": "Apostroph"},
+    "it": {".": "punto", "@": "chiocciola", "-": "trattino",
+           "_": "trattino basso", "+": "più", "'": "apostrofo"},
+    "pt": {".": "ponto", "@": "arroba", "-": "hífen", "_": "underline",
+           "+": "mais", "'": "apóstrofo"},
+    "nl": {".": "punt", "@": "apenstaartje", "-": "streepje",
+           "_": "liggend streepje", "+": "plus", "'": "apostrof"},
+    "ar": {".": "نقطة", "@": "آت", "-": "شرطة", "_": "شرطة سفلية",
+           "+": "زائد", "'": "فاصلة عليا"},
+}
 
-def spell(text):
+# Letter names, where they can be written with confidence. An email is
+# always Latin characters whatever the call is in, so the question is only
+# what those letters are called.
+#
+# Italian, Portuguese, Dutch and Arabic are deliberately absent. Arabic
+# speakers conventionally use the English names for Latin letters, and for
+# the other three I would be guessing — a guessed letter name read out at a
+# caller is worse than the English one they will recognise. The symbols are
+# still localised for all eight, which is the part that carries most of the
+# meaning. A native speaker can fill these in; the gap is here, not hidden.
+# Comma separated, not space separated: "uve doble" and "i grec" are two
+# words each, and splitting on spaces shifted every letter after w by one —
+# Spanish x came out as "doble".
+LETTERS_BY_LANGUAGE = {
+    "es": "a,be,ce,de,e,efe,ge,hache,i,jota,ka,ele,eme,ene,o,pe,cu,erre,"
+          "ese,te,u,uve,uve doble,equis,i griega,zeta",
+    "fr": "a,bé,cé,dé,e,effe,gé,ache,i,ji,ka,elle,emme,enne,o,pé,ku,erre,"
+          "esse,té,u,vé,double vé,iks,i grec,zède",
+    "de": "a,be,ce,de,e,ef,ge,ha,i,jot,ka,el,em,en,o,pe,ku,er,es,te,u,vau,"
+          "we,iks,ypsilon,zett",
+}
+SAY_LETTER_BY_LANGUAGE = {}
+for _code, _names in LETTERS_BY_LANGUAGE.items():
+    _parts = [n.strip() for n in _names.split(",")]
+    assert len(_parts) == 26, f"{_code} has {len(_parts)} letter names, not 26"
+    SAY_LETTER_BY_LANGUAGE[_code] = dict(zip(string.ascii_lowercase, _parts))
+
+MONTHS_BY_LANGUAGE = {
+    "es": ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
+           "agosto", "septiembre", "octubre", "noviembre", "diciembre"],
+    "fr": ["janvier", "février", "mars", "avril", "mai", "juin", "juillet",
+           "août", "septembre", "octobre", "novembre", "décembre"],
+    "de": ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli",
+           "August", "September", "Oktober", "November", "Dezember"],
+    "it": ["gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno",
+           "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre"],
+    "pt": ["janeiro", "fevereiro", "março", "abril", "maio", "junho",
+           "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"],
+    "nl": ["januari", "februari", "maart", "april", "mei", "juni", "juli",
+           "augustus", "september", "oktober", "november", "december"],
+    "ar": ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو",
+           "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"],
+}
+
+# How a date is said. English puts the day first with an ordinal; most of
+# the others say the plain number.
+DATE_SHAPE = {
+    "en": "the {ordinal} of {month} {year}",
+    "es": "el {day} de {month} de {year}",
+    "fr": "le {day} {month} {year}",
+    "de": "der {day}. {month} {year}",
+    "it": "il {day} {month} {year}",
+    "pt": "{day} de {month} de {year}",
+    "nl": "{day} {month} {year}",
+    "ar": "{day} {month} {year}",
+}
+
+
+def spell(text, code="en"):
     """Letter by letter, for reading an address or a spelling back.
 
     Written the way a person says it rather than as the bare characters,
     because synthesis reads "r.patel" as a word and the caller hears mush.
+    In the caller's language: the symbols always, the letter names where
+    they are known.
     """
+    letters = SAY_LETTER_BY_LANGUAGE.get(code, SAY_LETTER)
+    symbols = SYMBOLS_BY_LANGUAGE.get(code, SAY_SYMBOL)
     out = []
     for ch in (text or ""):
         low = ch.lower()
-        if low in SAY_LETTER:
-            out.append(SAY_LETTER[low])
-        elif low in SAY_SYMBOL:
-            out.append(SAY_SYMBOL[low])
+        if low in letters:
+            out.append(letters[low])
+        elif low in symbols:
+            out.append(symbols[low])
         elif low.isdigit():
             out.append(low)
         elif low == " ":
@@ -134,21 +215,43 @@ def spell_back_name(name):
     return "; ".join(f"{p}, {spell(p)}" for p in parts)
 
 
-def looks_unusual(name):
+# What a name ordinarily looks like in each language this agent speaks.
+# Accented Latin is unremarkable in six of them and Arabic script is
+# unremarkable in the seventh; treating either as odd would mean flagging
+# most of the names in most of the calls.
+ORDINARY_SCRIPT = {
+    "ar": re.compile(r"^[\u0600-\u06ff\u0750-\u077f\s'\u0640-]+$"),
+}
+LATIN_NAME = re.compile(r"^[A-Za-zÀ-ÖØ-öø-ÿŁłŃńŚśŹźŻżČčŠšŽžĞğİıŞşÅåÆæØøÞþÐð\s'-]+$")
+
+
+def looks_unusual(name, code="en"):
     """Worth offering to spell back? Signals only, never a judgement.
 
-    An earlier version counted vowels and decided Smith was unusual, which
-    is both wrong and the kind of wrong that is rude. These are things a
-    transcriber plausibly guessed at, and nothing else: a letter outside
-    plain ASCII, a mark inside the word, a capital in the middle, or
-    length.
+    Two earlier versions got this wrong in instructive ways. One counted
+    vowels and decided Smith was unusual. The next treated any character
+    outside plain ASCII as unusual, which in an eight-language agent means
+    Bergström, Ferreira and every Arabic name in every Arabic call — the
+    test for "unusual" cannot be "not English".
+
+    So the question is asked against the language being spoken: a name
+    written in the script that call is in is ordinary, whatever its
+    accents. What is left is the same for everybody — a mark inside the
+    word, a capital in the middle, unusual length, or a script the call is
+    not in at all.
     """
-    for part in (name or "").split():
+    name = (name or "").strip()
+    if not name:
+        return False
+    expected = ORDINARY_SCRIPT.get(code, LATIN_NAME)
+    if not expected.match(name):
+        # Latin letters in an Arabic call, or Arabic in an English one.
+        # Not odd in itself, but worth confirming the spelling of.
+        return True
+    for part in name.split():
         if len(part) > 11:
             return True
         if any(ch in part for ch in "'-"):
-            return True
-        if any(ord(ch) > 127 for ch in part):
             return True
         # An internal capital: McDonald, O'Neill, DeSouza.
         if part[1:] != part[1:].lower():
@@ -169,6 +272,18 @@ EMAIL_SHAPE = re.compile(
 DNS_CHECK = (os.getenv("EMAIL_CHECK_DNS", "1").lower()
              not in ("0", "off", "false", "no"))
 DNS_SECONDS = float(os.getenv("EMAIL_DNS_SECONDS", "2"))
+
+
+_dns_complained = set()
+
+
+def _dns_unavailable(domain, why):
+    """Say it once per reason, not once per caller."""
+    if why in _dns_complained:
+        return
+    _dns_complained.add(why)
+    print(f"  ! cannot look up mail domains ({why}); checking email syntax "
+          f"only from here. Set EMAIL_CHECK_DNS=0 to stop trying.")
 
 
 def domain_takes_mail(domain):
@@ -192,6 +307,10 @@ def domain_takes_mail(domain):
             name = type(exc).__name__
             if name in ("NXDOMAIN", "NoAnswer"):
                 return False
+            # Timeout, no nameserver, egress blocked. Not the caller's
+            # fault and not knowable from here, so syntax is all we have —
+            # but the operator should know it is all we have.
+            _dns_unavailable(domain, name)
             return None
     # No DNS library: the weaker question, which still catches "gmial.con".
     was = socket.getdefaulttimeout()
@@ -201,13 +320,14 @@ def domain_takes_mail(domain):
         return True
     except socket.gaierror:
         return False
-    except Exception:                                         # noqa: BLE001
+    except Exception as exc:                                  # noqa: BLE001
+        _dns_unavailable(domain, type(exc).__name__)
         return None
     finally:
         socket.setdefaulttimeout(was)
 
 
-def check_email(said, dns=None):
+def check_email(said, dns=None, code="en"):
     address = re.sub(r"\s+", "", (said or "")).strip(" .,<>").lower()
     if "@" not in address:
         # Said rather than typed: "r dot patel at example dot com". The
@@ -242,7 +362,7 @@ def check_email(said, dns=None):
             return bad(f"I can't find anything at {spell(domain)} — "
                        "could that be a typo?")
         # None: unreachable. Carry on rather than blame the caller.
-    return good(address, spell(address))
+    return good(address, spell(address, code))
 
 
 # ------------------------------------------------------------------ phone
@@ -361,7 +481,7 @@ DATE_PATTERNS = ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d %B %Y", "%d %b %Y",
                  "%B %d %Y", "%b %d %Y", "%d %B", "%B %d")
 
 
-def check_date(said, past_only=False, today=None):
+def check_date(said, past_only=False, today=None, code="en"):
     text = " ".join((said or "").replace(",", " ").split())
     if not text:
         return bad("I didn't catch a date.")
@@ -375,9 +495,12 @@ def check_date(said, past_only=False, today=None):
             parsed = parsed.replace(year=today.year)
         if past_only and parsed > today:
             return bad("That date hasn't happened yet.")
+        months = MONTHS_BY_LANGUAGE.get(code, MONTHS)
+        shape = DATE_SHAPE.get(code, DATE_SHAPE["en"])
         return good(parsed.isoformat(),
-                    f"the {ordinal(parsed.day)} of {MONTHS[parsed.month - 1]} "
-                    f"{parsed.year}")
+                    shape.format(day=parsed.day, ordinal=ordinal(parsed.day),
+                                 month=months[parsed.month - 1],
+                                 year=parsed.year))
     # Dates that parse in no format are usually impossible rather than
     # unreadable: the thirtieth of February reaches here, not the parser.
     return bad("That isn't a date I recognise — could you give me the day, "
@@ -395,6 +518,28 @@ def ordinal(day):
 CARD_LIKE = re.compile(r"(?:\d[ -]?){13,19}")
 
 
+# What the first digits of a real card look like. Luhn on its own passes
+# one random number in ten, which over order numbers and phone numbers is
+# a steady trickle of callers being told off for reading out their own
+# order number. An issuer prefix and a plausible length narrow it to
+# something that is almost certainly a card.
+CARD_PREFIXES = (
+    ("4", (13, 16, 19)),                       # Visa
+    ("34", (15,)), ("37", (15,)),              # American Express
+    ("36", (14, 16, 19)), ("38", (14, 16, 19)),  # Diners
+    ("6011", (16, 19)), ("65", (16, 19)),      # Discover
+    ("35", (16, 19)),                          # JCB
+    ("62", (16, 17, 18, 19)),                  # UnionPay
+)
+
+
+def _mastercard(digits):
+    head4, head2 = digits[:4], digits[:2]
+    if "51" <= head2 <= "55":
+        return True
+    return head4.isdigit() and "2221" <= head4 <= "2720"
+
+
 def looks_like_card(said):
     """Caught so it can be refused, never so it can be stored.
 
@@ -402,11 +547,20 @@ def looks_like_card(said):
     prompt, in the transcript, in the call summary and in whatever logs
     those touch. If a payment is ever needed it is a handoff to something
     built for it, not a slot in a conversation.
+
+    Three things together, because Luhn alone is not evidence: a card
+    length, an issuer prefix, and the check digit.
     """
     digits = re.sub(r"\D", "", said or "")
     if not (13 <= len(digits) <= 19):
         return False
-    return luhn(digits)
+    issued = _mastercard(digits) and len(digits) == 16
+    if not issued:
+        for prefix, lengths in CARD_PREFIXES:
+            if digits.startswith(prefix) and len(digits) in lengths:
+                issued = True
+                break
+    return issued and luhn(digits)
 
 
 def luhn(digits):
@@ -670,17 +824,30 @@ def _not_built(name):
     return refuse
 
 
+# The order book, the prices and the postcodes in this demo are all UK, so
+# the backends offered are the ones that cover the UK. USPS and Smarty are
+# United States only and are not listed: naming a validator that cannot
+# check a Manchester address is worse than offering none, because somebody
+# will switch it on and wonder why everything fails.
 VALIDATORS = {
     "demo": _demo_validator,
-    "usps": _not_built("USPS"),
+    "loqate": _not_built("Loqate"),
+    "ideal_postcodes": _not_built("Ideal Postcodes (Royal Mail PAF)"),
     "google": _not_built("Google Address Validation"),
-    "smarty": _not_built("Smarty"),
 }
+
+# Named so the error can say why, if somebody reaches for one anyway.
+US_ONLY = {"usps": "USPS", "smarty": "Smarty"}
 
 
 def address_validator():
     """The configured backend, or None for the offline checks alone."""
     if not VALIDATE_WITH:
+        return None
+    if VALIDATE_WITH in US_ONLY:
+        print(f"  ! {US_ONLY[VALIDATE_WITH]} only validates United States "
+              "addresses and this demo's data is UK. Use loqate or "
+              "ideal_postcodes for the UK, or google for both.")
         return None
     found = VALIDATORS.get(VALIDATE_WITH)
     if found is None:
@@ -734,9 +901,19 @@ if __name__ == "__main__":
     want("a plain name", check_name("my name is riya patel").value, "Riya Patel")
     want("a name with a particle", check_name("van der Berg").value, "van der Berg")
     want("nothing is not a name", check_name("a").ok, False)
-    want("Smith is not unusual", looks_unusual("Smith"), False)
-    want("Bergström is", looks_unusual("Bergström"), True)
-    want("O'Neill is", looks_unusual("O'Neill"), True)
+    want("Smith is not unusual", looks_unusual("Smith", "en"), False)
+    want("O'Neill is", looks_unusual("O'Neill", "en"), True)
+    want("McDonald is", looks_unusual("McDonald", "en"), True)
+    # Judged against the language being spoken, not against English.
+    want("Bergström is ordinary in German",
+         looks_unusual("Bergström", "de"), False)
+    want("Gonçalves is ordinary in Portuguese",
+         looks_unusual("Gonçalves", "pt"), False)
+    want("Müller is ordinary in German", looks_unusual("Müller", "de"), False)
+    want("an Arabic name is ordinary in an Arabic call",
+         looks_unusual("ريا باتيل", "ar"), False)
+    want("a Latin name in an Arabic call is worth confirming",
+         looks_unusual("Riya Patel", "ar"), True)
     want("spelled back", spell_back_name("Patel"), "Patel, pee ay tee ee ell")
 
     print("\nemail — syntax, then the domain, read back letter by letter")
@@ -751,6 +928,17 @@ if __name__ == "__main__":
     want("not an address", check_email("notanemail", dns=False).ok, False)
     want("read back for the ear",
          check_email("a@b.com", dns=False).say, "ay at bee dot see oh em")
+    # Read back in the caller's language, not in English with their accent.
+    want("read back in Spanish",
+         check_email("a@b.com", dns=False, code="es").say,
+         "a arroba be punto ce o eme")
+    want("read back in French",
+         check_email("a@b.com", dns=False, code="fr").say,
+         "a arobase bé point cé o emme")
+    want("the Spanish alphabet is not shifted by uve doble",
+         SAY_LETTER_BY_LANGUAGE["es"]["x"], "equis")
+    want("nor the French by double vé",
+         SAY_LETTER_BY_LANGUAGE["fr"]["z"], "zède")
 
     print("\nphone — E.164, read back in groups")
     want("a UK mobile", check_phone("07911 123456", region="GB").value,
@@ -784,6 +972,10 @@ if __name__ == "__main__":
     print("\ndates — real ones only, month said as a word")
     want("a written date", check_date("2026-03-14").value, "2026-03-14")
     want("read back", check_date("2026-03-14").say, "the 14th of March 2026")
+    want("read back in German",
+         check_date("2026-03-14", code="de").say, "der 14. März 2026")
+    want("read back in Arabic",
+         check_date("2026-03-14", code="ar").say, "14 مارس 2026")
     want("the thirtieth of February", check_date("30/02/2026").ok, False)
     want("a birthday in the future",
          check_date("01/01/2099", past_only=True).ok, False)
@@ -818,8 +1010,34 @@ if __name__ == "__main__":
     print("\ncard numbers — refused everywhere, never stored")
     for field in ("name", "email", "address", "order"):
         want(f"refused as a {field}", check(field, "4539 1488 0343 6467").ok, False)
+    for label, number in (("Visa", "4539 1488 0343 6467"),
+                          ("Mastercard", "5500 0000 0000 0004"),
+                          ("Amex", "3782 822463 10005"),
+                          ("Discover", "6011 0009 9013 9424")):
+        want(f"a real {label} is caught", looks_like_card(number), True)
+    # Luhn alone passes one random number in ten. These all pass it and
+    # none of them is a card, which is the whole reason the issuer prefix
+    # and the length are checked too.
+    want("a long order reference that passes Luhn is not a card",
+         looks_like_card("7305120563826"), False)
+    # It is still too long to be an order number, which is a different
+    # objection — the point is that it is not turned away as a card.
+    want("and is not turned away as a card",
+         "card" in (check("order", "7305120563826").problem or ""), False)
+    want("a Japanese number that passes Luhn is not a card",
+         looks_like_card("813570112306"), False)
+    want("a German number starting 49 that passes Luhn is not a card",
+         looks_like_card("49151123456786"), False)
+    want("those really do pass Luhn",
+         all(luhn(n) for n in ("7305120563826", "813570112306",
+                               "49151123456786")), True)
     want("an order number is not a card", check("order", "44812").ok, True)
 
-    total = 45
+    print("\naddress backends — the ones that cover this market")
+    want("US-only ones are not offered",
+         "usps" not in VALIDATORS and "smarty" not in VALIDATORS, True)
+    want("UK ones are", {"loqate", "ideal_postcodes"} <= set(VALIDATORS), True)
+
+    total = 68
     print(f"\n  {total - wrong}/{total} correct")
     raise SystemExit(1 if wrong else 0)
