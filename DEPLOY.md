@@ -115,13 +115,24 @@ test for exactly that in `tests/verification.py`.
 ## 5. Check it
 
 ```bash
-VOXNOVA=https://<host> VOXNOVA_PASSPHRASE=<the passphrase> \
+VOXNOVA=http://127.0.0.1:18080 VOXNOVA_PASSPHRASE=<the passphrase> \
   venv/bin/python tests/smoke.py
 ```
 
-Six checks: sign in, verify through the demo inbox, hang up and be
+Seven checks: sign in, verify through the demo inbox, hang up and be
 remembered on a second call, be forgotten, no external hosts, fonts served
-locally. All six pass locally against the container's own environment.
+locally, policy pages scroll. All seven pass against the image in a
+container configured the way the pod configures it.
+
+**Point it at a local container, not at the deployment.** The
+"be forgotten" check really does delete `r.patel@example.com`, who is the
+customer the demo is built around, and the address is hard-coded in
+`tests/smoke.py`. Run it against the pod and the demo stops working, with
+nothing but `memory.reset()` to put it back — and that drops every real
+caller's history too. Either run it locally, or give the test a
+test-only identity first and clean up with
+`memory.forget('<that address>')`, which removes one customer and nothing
+else.
 
 The readiness and liveness probes both GET `/login`, which returns 200
 without authentication by design.

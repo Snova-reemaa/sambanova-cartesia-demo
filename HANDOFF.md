@@ -88,13 +88,28 @@ kubectl --context default -n default port-forward deploy/voxnova 18080:8080
 The pod IP is in `100.64.0.0/12`, so `TRUSTED_PROXIES` is correct for this
 cluster.
 
-**If the smoke test is run against the deployment, reset the demo data
-afterwards.** Its "forget me" check deletes Riya Patel for real, and she is
-the customer the demo is built around. Restore with:
+**Never run `memory.reset()` against the deployed pod again.** It drops
+the customers and calls tables outright — every real caller's history
+along with the demo fixtures, with no backup and no undo. It was run once,
+immediately after the first deploy, to undo the smoke test's deletion of
+Riya Patel; that was safe only because the deployment was minutes old and
+held nothing but seed data. That window has closed.
+
+**The smoke test as written is destructive against a real deployment.**
+Its "forget me" check genuinely deletes `r.patel@example.com`, who is the
+customer the demo is built around, and `tests/smoke.py` has that address
+hard-coded. Before running it against the cluster again, change it to use
+a test-only identity — an address belonging to nobody, seeded for the run
+— and delete just that one record afterwards:
 
 ```bash
-kubectl --context default -n default exec deploy/voxnova -- python -c "import memory; memory.reset()"
+kubectl --context default -n default exec deploy/voxnova -- \
+  python -c "import memory; memory.forget('smoke-test@example.invalid')"
 ```
+
+`forget()` removes one customer and their calls and nothing else, which is
+the difference that matters. Until the test is changed, run it against a
+local container rather than the pod.
 
 ## Blocked on you
 
