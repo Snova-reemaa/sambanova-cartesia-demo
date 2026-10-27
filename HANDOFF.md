@@ -28,6 +28,7 @@ Updated after every committed piece. Offline tests: `venv/bin/python tests/run.p
 | Fix | `/terms` and `/privacy` scroll — they had inherited the call screen's `overflow:hidden`, so below the fold was unreachable on windows wider than 1180px |
 | Fix | Retention runs: sweep on startup then every `RETENTION_SWEEP_HOURS` (24), guarded and cancelled on shutdown, counts logged and never addresses. `/privacy` is now true |
 | Deploy | `voxnova:90946f2` pushed, linux/amd64, digest `sha256:40ba0d62…`; 7/7 smoke against the pushed image |
+| Deploy | **Live on the dev cluster**, 27 Oct 2026: release `voxnova` rev 1, namespace `default`, pod 1/1, 7/7 smoke through a port-forward. Waiting only on DNS for the public name |
 | Voices | Native voice per language (`voices.py`), samples in `listening/voices/` |
 | Hardening | Malformed frames, hang-ups, oversized input, session expiry, guarded socket writes |
 
@@ -54,6 +55,46 @@ One thing cost me most of this session and is worth knowing: a **stale
 smoke test was talking to it instead of the container and failing 3/6. If a
 run fails in a way that makes no sense, check `lsof -nP -iTCP:8080 -sTCP:LISTEN`
 before believing it.
+
+## On the cluster now
+
+Release `voxnova`, revision 1, namespace `default`, context `default`,
+image tag `90946f2`. Deployed 27 Oct 2026.
+
+It owns exactly six objects and nothing else in that shared namespace was
+touched — every resource count went up by one, and secrets by two (the key
+Secret and helm's own release record):
+
+```
+deployment/voxnova        1/1 running
+service/voxnova           ClusterIP
+ingress/voxnova           nginx, aiskvoicedemo.cloud.snova.ai
+persistentvolumeclaim/voxnova-data   Bound, 1Gi
+networkpolicy/voxnova     selects app.kubernetes.io/name=voxnova only
+secret/voxnova-keys       Opaque
+```
+
+**The public URL is not up yet: DNS has not populated.**
+`aiskvoicedemo.cloud.snova.ai` resolves to nothing, while sibling names
+resolve to the ELB. The host cluster fills the record in once the Ingress
+exists, which it now does. Nothing else is outstanding — when the name
+resolves, the site should answer. Until then it is reachable only by
+port-forward:
+
+```bash
+kubectl --context default -n default port-forward deploy/voxnova 18080:8080
+```
+
+The pod IP is in `100.64.0.0/12`, so `TRUSTED_PROXIES` is correct for this
+cluster.
+
+**If the smoke test is run against the deployment, reset the demo data
+afterwards.** Its "forget me" check deletes Riya Patel for real, and she is
+the customer the demo is built around. Restore with:
+
+```bash
+kubectl --context default -n default exec deploy/voxnova -- python -c "import memory; memory.reset()"
+```
 
 ## Blocked on you
 
