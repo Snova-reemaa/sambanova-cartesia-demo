@@ -6,21 +6,37 @@ volume. Namespace `default`, the `aiskvoicedemo` ingress slot.
 ## Before you start
 
 This is a **vcluster on on-prem RKE2**, not GKE, so there is no
-`gcloud container clusters get-credentials`. The kubeconfig is a file:
+`gcloud container clusters get-credentials`. The kubeconfig is a file, and
+it is a credential: keep it **outside the repo**, `chmod 600`, never
+printed and never committed.
 
-```bash
-gsutil cp gs://acp-development-us-west2-4-to/vclusters/\
-vcluster-ai-starter-kits-dev-1/kubeconfig-<you>@sambanovasystems.com.yaml \
-  ~/.kube/voxnova-dev.yaml
-chmod 600 ~/.kube/voxnova-dev.yaml
+```
+KUBECONFIG=/Users/<you>/.kube/aisk-dev-1.config
 ```
 
-If that 404s, find yours: `gsutil ls gs://sn-user-kubeconfigs-0/`
+Put the path in `.env` as `KUBECONFIG`, absolute — a `~` is not expanded
+either by the deploy script or by `docker --env-file`. The context and
+cluster in that file are both called **`default`**, not the cluster's name,
+which is why the script reads the context out of the file rather than
+assuming it.
 
-Keep it **outside the repo**. It is a credential: never printed, never
-committed. Put the path in `.env` as `KUBECONFIG`; the deploy script reads
-the context name out of the file rather than assuming it, because a
-vcluster's context is not necessarily the cluster's name.
+The cluster's API server presents a **self-signed CA**, which is embedded
+in that kubeconfig after checking its SHA1 fingerprint with whoever issued
+it. TLS then verifies normally. **Never** reach for
+`insecure-skip-tls-verify`: it would accept any certificate for the API
+server, on the VPN, where a wrong answer is silent.
+
+**The VPN must be on, through a sj1 GlobalProtect portal.** Without it the
+API server is simply unreachable and the script stops at step 1.
+
+## The namespace is shared
+
+`default` on this cluster holds a lot of other teams' work — at the last
+count 27 deployments, 15 ingresses and 23 volumes. Everything this chart
+makes is named `voxnova` or `voxnova-data` and labelled
+`app.kubernetes.io/name=voxnova`. Touch nothing else. In particular,
+`sambanova-voice-assistant-prod` is a different team's release with a
+similar name and no ingress of its own; it is not this.
 
 You also need:
 
@@ -46,7 +62,8 @@ VOXNOVA_HOST=<the aiskvoicedemo hostname> scripts/deploy-dev.sh
 ```
 
 Reads `.env`, creates or updates the secret, and runs `helm upgrade
---install` against context `ai-starter-kits-dev-1`, namespace `default`.
+--install` against the context named in the kubeconfig (`default`),
+namespace `default`.
 
 ## 3. Secrets — names and keys, no values
 
@@ -144,7 +161,7 @@ forgotten is handled immediately, separately from the sweep.
 ## Rolling back
 
 ```bash
-helm --kube-context ai-starter-kits-dev-1 -n default rollback voxnova
+helm --kube-context default -n default rollback voxnova
 ```
 
 The volume is not touched by a rollback.

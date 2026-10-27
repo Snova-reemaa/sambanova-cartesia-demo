@@ -1,6 +1,7 @@
 # Deploying VoxNova to the dev cluster
 
-VoxNova runs as one pod on the dev cluster (`ai-starter-kits-dev-1`), behind the VPN, at an existing
+VoxNova runs as one pod on the dev cluster (`ai-starter-kits-dev-1`, whose kubeconfig context is
+`default`), behind the VPN, at an existing
 `*.cloud.snova.ai` name over HTTPS. The browser only allows the microphone on HTTPS, so the
 cluster's wildcard certificate (`cloud-snova-ai-tls`) is what makes voice work.
 
@@ -27,7 +28,7 @@ later by copying its `oauth2-proxy.yaml` and ingress annotations.
    `VOXNOVA_HOST=<name>.cloud.snova.ai`
 2. Check `.env` has `SAMBANOVA_API_KEY`, `CARTESIA_API_KEY` and `DEMO_PASSPHRASE`.
 3. Install `kubectl`, `helm` and `gcloud`, sign in (`gcloud auth login`), and get the
-   `ai-starter-kits-dev-1` kube context from Tamas.
+   kubeconfig for the dev vcluster; its context is called `default`.
 4. Let docker push to the registry: `scripts/build-image.sh setup-registry`.
 
 ## Every deploy
@@ -46,8 +47,8 @@ pod restarts on its own when a key changes.
 ## When something is wrong
 
 ```
-kubectl --context ai-starter-kits-dev-1 get pods -l app.kubernetes.io/instance=voxnova
-kubectl --context ai-starter-kits-dev-1 logs deploy/voxnova
+kubectl --context default get pods -l app.kubernetes.io/instance=voxnova
+kubectl --context default logs deploy/voxnova
 ```
 
 - **Pod crash-looping with "SAMBANOVA_API_KEY is missing"**: the Secret is missing a key; rerun the

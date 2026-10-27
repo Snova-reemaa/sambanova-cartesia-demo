@@ -8,7 +8,7 @@
 #   scripts/deploy-dev.sh --no-keys       # leave the key Secret as it is
 #
 # Settings come from the environment, else from .env (read as data, never run):
-#   VOXNOVA_HOST (required: the *.cloud.snova.ai name to serve on), KUBE_CONTEXT (default ai-starter-kits-dev-1),
+#   VOXNOVA_HOST (required: the *.cloud.snova.ai name to serve on), KUBE_CONTEXT (read from the kubeconfig, else ai-starter-kits-dev-1),
 #   NAMESPACE (default default), and the keys SAMBANOVA_API_KEY, CARTESIA_API_KEY, DEMO_PASSPHRASE,
 #   TAVILY_API_KEY, EXA_API_KEY.
 
