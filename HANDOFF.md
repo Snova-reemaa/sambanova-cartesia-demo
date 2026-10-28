@@ -28,7 +28,7 @@ Updated after every committed piece. Offline tests: `venv/bin/python tests/run.p
 | Fix | `/terms` and `/privacy` scroll — they had inherited the call screen's `overflow:hidden`, so below the fold was unreachable on windows wider than 1180px |
 | Fix | Retention runs: sweep on startup then every `RETENTION_SWEEP_HOURS` (24), guarded and cancelled on shutdown, counts logged and never addresses. `/privacy` is now true |
 | Deploy | `voxnova:90946f2` pushed, linux/amd64, digest `sha256:40ba0d62…`; 7/7 smoke against the pushed image |
-| Deploy | **Live on the dev cluster**, 27 Oct 2026: release `voxnova` rev 1, namespace `default`, pod 1/1, 7/7 smoke through a port-forward. Waiting only on DNS for the public name |
+| Deploy | **Live at https://aiskshowcase1.cloud.snova.ai**: release `voxnova` rev 2, namespace `default`, pod 1/1, 7/7 smoke through a port-forward |
 | Voices | Native voice per language (`voices.py`), samples in `listening/voices/` |
 | Hardening | Malformed frames, hang-ups, oversized input, session expiry, guarded socket writes |
 
@@ -58,8 +58,17 @@ before believing it.
 
 ## On the cluster now
 
-Release `voxnova`, revision 1, namespace `default`, context `default`,
-image tag `90946f2`. Deployed 27 Oct 2026.
+Release `voxnova`, revision 2, namespace `default`, context `default`,
+image tag `90946f2`. Installed 27 Oct 2026, moved to the `aiskshowcase1`
+slot 28 Oct 2026.
+
+Revision 2 exists because the Ingress was edited on the cluster rather
+than through helm, so the live host and helm's stored values disagreed:
+the next `helm upgrade` for any reason would have re-rendered the old
+host and taken the site down, with nothing in the command to suggest
+why. Rerunning the deploy with the repo updated put the record straight.
+The diff was the two host lines and nothing else, the pod template was
+unchanged and the keys checksum the same, so the pod never restarted.
 
 It owns exactly six objects and nothing else in that shared namespace was
 touched — every resource count went up by one, and secrets by two (the key
