@@ -6,6 +6,10 @@ metadata:
 spec:
   # One replica: login sessions and calls in progress live in the process's memory, and the
   # SQLite memory file has one writer. Recreate, so two pods never hold the volume at once.
+  # "Forget me" relies on it too: the marker that stops a late call write-up re-creating a
+  # forgotten caller is in this process's memory (memory._forgotten). Past one replica a
+  # write-up on another pod would not see it; move it to a shared store first (a
+  # forgotten_markers table holding only the hash and a timestamp).
   replicas: 1
   strategy:
     type: Recreate

@@ -9,6 +9,7 @@ Offline, and fast — no server and no provider. It runs against its own
 database in /tmp so it can never touch a real one.
 """
 
+import asyncio
 import os
 import sys
 import tempfile
@@ -288,6 +289,65 @@ def main():
               != app.caller_key(FakeRequest("100.64.3.7", "203.0.113.9")))
     finally:
         app.TRUSTED_NETWORKS = was_networks
+
+    # "Forget me" racing the write-up of a call that was already going on.
+    # The write-up runs after hang-up and takes seconds; it used to finish
+    # after the forgetting and put the customer straight back, under the
+    # name "r.patel", which is how the demo's Riya Patel was lost locally.
+    m13 = fresh()
+    was_memory, was_write_up = app.memory, app.write_up
+    app.memory = m13
+    who = "r.patel@example.com"
+    # Made inside the loop that waits on them: on 3.9 an Event made
+    # outside one belongs to a different loop and cannot be awaited.
+    gate = {}
+
+    async def slow_write_up(llm, history):
+        gate["started"].set()
+        await gate["release"].wait()
+        return {"text": "Summary: asked where order 44812 had got to.\n"
+                        "Outcome: pending"}
+
+    def on_the_line():
+        s = app.Session()
+        s.caller = {"email": who, "verified": True, "name": "Riya Patel",
+                    "calls": [], "order": None, "mismatch": False}
+        s.history = [{"role": "user", "content": "where is my order"},
+                     {"role": "assistant", "content": "On its way."}]
+        s.user_turns = 1
+        return s
+
+    async def race():
+        gate.update(started=asyncio.Event(), release=asyncio.Event())
+        earlier = on_the_line()
+        writing = asyncio.ensure_future(app.remember_call(None, earlier))
+        await gate["started"].wait()
+        m13.forget(who)                    # from this call or another
+        gate["release"].set()
+        return await writing
+
+    try:
+        app.write_up = slow_write_up
+        late = asyncio.run(race())
+        check("a write-up finishing after 'forget me' saves nothing",
+              late is None)
+        check("and the forgotten customer stays gone",
+              m13.customer(who) is None and not m13.history(who))
+        check("save_call without a start time refuses a forgotten address",
+              m13.save_call(who, "2026-10-28 10:00", {"summary": "x"}) is False
+              and m13.customer(who) is None)
+        # Forgetting is not a ban. Somebody who comes back later is a new
+        # caller and their new call is kept.
+        time.sleep(0.01)
+        later = on_the_line()
+        app.write_up = lambda llm, history: asyncio.sleep(0, {
+            "text": "Summary: came back after being forgotten."})
+        kept = asyncio.run(app.remember_call(None, later))
+        check("a call that starts after the forgetting is kept",
+              kept and [c["summary"] for c in m13.history(who)]
+              == ["came back after being forgotten."])
+    finally:
+        app.memory, app.write_up = was_memory, was_write_up
 
     for what, ok in results:
         print(f"  {'ok  ' if ok else 'FAIL'} {what}")

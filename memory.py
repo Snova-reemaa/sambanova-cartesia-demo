@@ -211,9 +211,20 @@ def history(email, limit=20):
         return [dict(r) for r in rows]
 
 
-def save_call(email, at, fields):
-    """Store one finished call. `fields` is the parsed post-call write-up."""
+def save_call(email, at, fields, since=None):
+    """Store one finished call. `fields` is the parsed post-call write-up.
+
+    `since` is when the call began. A call that began before its caller
+    was forgotten is not saved, and False comes back: the write-up runs
+    after hang-up, for up to half a minute, and used to land after "forget
+    me" and put the customer straight back. Without `since`, any
+    forgetting at all refuses it.
+    """
+    email = email.lower()
     with _lock, _connect() as db:
+        forgot = _forgotten.get(_marker(email))
+        if forgot is not None and (since is None or forgot >= since):
+            return False
         db.execute("INSERT OR IGNORE INTO customers (email, name) VALUES (?, ?)",
                    (email.lower(), email.split("@")[0]))
         db.execute(
@@ -222,6 +233,7 @@ def save_call(email, at, fields):
             (email.lower(), at, fields.get("summary") or "Call with no summary.",
              fields.get("outcome"), fields.get("actions"), fields.get("sentiment"),
              fields.get("unanswered")))
+    return True
 
 
 def as_context(name, calls):
@@ -579,10 +591,32 @@ def attempts_left(email, caller=None):
     return max(0, left)
 
 
+# Addresses forgotten by this process, and when, so that save_call can
+# refuse a write-up from a call that was already under way. Kept in memory
+# and never written down: a forgotten caller should leave nothing on disk,
+# and a restart that loses this also kills every write-up it guards
+# against. Held as a hash, and only for as long as a call can last.
+_forgotten = {}
+FORGOTTEN_KEEP_SECONDS = 24 * 3600
+
+
+def _marker(email):
+    return hashlib.sha256(email.encode()).hexdigest()
+
+
 def forget(email):
-    """Everything held against one address, gone. Returns what was removed."""
+    """Everything held against one address, gone. Returns what was removed.
+
+    Calls already in progress for this address are not saved afterwards
+    either: see save_call.
+    """
     email = (email or "").lower().strip()
     with _lock, _connect() as db:
+        now = time.time()
+        for key in [k for k, at in _forgotten.items()
+                    if now - at > FORGOTTEN_KEEP_SECONDS]:
+            del _forgotten[key]
+        _forgotten[_marker(email)] = now
         calls = db.execute("SELECT COUNT(*) FROM calls WHERE email = ?",
                            (email,)).fetchone()[0]
         known = db.execute("SELECT COUNT(*) FROM customers WHERE email = ?",

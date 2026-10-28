@@ -202,3 +202,12 @@ first-audio latency before/after Task 1; more evals.
   own screen; anyone looking at it passes. It demonstrates the flow.
 - `main.py` is a separate CLI measurement tool, not used by the server.
 - Arabic uses English letter names for Latin letters, as Arabic speakers do.
+- **"Forget me" assumes one replica.** A call's write-up runs after hang-up
+  and used to land after "forget me", re-creating the caller. `forget()` now
+  leaves a marker (a hash of the address and the time) and `save_call()`
+  refuses any call that began before it. The markers live only in this
+  process's memory, which is right for one pod and wrong for two: a late
+  write-up on another replica would not see them and could bring a
+  forgotten caller back. Before scaling past one replica, move them to a
+  shared store, e.g. a `forgotten_markers` table holding only the hash and
+  the timestamp. The chart pins `replicas: 1` and says so beside it.

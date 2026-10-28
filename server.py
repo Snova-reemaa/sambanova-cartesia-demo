@@ -968,6 +968,7 @@ class Session:
     """Everything one browser connection remembers between turns."""
 
     def __init__(self):
+        self.began = time.time()         # wall clock, so memory can compare it with a forgetting
         self.history = []
         self.speaking = {"code": "en"}   # the language this call is being held in
         self.recent_fillers = []         # so the same acknowledgement is not used twice running
@@ -1447,7 +1448,12 @@ async def remember_call(llm, session, note=None):
     fields = parse_write_up(note["text"])
     if session.unanswered:
         fields[UNANSWERED_FIELD] = " | ".join(session.unanswered[:20])
-    memory.save_call(c["email"], time.strftime("%Y-%m-%d %H:%M"), fields)
+    if not memory.save_call(c["email"], time.strftime("%Y-%m-%d %H:%M"), fields,
+                            since=session.began):
+        # They were forgotten while this call was going on, from this call
+        # or another. Saving it would bring them back.
+        print("  call not saved: the caller asked to be forgotten during it")
+        return None
     session.saved_turns = session.user_turns
     c["calls"] = memory.history(c["email"])
     return fields
