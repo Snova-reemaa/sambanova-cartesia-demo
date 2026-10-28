@@ -43,7 +43,7 @@ check EXA_API_KEY       optional
 
 echo
 echo "Deployment"
-expect VOXNOVA_HOST aiskvoicedemo.cloud.snova.ai
+expect VOXNOVA_HOST aiskshowcase1.cloud.snova.ai
 check  KUBECONFIG required "path to the vcluster kubeconfig, outside the repo"
 check  KUBE_CONTEXT optional "read from the kubeconfig if unset"
 check  TRUSTED_PROXIES required "the pod CIDR, 100.64.0.0/12 — deploy refuses without it"

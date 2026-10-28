@@ -70,7 +70,7 @@ fi
 KUBE_CONTEXT="${KUBE_CONTEXT:-ai-starter-kits-dev-1}"
 NAMESPACE="${NAMESPACE:-default}"
 if [ -z "${VOXNOVA_HOST:-}" ]; then
-    echo "error: VOXNOVA_HOST is not set — the full hostname for the aiskvoicedemo slot" >&2
+    echo "error: VOXNOVA_HOST is not set — the full hostname for the aiskshowcase1 slot" >&2
     exit 1
 fi
 

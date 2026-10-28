@@ -24,8 +24,8 @@ later by copying its `oauth2-proxy.yaml` and ingress annotations.
 
 ## One-off setup
 
-1. Ask Tamas which existing `*.cloud.snova.ai` name to reuse, and add it to `.env`:
-   `VOXNOVA_HOST=<name>.cloud.snova.ai`
+1. The name is `aiskshowcase1.cloud.snova.ai` (the `aiskshowcase1` slot). In `.env`:
+   `VOXNOVA_HOST=aiskshowcase1.cloud.snova.ai`
 2. Check `.env` has `SAMBANOVA_API_KEY`, `CARTESIA_API_KEY` and `DEMO_PASSPHRASE`.
 3. Install `kubectl`, `helm` and `gcloud`, sign in (`gcloud auth login`), and get the
    kubeconfig for the dev vcluster; its context is called `default`.

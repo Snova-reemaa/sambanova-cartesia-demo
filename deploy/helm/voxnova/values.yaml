@@ -41,7 +41,7 @@ env:
 ingress:
   enabled: true
   className: nginx
-  # The "aiskvoicedemo" slot. Set to the full hostname for it — Tamas has
+  # The "aiskshowcase1" slot. Set to the full hostname for it — Tamas has
   # the exact name; it is an existing *.cloud.snova.ai entry, not a new
   # domain. Pass as --set ingress.host=... or VOXNOVA_HOST in .env.
   host: ""

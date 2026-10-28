@@ -1,7 +1,7 @@
 # Deploying VoxNova
 
 For whoever runs the first deployment. One image, one process, one small
-volume. Namespace `default`, the `aiskvoicedemo` ingress slot.
+volume. Namespace `default`, the `aiskshowcase1` ingress slot.
 
 ## Before you start
 
@@ -40,7 +40,7 @@ similar name and no ingress of its own; it is not this.
 
 You also need:
 
-- the **aiskvoicedemo.cloud.snova.ai** DNS entry resolving
+- the **aiskshowcase1.cloud.snova.ai** DNS entry resolving
 - push access to
   `us-west2-docker.pkg.dev/acp-starterkits-development-57/oci-us-west2-starerkits`
 - a `.env` with the keys below. Check it with `./scripts/check-env.sh`,
@@ -58,7 +58,7 @@ Builds for `linux/amd64` and pushes under the short git SHA. Without
 ## 2. Deploy
 
 ```bash
-VOXNOVA_HOST=<the aiskvoicedemo hostname> scripts/deploy-dev.sh
+VOXNOVA_HOST=<the aiskshowcase1 hostname> scripts/deploy-dev.sh
 ```
 
 Reads `.env`, creates or updates the secret, and runs `helm upgrade

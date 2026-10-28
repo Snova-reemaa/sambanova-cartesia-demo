@@ -68,18 +68,21 @@ Secret and helm's own release record):
 ```
 deployment/voxnova        1/1 running
 service/voxnova           ClusterIP
-ingress/voxnova           nginx, aiskvoicedemo.cloud.snova.ai
+ingress/voxnova           nginx, aiskshowcase1.cloud.snova.ai
 persistentvolumeclaim/voxnova-data   Bound, 1Gi
 networkpolicy/voxnova     selects app.kubernetes.io/name=voxnova only
 secret/voxnova-keys       Opaque
 ```
 
-**The public URL is not up yet: DNS has not populated.**
-`aiskvoicedemo.cloud.snova.ai` resolves to nothing, while sibling names
-resolve to the ELB. The host cluster fills the record in once the Ingress
-exists, which it now does. Nothing else is outstanding — when the name
-resolves, the site should answer. Until then it is reachable only by
-port-forward:
+**Live at https://aiskshowcase1.cloud.snova.ai** (on the VPN) — `/login`
+answers 200 over the wildcard certificate.
+
+It was first deployed on `aiskshowcase1.cloud.snova.ai`, which never
+resolved: that name had been deleted a month earlier, so the record was
+never going to appear. Tamas moved it to the `aiskshowcase1` slot on
+28 Oct 2026. Nothing else claims that host.
+
+Also reachable without DNS, for debugging:
 
 ```bash
 kubectl --context default -n default port-forward deploy/voxnova 18080:8080
@@ -116,13 +119,13 @@ local container rather than the pod.
 1. **Deploy.** `DEPLOY.md` has the commands. Cluster and registry access
    are already granted under CP-3072 — no access request is needed. The
    kube context is `ai-starter-kits-dev-1` and the host is
-   `aiskvoicedemo.cloud.snova.ai`.
+   `aiskshowcase1.cloud.snova.ai`.
 2. **The kubeconfig** — the one thing left. Fetch it to a path outside the
    repo, `chmod 600`, and put the path in `.env` as `KUBECONFIG`; then
    `./scripts/check-env.sh` is clean. `VOXNOVA_HOST`, `TRUSTED_PROXIES` and
    `DEMO_INBOX` are set. DNS is settled — the host cluster fills the record
    in once the Ingress exists, so the hostname stays
-   `aiskvoicedemo.cloud.snova.ai`. The image is pushed; nothing on the
+   `aiskshowcase1.cloud.snova.ai`. The image is pushed; nothing on the
    cluster has been touched.
 
    Deploy with the tag that was pushed and tested, not with HEAD:
@@ -161,7 +164,7 @@ IP, and with a shared passphrase anybody can get a fresh session by signing
 in again. With real accounts it would key on the user.
 
 **Redirect / callback URLs** for the Auth0 application
-(`https://<aiskvoicedemo host>` throughout):
+(`https://aiskshowcase1.cloud.snova.ai` throughout):
 
 - Allowed Callback URLs: `https://<host>/auth/callback`
 - Allowed Logout URLs: `https://<host>/login`
