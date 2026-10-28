@@ -992,6 +992,7 @@ class Session:
         self.just_forgot = None
         self.audio_off = False   # synthesis gave out part way through the call
         self.just_named = False  # they said who they are and nothing else yet
+        self.stated_name = None  # the name they gave, for a new caller's record
         self.caller = None               # who is on the line, once an order is looked up
         self.said = {}                   # turn_id -> (assistant message in history, full reply)
         self.turns_used = 0              # counted, not derived: history is trimmed
@@ -1258,13 +1259,26 @@ def identify(session, prompt):
     # Confirming against an order has to be the address itself. Opening a
     # call can be the name — nobody should have to spell an address into a
     # microphone to be recognised.
+    if not c:
+        session.stated_name = stated_name(prompt) or session.stated_name
     email = memory.find_email(prompt) if c else memory.find_customer(prompt)
     if not email:
         return None
     if not c:
         person = memory.customer(email)
         if not person:
-            return None
+            # A new caller. Only an address said out loud gets here: a name
+            # alone finds nobody who is not already on file. Put them on
+            # file, unverified, so the code below can be made for them, and
+            # from then on it is the same path a known customer takes, with
+            # the same event at the end, so the answer does not say which.
+            if not delivery.available():
+                session.caller = {"email": email.lower(), "order": None,
+                                  "verified": False, "name": None, "calls": [],
+                                  "mismatch": False, "claimed": None}
+                return start_verification(session)
+            memory.add_caller(email, session.stated_name or name_from(email))
+            person = memory.customer(email)
         # Known, but not yet proven to be them. A name and an address are
         # a claim; the code is what makes it a fact. Nothing personal is
         # attached to the session until it checks out.
@@ -1282,12 +1296,105 @@ def identify(session, prompt):
     return caller_event(c, "mismatch")
 
 
+# How a caller says who they are, in each of the eight languages. Two
+# kinds. Naming outright ("my name is", "me llamo", "اسمي") is taken at its
+# word. Saying "I am" or "this is" is as often "I'm calling about" or "soy
+# cliente", so after one of those the first word has to be capitalised
+# (where the script has capitals) and not on the list below.
+NAMING = {
+    "en": ("my name is", "my name's"),
+    "es": ("me llamo", "mi nombre es"),
+    "fr": ("je m'appelle", "mon nom est"),
+    "de": ("ich heiße", "ich heisse", "mein name ist"),
+    "it": ("mi chiamo", "il mio nome è"),
+    "pt": ("meu nome é", "me chamo", "chamo-me"),
+    "nl": ("ik heet", "mijn naam is"),
+    "ar": ("اسمي",),
+}
+INTRODUCING = {
+    "en": ("this is", "i am", "i'm"),
+    "es": ("soy", "le habla"),
+    "fr": ("je suis", "c'est"),
+    "de": ("ich bin", "hier ist", "hier spricht"),
+    "it": ("sono", "parla"),
+    "pt": ("sou", "aqui é", "fala"),
+    "nl": ("ik ben", "u spreekt met", "je spreekt met"),
+    "ar": ("أنا", "انا", "معك"),
+}
+NOT_A_NAME = set("""
+    calling looking trying having just not here fine good ok okay a an the so
+    and about with from at on in my your new still really sorry back again
+    well very customer
+    cliente yo el la un una muy aquí nuevo nueva bien llamando para por con
+    que no
+    client le une très ici nouveau nouvelle pour en pas désolé désolée moi
+    kunde kundin der die das ein eine sehr hier neu neuer neue gut nicht es
+    wegen
+    il lo molto qui nuovo nuova bene per non io di stato
+    o um uma muito novo nova bem não eu
+    klant het een erg heel nieuw nieuwe goed niet bezig
+    أريد اريد عندي بخير هنا عميل عميلة جديد اتصل أتصل لست آسف اسمي من في
+    """.split())
+# Lower-case words that belong inside a name when a capitalised one follows:
+# "Jan de Vries", "Ana dos Santos", "Ludwig van Beethoven".
+PARTICLES = {"de", "da", "das", "do", "dos", "del", "della", "di", "van",
+             "von", "der", "den", "ter", "le", "la", "bin", "ibn", "al", "el"}
+_NAME_WORDS = r"([^\W\d_][\w'\-]*(?:\s+[^\W\d_][\w'\-]*){0,3})"
+
+
+def _phrases(table):
+    said = sorted({p for ps in table.values() for p in ps}, key=len, reverse=True)
+    return re.compile(r"(?<!\w)(?:" + "|".join(map(re.escape, said)) + r")\s+"
+                      + _NAME_WORDS, re.I)
+
+
+NAMING_RE, INTRODUCING_RE = _phrases(NAMING), _phrases(INTRODUCING)
+
+
+def _cased(word):
+    return word[:1].lower() != word[:1].upper()
+
+
+def stated_name(prompt):
+    """The name a caller gave for themselves in this sentence, or None."""
+    text = memory.EMAIL.sub(" ", (prompt or "").replace("’", "'"))
+    outright = NAMING_RE.search(text)
+    found = outright or INTRODUCING_RE.search(text)
+    if not found:
+        return None
+    said = found.group(1).split()
+    if not outright and _cased(said[0]) and not said[0][0].isupper():
+        return None
+    words = []
+    for i, word in enumerate(said[:4]):
+        nxt = said[i + 1] if i + 1 < len(said) else ""
+        if (words and word in PARTICLES and nxt and _cased(nxt)
+                and nxt[0].isupper()):
+            words.append(word)
+            continue
+        if word.lower() in NOT_A_NAME:
+            break
+        words.append(word)
+    while words and words[-1] in PARTICLES:
+        words.pop()
+    if not words:
+        return None
+    checked = slots.check_name(" ".join(words))
+    return checked.value if checked.ok else None
+
+
+def name_from(email):
+    """r.patel@example.com -> "R Patel", for a caller who gave no name."""
+    local = email.split("@")[0]
+    return " ".join(p.capitalize() for p in re.split(r"[._\-+]+", local) if p) or local
+
+
 def start_verification(session):
     """Send a code, or say plainly that we cannot.
 
-    The same thing is said whether or not the address is on file, and the
-    code is only ever made for one that is — so this cannot be used to
-    find out who is a customer.
+    The same thing is said whether or not the address was on file before
+    this call, and new callers are put on file before getting here, so the
+    answer cannot be used to find out who is a customer.
     """
     c = session.caller
     if not delivery.available():
@@ -1372,10 +1479,10 @@ def caller_rules(session):
                 "an hour, and help with anything that does not need their "
                 "account.")
     if session.awaiting_code:
-        return ("\nYou have told them: if that address is on file, a six "
-                "digit code has been sent to it. Keep to that wording — "
-                "never say whether the address exists, how many people "
-                "share a name, or anything about them.\n"
+        return ("\nA six digit code is on its way to that address. Say only "
+                "that — new caller or not, it is the same sentence. Never "
+                "say whether the address was already known, how many "
+                "people share a name, or anything about them.\n"
                 "Ask them to read the code back. Say nothing about their "
                 "account or previous calls until it checks out. If they "
                 "cannot find it, say it may take a moment and that they can "

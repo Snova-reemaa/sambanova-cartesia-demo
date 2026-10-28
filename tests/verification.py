@@ -349,6 +349,94 @@ def main():
     finally:
         app.memory, app.write_up = was_memory, was_write_up
 
+    # The name a new caller gives, in each of the eight languages, and the
+    # sentences that look like an introduction and are not one.
+    for said, want in (
+            ("Hi, my name is Reema Alotaibi", "Reema Alotaibi"),
+            ("Hola, me llamo Lucía Fernández", "Lucía Fernández"),
+            ("Bonjour, je m’appelle Élodie Martin", "Élodie Martin"),
+            ("Guten Tag, ich heiße Jürgen Weber", "Jürgen Weber"),
+            ("Buongiorno, mi chiamo Giulia Rossi", "Giulia Rossi"),
+            ("Olá, meu nome é João dos Santos", "João dos Santos"),
+            ("Goedemiddag, ik heet Jan de Vries", "Jan de Vries"),
+            ("مرحبا، اسمي أحمد الحربي", "أحمد الحربي"),
+            ("انا اسمي نورة", "نورة"),
+            ("this is Riya Patel, r.patel@example.com", "Riya Patel"),
+            ("I'm calling about my order", None),
+            ("soy cliente", None),
+            ("je suis client", None),
+            ("Ich bin Kunde", None),
+            ("sono cliente", None),
+            ("sou cliente", None),
+            ("ik ben klant", None),
+            ("أنا أريد المساعدة", None),
+            ("hi it's smoke-test@example.invalid", None)):
+        check(f"name from {said!r}", app.stated_name(said) == want)
+
+    # A brand-new caller, start to finish: gives a name and an address
+    # nobody has, gets a code in the demo inbox, reads it back, hangs up,
+    # and is remembered on the next call. Before, an address not on file
+    # got "if that address is on file..." and no code, so nobody new could
+    # ever be verified or remembered.
+    m14 = fresh()
+    was_memory, was_write_up = app.memory, app.write_up
+    was_inbox = app.delivery.DEMO_INBOX
+    app.memory, app.delivery.DEMO_INBOX = m14, True
+    new = "new.caller@example.org"
+    try:
+        first = app.Session()
+        first.key = "new-caller"
+        check("a name alone identifies nobody new",
+              app.identify(first, "Hi, my name is Reema Test") is None)
+        sent = app.identify(first, f"my email is {new}")
+        check("a brand-new address gets a code in the demo inbox",
+              sent and sent["status"] == "code_sent" and sent.get("demo_code"))
+        check("and is put on file, unverified, under the name they gave",
+              (m14.customer(new) or {}).get("name") == "Reema Test"
+              and not m14._connect().execute(
+                  "SELECT verified FROM customers WHERE email = ?",
+                  (new,)).fetchone()[0])
+        check("nobody can find an unverified caller by name",
+              m14.find_customer("it's Reema Test") is None)
+
+        # No probing: a known customer's answer has the same shape.
+        known = app.Session()
+        known.key = "known-caller"
+        other = app.identify(known, "it's j.okafor@example.com")
+        check("the answer is the same whether or not the address existed",
+              sorted(other) == sorted(sent)
+              and other["status"] == sent["status"]
+              and other["name"] is sent["name"] is None
+              and other["calls"] == sent["calls"] == [])
+
+        got_in = app.hear_code(first, sent["demo_code"])
+        check("reading the code back verifies them",
+              got_in and got_in["status"] == "verified"
+              and got_in["name"] == "Reema Test")
+        first.history = [{"role": "user", "content": "can I change my address"},
+                         {"role": "assistant", "content": "Yes, done."}]
+        first.user_turns = 1
+
+        async def quick_write_up(llm, history):
+            return {"text": "Summary: asked to change the delivery address "
+                            "on their account.\nOutcome: resolved"}
+        app.write_up = quick_write_up
+        check("hanging up saves the call",
+              asyncio.run(app.remember_call(None, first)))
+
+        time.sleep(0.01)
+        second = app.Session()
+        second.key = "new-caller-again"
+        again = app.identify(second, f"hi it's {new}")
+        back = app.hear_code(second, (again or {}).get("demo_code", ""))
+        check("a new session verifies them again",
+              back and back["status"] == "verified")
+        check("and remembers the first call",
+              "change the delivery address" in app.caller_rules(second))
+    finally:
+        app.memory, app.write_up = was_memory, was_write_up
+        app.delivery.DEMO_INBOX = was_inbox
+
     for what, ok in results:
         print(f"  {'ok  ' if ok else 'FAIL'} {what}")
     bad = sum(not ok for _, ok in results)

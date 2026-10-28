@@ -200,6 +200,24 @@ def customer(email):
         return dict(row) if row else None
 
 
+def add_caller(email, name):
+    """Put a new caller on file, unverified, so a code can be made for them.
+
+    An address already on file is left exactly as it is, name and all:
+    whoever is on the line has not proved anything yet, and the caller
+    hears the same thing either way. Nobody else can find an unverified
+    record by name (see _people), and one that never verifies has no calls,
+    so the retention sweep removes it.
+    """
+    email = (email or "").lower().strip()
+    with _lock, _connect() as db:
+        db.execute(
+            "INSERT OR IGNORE INTO customers (email, name, verified, first_seen) "
+            "VALUES (?, ?, 0, ?)",
+            (email, name or email.split("@")[0],
+             time.strftime("%Y-%m-%d %H:%M", time.gmtime())))
+
+
 def history(email, limit=20):
     """Past calls, most recent first."""
     with _lock, _connect() as db:
@@ -363,10 +381,15 @@ def fold(word):
 
 
 def _people():
-    """Everyone on the books, as (email, first, last), accents folded."""
+    """Everyone verified, as (email, first, last), accents folded.
+
+    Verified only, because anyone can put an unverified record on file by
+    saying an address. Counting those would let somebody register a second
+    "Patel" and make "it's Patel" ambiguous for the real one.
+    """
     out = []
     with _lock, _connect() as db:
-        for row in db.execute("SELECT email, name FROM customers"):
+        for row in db.execute("SELECT email, name FROM customers WHERE verified = 1"):
             parts = fold(row["name"] or "").split()
             out.append((row["email"].lower(), parts[0] if parts else "",
                         parts[-1] if parts else ""))
@@ -460,10 +483,12 @@ def make_code(email, caller=None):
     server's own decisions — the caller hears the same sentence whichever it
     is, so this cannot be used to find out who is a customer.
 
-    A code is only generated for an address already on file. That is why the
-    sentence the caller hears is conditional: "if that address is on file, I
-    have sent a code to it." Generating one for any address typed at it
-    would make this a way to post mail at strangers from our infrastructure.
+    A code is only generated for an address already on file. A new caller
+    is put on file first, by add_caller, so this refuses only an address
+    nobody has said on a call. With SMTP on, that does mean any address a
+    caller says can be sent a code: the caps below (per address and per
+    caller, an hour each) are what keep that from being a way to post mail
+    at strangers.
     """
     email = (email or "").lower().strip()
     if not email:

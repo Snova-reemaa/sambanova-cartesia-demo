@@ -202,6 +202,15 @@ first-audio latency before/after Task 1; more evals.
   own screen; anyone looking at it passes. It demonstrates the flow.
 - `main.py` is a separate CLI measurement tool, not used by the server.
 - Arabic uses English letter names for Latin letters, as Arabic speakers do.
+- **New callers are put on file before they verify.** Saying an address
+  nobody has creates an unverified record under the name they gave (picked
+  out of "my name is…" in any of the eight languages, else from the
+  address), then the usual code. The answer is identical for known and new
+  addresses, so it reveals nothing. Unverified records can't be found by
+  name, and one that never verifies has no calls, so the retention sweep
+  removes it. The cost arrives with SMTP: any address a caller says can be
+  sent a code, held back only by 3 an hour per address and 6 an hour per
+  caller. Revisit that before switching SMTP on.
 - **"Forget me" assumes one replica.** A call's write-up runs after hang-up
   and used to land after "forget me", re-creating the caller. `forget()` now
   leaves a marker (a hash of the address and the time) and `save_call()`
