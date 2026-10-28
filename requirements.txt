@@ -1,5 +1,6 @@
 openai>=1.40.0
-cartesia>=2.0.0
+cartesia[websockets]==4.2.0
+websockets==15.0.1
 python-dotenv>=1.0.0
 aiohttp>=3.9,<4
 phonenumbers>=8.13
