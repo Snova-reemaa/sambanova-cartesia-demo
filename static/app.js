@@ -1499,6 +1499,15 @@ function onEvent(m) {
       break;
     }
 
+    case 'no_voice': {
+      // No native voice for this language, and a foreign one is never used
+      // instead. Only this turn is text; the next one in a voiced language
+      // speaks again, so the call's own status is left alone.
+      const turn = turns.get(m.turn_id);
+      if (turn) note(turn, m.message || 'no voice for this language — text only', 'x');
+      break;
+    }
+
     case 'reheard':
       reheard = m;
       break;

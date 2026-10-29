@@ -46,6 +46,17 @@ spec:
             {{- range $name, $value := .Values.env }}
             - {name: {{ $name }}, value: {{ $value | quote }}}
             {{- end }}
+            {{- range $code, $who := .Values.voices }}
+            {{- with $who.main }}
+            - {name: VOICE_{{ upper $code }}, value: {{ . | quote }}}
+            {{- end }}
+            {{- with $who.billing }}
+            - {name: VOICE_BILLING_{{ upper $code }}, value: {{ . | quote }}}
+            {{- end }}
+            {{- with $who.technical }}
+            - {name: VOICE_TECHNICAL_{{ upper $code }}, value: {{ . | quote }}}
+            {{- end }}
+            {{- end }}
           {{- with .Values.apiKeysSecret }}
           envFrom:
             - secretRef: {name: {{ . }}}

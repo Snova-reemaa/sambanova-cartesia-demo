@@ -1,7 +1,8 @@
-"""One short line per language, in that language's own voice.
+"""One short line per language, in each person's own voice in it.
 
-For listening to, nothing more. Writes listening/voices/<lang>.wav.
-Spends a little Cartesia credit: eight short lines.
+For listening to, nothing more. Writes listening/voices/<lang>.wav for the
+main agent and <lang>-billing.wav, <lang>-technical.wav for Maya and Omar.
+Spends a little Cartesia credit: twenty-four short lines.
 """
 import asyncio, os, sys, wave
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -36,10 +37,14 @@ async def main(only):
     client = AsyncCartesia(api_key=os.environ["CARTESIA_API_KEY"])
     os.makedirs(OUT, exist_ok=True)
     try:
-        for code, line in LINES.items():
+        for code, line, role in [(c, l, r) for c, l in LINES.items()
+                                 for r in voices.ROLES]:
             if only and code not in only:
                 continue
-            vid, lang = voices.for_language(code)
+            vid, lang = voices.for_role(role, code), code
+            if not vid:
+                print(f"  {code}  {role:9}  no voice: text only")
+                continue
             ws = await client.tts.websocket()
             pcm = bytearray()
             try:
@@ -59,12 +64,12 @@ async def main(only):
                 return 2
             finally:
                 await ws.close()
-            path = os.path.join(OUT, f"{code}.wav")
+            path = os.path.join(OUT, f"{code}.wav" if role == "front"
+                                else f"{code}-{role}.wav")
             with wave.open(path, "wb") as f:
                 f.setnchannels(1); f.setsampwidth(2); f.setframerate(RATE)
                 f.writeframes(bytes(pcm))
-            flag = "  <- no native voice, English voice speaking Dutch" if code in voices.MISSING else ""
-            print(f"  {code}  {voices.name_for(code):26} {len(pcm)/(RATE*2):4.1f}s{flag}")
+            print(f"  {code}  {role:9}  {voices.name_for(role, code):12} {len(pcm)/(RATE*2):4.1f}s")
     finally:
         await client.close()
     print(f"\n  written to {OUT}")

@@ -43,9 +43,11 @@ OFFLINE_SUITES = [
     ("tests/consent.py", "nobody gets in without agreeing"),
     ("tests/verification.py", "one-time codes, lockout, retention, deletion"),
     ("tests/protocol.py", "code holds the step, the model cannot move it"),
+    ("tests/voices.py", "every language in a native voice, whoever speaks"),
 ]
 
 LIVE_SUITES = [
+    ("tests/live_voices.py", "Cartesia agrees every voice is native (free)"),
     ("tests/live_languages.py", "replies stay in the caller's language"),
     ("tests/live_escalation.py", "the right person takes the call"),
     ("tests/live_unexpected.py", "questions nobody planned for"),

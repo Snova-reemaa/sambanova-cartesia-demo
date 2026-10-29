@@ -915,6 +915,69 @@ def pick_voice(requested):
     return default_voice()
 
 
+# What Cartesia says each voice's language is: the catalog, plus every
+# voice in voices.py, looked up by id at startup.
+VOICE_LANGUAGE = {}
+
+
+async def check_voices(tts):
+    """Refuse to start if any configured voice is not in its language.
+
+    A voice Cartesia does not know, or knows as another language, is a
+    configuration mistake that would put a foreign voice on a call, so the
+    pod stops and says which setting to change. Not being able to ask (no
+    network, a placeholder key in the tests) is not the same thing: that
+    is logged and the configured table, which is tested, stands.
+    """
+    import cartesia
+    for v in CATALOG["voices"]:
+        VOICE_LANGUAGE[v["id"]] = v.get("language") or ""
+    wanted = sorted(set(voices.configured().values()))
+
+    async def one(vid):
+        try:
+            return vid, (await tts.voices.get(vid)).language or ""
+        except (cartesia.NotFoundError, cartesia.BadRequestError,
+                cartesia.UnprocessableEntityError):
+            return vid, None
+
+    try:
+        found = dict(await asyncio.gather(*(one(v) for v in wanted)))
+    except Exception as exc:
+        print(f"  ! could not check the voices against Cartesia "
+              f"({type(exc).__name__}); using the configured table as tested")
+        return
+    VOICE_LANGUAGE.update({k: v for k, v in found.items() if v is not None})
+
+    def language_of(vid):
+        if found.get(vid) is None:
+            raise LookupError(vid)
+        return found[vid]
+
+    problems = voices.check(language_of)
+    if problems:
+        for line in problems:
+            print(f"  ! voice in the wrong language: {line}")
+        raise SystemExit("refusing to start: every language must be spoken by "
+                         "a native voice (see above)")
+    print(f"  {len(wanted)} voices checked: every one is native to its language")
+
+
+def voice_for(session, code, picked=None):
+    """The voice for this sentence, or None to answer it in text.
+
+    Worked out per sentence from the language being spoken now, so when the
+    caller switches language the very next sentence switches voice too. A
+    voice chosen in the picker is used only for the main agent and only in
+    its own language. Nothing here falls back to another language's voice.
+    """
+    persona = getattr(session, "persona", "front")
+    if (persona == "front" and picked
+            and voices.same_language(VOICE_LANGUAGE.get(picked), code)):
+        return picked
+    return voices.for_role(persona, code)
+
+
 class Channel:
     """Serialises writes to one browser socket.
 
@@ -1000,7 +1063,6 @@ class Session:
         self.saved_turns = 0             # of those, how many are already in memory
         self.drafts = {}                 # draft id -> Draft
         self.persona = "front"           # who is speaking: front, billing or technical
-        self.voices = {}                 # persona -> Cartesia voice id
         self.handoff = None              # set when a transfer is asked for mid-turn
         self.actions = []                # what has actually been done on this call
         self.cost = pricing.Meter()      # running total for the call
@@ -1058,18 +1120,6 @@ INTRO_RULE = (
     "caller needs, then take the next step or ask the one question you need. Do "
     "not repeat what your colleague already said."
 )
-
-
-def pick_persona_voices(chosen):
-    """A different voice for each specialist, so a handoff is heard, not just read."""
-    ids = [v["id"] for v in CATALOG["voices"]]
-    others = [v for v in ids if v != chosen]
-    return {
-        "front": chosen,
-        "billing": os.getenv("VOICE_BILLING") or (others[0] if others else chosen),
-        "technical": os.getenv("VOICE_TECHNICAL") or (others[1] if len(others) > 1
-                                                      else (others[0] if others else chosen)),
-    }
 
 
 def norm(text):
@@ -2108,14 +2158,10 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
         # Known before a word is generated, so the voice is set from the start.
         turn.mood = session.mood if intro else smarts.mood(prompt, session.mood)
 
-    # A specialist speaks in their own voice for the rest of the call.
-    voice_id = session.voices.get(session.persona) if session.persona != "front" else None
-    # A native voice for the language being spoken, unless a specialist's
-    # voice or the picker has already chosen one. One English voice reading
-    # all eight is why Spanish sounded like an American speaking Spanish.
-    if not voice_id and not opts.get("voice"):
-        voice_id = voices.for_language(code)[0]
-    voice_id = voice_id or pick_voice(opts["voice"])
+    # Whoever is speaking, in their native voice for the language of this
+    # turn, chosen afresh every turn so a switch of language is heard on
+    # the very next sentence. None means no native voice: text only.
+    voice_id = voice_for(session, code, opts.get("voice"))
     reply = ""
     notes = []
     held_any = []
@@ -2580,7 +2626,15 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
             await pending_text.put(None)
 
     async def synthesize():
-        if conn is None or session.audio_off:
+        if conn is not None and not session.audio_off and voice_id is None:
+            # No native voice for this language, and a foreign one is never
+            # used instead: this reply is read, not heard, and the page says
+            # why on the turn.
+            await chan.event({"type": "no_voice", "turn_id": turn_id,
+                              "language": code,
+                              "message": f"No {languages.name(code)} voice is set up, "
+                                         "so this reply is text only."})
+        if conn is None or session.audio_off or voice_id is None:
             while await pending_text.get() is not None:
                 pass                      # consume so generate() is never blocked
             return
@@ -2883,7 +2937,6 @@ async def websocket_handler(request):
     prelooks = {}
     interrupts = {}    # turn_id -> {"heard_chars": n} set on barge-in
     opened_at = time.perf_counter()
-    session.voices = pick_persona_voices(default_voice())
 
     # Losing synthesis should cost the demo its voice, not its existence. The
     # conversation, vision and search all still work; the caller reads instead
@@ -3151,10 +3204,13 @@ async def websocket_handler(request):
                     text = said_text(data)
                     if not text:
                         continue
+                    spoken = session.speaking["code"]
+                    voice = voice_for(session, spoken, data.get("voice_id"))
+                    if voice is None:
+                        continue          # no native voice: the text is already on screen
                     try:
                         await chan.event({"type": "say_start", "turn_id": 0})
-                        await synthesise(chan, conn, 0, text, pick_voice(data.get("voice_id")),
-                                         language=session.speaking["code"])
+                        await synthesise(chan, conn, 0, text, voice, language=spoken)
                         await chan.event({"type": "say_done", "turn_id": 0})
                     except Exception as exc:
                         log_error(exc, "spoken prompt")
@@ -3497,6 +3553,7 @@ async def on_startup(app):
     tts = get_tts()
     try:
         await load_catalog(llm, tts)
+        await check_voices(tts)
     finally:
         await tts.close()
     print(f"  {len(CATALOG['models'])} models · {len(CATALOG['voices'])} voices available")

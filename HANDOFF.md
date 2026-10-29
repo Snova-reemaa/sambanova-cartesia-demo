@@ -30,6 +30,7 @@ Updated after every committed piece. Offline tests: `venv/bin/python tests/run.p
 | Deploy | `voxnova:90946f2` pushed, linux/amd64, digest `sha256:40ba0d62…`; 7/7 smoke against the pushed image |
 | Deploy | **Live at https://aiskshowcase1.cloud.snova.ai**: release `voxnova` rev 2, namespace `default`, pod 1/1, 7/7 smoke through a port-forward |
 | Voices | Native voice per language (`voices.py`), samples in `listening/voices/` |
+| Voices | Only native voices, enforced: each of main / billing / technical has its own native voice in all 8 languages; the pod refuses to start if Cartesia says any is in another language; a language with no voice is answered in text, never by a foreign voice; overridable per language in `values.yaml` |
 | Hardening | Malformed frames, hang-ups, oversized input, session expiry, guarded socket writes |
 
 ## In progress
@@ -153,9 +154,13 @@ local container rather than the pod.
 3. **Auth0** — not built. See "Auth0, if you want it" below for exactly
    what it needs.
 4. **Listen to `listening/voices/*.wav`** and tell me which to change.
-   Dutch has **no native voice on this account** — a Dutch caller gets an
-   English voice speaking Dutch. Either Cartesia adds one or Dutch comes
-   off the list of languages this claims to speak.
+   24 voices, chosen from Cartesia's descriptions rather than by ear:
+   `<lang>.wav` is the main agent, `<lang>-billing.wav` Maya,
+   `<lang>-technical.wav` Omar. Dutch was never missing: Cartesia has 11
+   Dutch voices in its public library, just none owned by this account.
+   `listening/voices/nl-candidates/` has the four Dutch candidates for the
+   main voice (Noa is set; Isa, Anneliese and Femke are there to compare).
+   Swap any of them in `values.yaml` under `voices:` without a rebuild.
 5. **Cartesia credit** for the rest of the audio batch (`listening/PENDING.md`).
 6. **Rotate the SambaNova and Tavily keys** — they were in the zips.
 7. **Native review** of the Italian, Portuguese and Dutch letter names

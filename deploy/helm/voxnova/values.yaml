@@ -38,6 +38,22 @@ env:
   # Turns allowed to be talking to the model at once, across the pod.
   MAX_CONCURRENT_LLM: "8"
 
+# Cartesia voice ids for each person on the line, per language: the main
+# agent, Maya (billing) and Omar (technical). Empty keeps the default in
+# voices.py, where each is named. Every language must be spoken by a voice
+# native to it: the pod checks each id against Cartesia at startup and
+# refuses to start if one is in the wrong language. To leave a language
+# with no voice (text only), set VOICE_<LANG> to "" under env instead.
+voices:
+  en: {main: "", billing: "", technical: ""}
+  es: {main: "", billing: "", technical: ""}
+  fr: {main: "", billing: "", technical: ""}
+  de: {main: "", billing: "", technical: ""}
+  it: {main: "", billing: "", technical: ""}
+  pt: {main: "", billing: "", technical: ""}
+  nl: {main: "", billing: "", technical: ""}
+  ar: {main: "", billing: "", technical: ""}
+
 ingress:
   enabled: true
   className: nginx
