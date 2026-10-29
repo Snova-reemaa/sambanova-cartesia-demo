@@ -29,6 +29,7 @@ Updated after every committed piece. Offline tests: `venv/bin/python tests/run.p
 | Fix | Retention runs: sweep on startup then every `RETENTION_SWEEP_HOURS` (24), guarded and cancelled on shutdown, counts logged and never addresses. `/privacy` is now true |
 | Deploy | `voxnova:90946f2` pushed, linux/amd64, digest `sha256:40ba0d62…`; 7/7 smoke against the pushed image |
 | Deploy | **Live at https://aiskshowcase1.cloud.snova.ai**: release `voxnova` rev 2, namespace `default`, pod 1/1, 7/7 smoke through a port-forward |
+| Deploy | Rev 4, `voxnova:e727fc4`: picker offers only native voices for the language spoken; redesigned Voice and Language pickers (keyboard, RTL, mobile sheet, cached previews). 8/8 smoke on the pod |
 | Deploy | Rev 3, `voxnova:f209930`: voice on (websockets fix), native voices, forget-me race fixed, new callers, Auth0 built and off. 8/8 smoke on the pod, demo customers unchanged |
 | Voices | Native voice per language (`voices.py`), samples in `listening/voices/` |
 | Voices | Only native voices, enforced: each of main / billing / technical has its own native voice in all 8 languages; the pod refuses to start if Cartesia says any is in another language; a language with no voice is answered in text, never by a foreign voice; overridable per language in `values.yaml` |
@@ -36,8 +37,8 @@ Updated after every committed piece. Offline tests: `venv/bin/python tests/run.p
 
 ## In progress
 
-Nothing. Deployed `f209930` as revision 3; the tree is clean and the
-offline suite is 528/528 across 16 suites.
+Nothing. Deployed `e727fc4` as revision 4; the tree is clean and the
+offline suite is 538/538 across 16 suites.
 
 ## Verified locally, as the pod will run it
 
@@ -60,9 +61,16 @@ before believing it.
 
 ## On the cluster now
 
-Release `voxnova`, **revision 3**, namespace `default`, context `default`,
-image tag **`f209930`** (digest `sha256:67e1919f…`). Installed 27 Oct 2026,
-moved to the `aiskshowcase1` slot and upgraded to `f209930` on 28 Oct 2026.
+Release `voxnova`, **revision 4**, namespace `default`, context `default`,
+image tag **`e727fc4`** (digest `sha256:5f692c77…`). Installed 27 Oct 2026,
+moved to the `aiskshowcase1` slot, then upgraded to `f209930` (rev 3) and
+`e727fc4` (rev 4) on 28 Oct 2026.
+
+Revision 4 is the voice and language pickers: only the language's own
+three native voices are offered, in a pill-and-panel picker with cached
+previews (`/voice-sample`, each voice synthesised once per pod). Image tag
+the only change on the cluster; 8/8 smoke on the pod; demo customers
+identical to a snapshot taken before.
 
 Revision 3 is the first with a voice. Revisions 1 and 2 answered every
 call "ready, text only": the image had cartesia without its websockets
