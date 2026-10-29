@@ -29,6 +29,7 @@ Updated after every committed piece. Offline tests: `venv/bin/python tests/run.p
 | Fix | Retention runs: sweep on startup then every `RETENTION_SWEEP_HOURS` (24), guarded and cancelled on shutdown, counts logged and never addresses. `/privacy` is now true |
 | Deploy | `voxnova:90946f2` pushed, linux/amd64, digest `sha256:40ba0d62…`; 7/7 smoke against the pushed image |
 | Deploy | **Live at https://aiskshowcase1.cloud.snova.ai**: release `voxnova` rev 2, namespace `default`, pod 1/1, 7/7 smoke through a port-forward |
+| Deploy | Rev 5, `voxnova:fdad519`: Auth0 sign-in on; the signed-in email is the caller's identity (no code for it, history tied to it, forget deletes it). Redirect chain to the tenant's login checked; demo customers unchanged |
 | Deploy | Rev 4, `voxnova:e727fc4`: picker offers only native voices for the language spoken; redesigned Voice and Language pickers (keyboard, RTL, mobile sheet, cached previews). 8/8 smoke on the pod |
 | Deploy | Rev 3, `voxnova:f209930`: voice on (websockets fix), native voices, forget-me race fixed, new callers, Auth0 built and off. 8/8 smoke on the pod, demo customers unchanged |
 | Voices | Native voice per language (`voices.py`), samples in `listening/voices/` |
@@ -37,8 +38,8 @@ Updated after every committed piece. Offline tests: `venv/bin/python tests/run.p
 
 ## In progress
 
-Nothing. Deployed `e727fc4` as revision 4; the tree is clean and the
-offline suite is 538/538 across 16 suites.
+Nothing. Deployed `fdad519` with Auth0 as revision 5; the tree is clean
+and the offline suite is 552/552 across 16 suites.
 
 ## Verified locally, as the pod will run it
 
@@ -61,10 +62,27 @@ before believing it.
 
 ## On the cluster now
 
-Release `voxnova`, **revision 4**, namespace `default`, context `default`,
-image tag **`e727fc4`** (digest `sha256:5f692c77…`). Installed 27 Oct 2026,
-moved to the `aiskshowcase1` slot, then upgraded to `f209930` (rev 3) and
-`e727fc4` (rev 4) on 28 Oct 2026.
+Release `voxnova`, **revision 5**, namespace `default`, context `default`,
+image tag **`fdad519`**, **Auth0 sign-in on**. Installed 27 Oct 2026, moved
+to the `aiskshowcase1` slot, then upgraded to `f209930` (rev 3) and
+`e727fc4` (rev 4) on 28 Oct 2026, and to `fdad519` with Auth0 (rev 5) on
+29 Oct 2026.
+
+Revision 5 switched Auth0 on, on a free Auth0 tenant for testing (to move
+to SambaNova's tenant later, through IT): the oauth2-proxy Deployment,
+Service, `/oauth2` Ingress and NetworkPolicy were added, the app's Ingress
+gained the auth annotations, and `voxnova-keys` gained the three Auth0
+keys, so the app pod restarted. Checked after: a stranger is sent from
+`/login` to `/oauth2/start` to the tenant's login page, which loads (so
+the callback URL is accepted); the app reaches the proxy on 4180; the app
+logs "sign-in: Auth0"; the demo customers identical to a snapshot taken
+before. **The 8-check smoke test cannot run now**: it signs in with the
+passphrase, which this site refuses. A signed-in run has to go through
+Auth0 in a browser. To go back to the passphrase site:
+`helm --kube-context default -n default rollback voxnova 4`.
+
+Revision 4 was the voice and language pickers.
+
 
 Revision 4 is the voice and language pickers: only the language's own
 three native voices are offered, in a pill-and-panel picker with cached
@@ -166,9 +184,9 @@ VOXNOVA=http://127.0.0.1:18080 VOXNOVA_PASSPHRASE=<the passphrase> \
    `rke2-ingress-nginx` runs with `use-forwarded-headers: true` the app now
    reads the rightmost untrusted `X-Forwarded-For` entry, with a test that a
    spoofed header cannot change a caller's rate-limit key.
-3. **Auth0** — built and off; waiting on the Auth0 application from Tamas.
-   See "Auth0 — built, off" below for the callback URL and the five lines
-   of `.env` that switch it on.
+3. **Auth0** — on since revision 5, on a free tenant for testing. Moving
+   to SambaNova's tenant later, through IT: new issuer, client ID and
+   secret in `.env`, the same callback URL, then redeploy.
 4. ~~Listen to the voices~~ — **done 28 Oct 2026: all 24 approved by ear
    and locked in as the defaults.** For reference,
    `<lang>.wav` is the main agent, `<lang>-billing.wav` Maya,
@@ -182,11 +200,20 @@ VOXNOVA=http://127.0.0.1:18080 VOXNOVA_PASSPHRASE=<the passphrase> \
 7. **Native review** of the Italian, Portuguese and Dutch letter names
    (`NEEDS_NATIVE_REVIEW` in `slots.py`).
 
-## Auth0 — built, off
+## Auth0 — on (revision 5)
 
-Built the way sn-agent-swarms does it, and **off by default**: nothing about
-it renders until `auth.enabled=true`. Waiting on the Auth0 application from
-Tamas.
+Built the way sn-agent-swarms does it, **off by default** in the chart
+(nothing renders until `auth.enabled=true`), and **on in this deployment**
+since revision 5 (`VOXNOVA_AUTH=1` in `.env`), against a free Auth0 tenant
+for testing. Only `@sambanovasystems.com` addresses can sign in
+(`auth.emailDomains`).
+
+**Signed in, the email is the identity.** The call starts as that user:
+their record (made on first sign-in, verified, named from the address),
+their history, a greeting by name, no code for their own email. Another
+email on the call is an ordinary claim, the code flow, nothing shared
+until it checks out. "Forget me" deletes the signed-in email's record and
+it is not made again for the rest of that call.
 
 - **oauth2-proxy** (`quay.io/oauth2-proxy/oauth2-proxy:v7.9.0`, OIDC) as its
   own Deployment, Service and `/oauth2` Ingress on the same host; the app's

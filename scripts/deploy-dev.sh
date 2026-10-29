@@ -181,9 +181,13 @@ helm "${helm_args[@]}"
 # --- 5. check it answers -------------------------------------------------------------------------
 kc get pods -l "app.kubernetes.io/instance=$RELEASE"
 url="https://$VOXNOVA_HOST/login"
-code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$url" || true)"
+answer="$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 15 "$url" || true)"
+code="${answer%% *}"
 if [ "$code" = 200 ]; then
     log "Up: https://$VOXNOVA_HOST"
+elif [ "${VOXNOVA_AUTH:-0}" = 1 ] && [ "$code" = 302 ] && [[ "$answer" == *"/oauth2/start"* ]]; then
+    # Behind Auth0 a stranger is sent to sign in, which is the site answering.
+    log "Up behind Auth0: https://$VOXNOVA_HOST (sends strangers to sign in)"
 else
     echo "warning: $url answered $code; check: kubectl --context $KUBE_CONTEXT -n $NAMESPACE logs deploy/$RELEASE" >&2
 fi
