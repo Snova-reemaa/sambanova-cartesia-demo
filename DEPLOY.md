@@ -115,24 +115,22 @@ test for exactly that in `tests/verification.py`.
 ## 5. Check it
 
 ```bash
+kubectl --context default -n default port-forward deploy/voxnova 18080:8080
 VOXNOVA=http://127.0.0.1:18080 VOXNOVA_PASSPHRASE=<the passphrase> \
+  VOXNOVA_EXEC="kubectl --context default -n default exec deploy/voxnova --" \
   venv/bin/python tests/smoke.py
 ```
 
-Seven checks: sign in, verify through the demo inbox, hang up and be
-remembered on a second call, be forgotten, no external hosts, fonts served
-locally, policy pages scroll. All seven pass against the image in a
-container configured the way the pod configures it.
+Eight checks: sign in, the voice is on, verify through the demo inbox,
+hang up and be remembered on a second call, be forgotten, no external
+hosts, fonts served locally, policy pages scroll. 8/8 against the
+deployment, revision 3.
 
-**Point it at a local container, not at the deployment.** The
-"be forgotten" check really does delete `r.patel@example.com`, who is the
-customer the demo is built around, and the address is hard-coded in
-`tests/smoke.py`. Run it against the pod and the demo stops working, with
-nothing but `memory.reset()` to put it back — and that drops every real
-caller's history too. Either run it locally, or give the test a
-test-only identity first and clean up with
-`memory.forget('<that address>')`, which removes one customer and nothing
-else.
+It is safe to point at the deployment. It calls as
+`smoke-test@example.invalid`, an address that belongs to nobody, seeded
+before the first check through `VOXNOVA_EXEC` and removed with
+`memory.forget()` after the last; the demo customers are never touched.
+Never use `memory.reset()` on the pod: it drops every caller's history.
 
 The readiness and liveness probes both GET `/login`, which returns 200
 without authentication by design.

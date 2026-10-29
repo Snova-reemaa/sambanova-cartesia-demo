@@ -29,14 +29,15 @@ Updated after every committed piece. Offline tests: `venv/bin/python tests/run.p
 | Fix | Retention runs: sweep on startup then every `RETENTION_SWEEP_HOURS` (24), guarded and cancelled on shutdown, counts logged and never addresses. `/privacy` is now true |
 | Deploy | `voxnova:90946f2` pushed, linux/amd64, digest `sha256:40ba0d62…`; 7/7 smoke against the pushed image |
 | Deploy | **Live at https://aiskshowcase1.cloud.snova.ai**: release `voxnova` rev 2, namespace `default`, pod 1/1, 7/7 smoke through a port-forward |
+| Deploy | Rev 3, `voxnova:f209930`: voice on (websockets fix), native voices, forget-me race fixed, new callers, Auth0 built and off. 8/8 smoke on the pod, demo customers unchanged |
 | Voices | Native voice per language (`voices.py`), samples in `listening/voices/` |
 | Voices | Only native voices, enforced: each of main / billing / technical has its own native voice in all 8 languages; the pod refuses to start if Cartesia says any is in another language; a language with no voice is answered in text, never by a foreign voice; overridable per language in `values.yaml` |
 | Hardening | Malformed frames, hang-ups, oversized input, session expiry, guarded socket writes |
 
 ## In progress
 
-Nothing. Everything committed through `fd6eac1`; the tree is clean and the
-offline suite is 409/409 across 13 suites.
+Nothing. Deployed `f209930` as revision 3; the tree is clean and the
+offline suite is 528/528 across 16 suites.
 
 ## Verified locally, as the pod will run it
 
@@ -59,9 +60,19 @@ before believing it.
 
 ## On the cluster now
 
-Release `voxnova`, revision 2, namespace `default`, context `default`,
-image tag `90946f2`. Installed 27 Oct 2026, moved to the `aiskshowcase1`
-slot 28 Oct 2026.
+Release `voxnova`, **revision 3**, namespace `default`, context `default`,
+image tag **`f209930`** (digest `sha256:67e1919f…`). Installed 27 Oct 2026,
+moved to the `aiskshowcase1` slot and upgraded to `f209930` on 28 Oct 2026.
+
+Revision 3 is the first with a voice. Revisions 1 and 2 answered every
+call "ready, text only": the image had cartesia without its websockets
+extra, and the smoke test, all text, never noticed. The upgrade changed
+the image tag and nothing else (two comments aside; the keys checksum and
+the Secret's keys unchanged). After it, through a port-forward: 8/8 smoke,
+"voice is on" among them; the startup log says all 24 voices are native to
+their language; the eight demo customers, Riya Patel's two seeded calls
+included, identical to a snapshot taken before; no other customers, and
+the smoke test's throwaway identity gone. Auth0 is in the chart and off.
 
 Revision 2 exists because the Ingress was edited on the cluster rather
 than through helm, so the live host and helm's stored values disagreed:
@@ -108,21 +119,17 @@ immediately after the first deploy, to undo the smoke test's deletion of
 Riya Patel; that was safe only because the deployment was minutes old and
 held nothing but seed data. That window has closed.
 
-**The smoke test as written is destructive against a real deployment.**
-Its "forget me" check genuinely deletes `r.patel@example.com`, who is the
-customer the demo is built around, and `tests/smoke.py` has that address
-hard-coded. Before running it against the cluster again, change it to use
-a test-only identity — an address belonging to nobody, seeded for the run
-— and delete just that one record afterwards:
+**The smoke test is safe against the deployment now.** It calls as
+`smoke-test@example.invalid`, seeded before the first check and removed
+with `memory.forget()` after the last, and never touches the demo
+customers. Against the pod:
 
 ```bash
-kubectl --context default -n default exec deploy/voxnova -- \
-  python -c "import memory; memory.forget('smoke-test@example.invalid')"
+kubectl --context default -n default port-forward deploy/voxnova 18080:8080
+VOXNOVA=http://127.0.0.1:18080 VOXNOVA_PASSPHRASE=<the passphrase> \
+  VOXNOVA_EXEC="kubectl --context default -n default exec deploy/voxnova --" \
+  venv/bin/python tests/smoke.py
 ```
-
-`forget()` removes one customer and their calls and nothing else, which is
-the difference that matters. Until the test is changed, run it against a
-local container rather than the pod.
 
 ## Blocked on you
 
