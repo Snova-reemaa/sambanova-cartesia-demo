@@ -1,6 +1,7 @@
 {{- if .Values.networkPolicy.enabled }}
 # Only the app's port is open. Outbound is not restricted: the app calls SambaNova, Cartesia and
-# the search provider.
+# the search provider, and with Auth0 on, the sign-in proxy on 4180 (AUTH_CHECK_URL). Adding
+# Egress here would have to name all of those.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

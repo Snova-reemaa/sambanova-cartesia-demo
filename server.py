@@ -18,6 +18,7 @@ import re
 import secrets
 import time
 
+import aiohttp
 from aiohttp import web, WSMsgType
 
 # Named differently across aiohttp versions, and absent from some, so the
@@ -3372,12 +3373,61 @@ def client_ip(request):
     return chain[-1] if chain else peer
 
 
+# Signed in through Auth0 at the ingress (oauth2-proxy), set by the chart
+# when auth.enabled. The passphrase is then not asked for; consent still is.
+AUTH_PROXY = os.getenv("AUTH_PROXY", "").lower() in ("1", "true", "yes", "on")
+# The passphrase field and its sentence on the login page, marked there.
+PASSPHRASE_PARTS = re.compile(r"<!-- passphrase.*?<!-- /passphrase -->", re.S)
+
+
+# Where to ask oauth2-proxy who a caller is. The chart points it at the
+# proxy's Service inside the cluster.
+AUTH_CHECK_URL = os.getenv("AUTH_CHECK_URL", "")
+
+
+async def verified_user(request):
+    """The Auth0 user this caller really is, asked of oauth2-proxy, or None.
+
+    No header in the request is ever believed, X-Auth-Request-Email
+    included, whoever sent it. nginx does set that header from the proxy's
+    answer, but the NetworkPolicy cannot be relied on to keep everything
+    else away from the pod: the ingress controller runs on the host cluster,
+    out of reach of a selector here, and the pod network is all
+    TRUSTED_PROXIES. So the caller's own oauth2 cookie is handed to the
+    proxy, and only a 202 with an email counts. A request that went round
+    the ingress has no such cookie, or a forged one the proxy rejects.
+    """
+    cookie = request.headers.get("Cookie")
+    if not AUTH_PROXY or not AUTH_CHECK_URL or not cookie:
+        return None
+    try:
+        timeout = aiohttp.ClientTimeout(total=5)
+        async with aiohttp.ClientSession(timeout=timeout) as http:
+            async with http.get(AUTH_CHECK_URL, headers={"Cookie": cookie},
+                                allow_redirects=False) as r:
+                if r.status >= 500:
+                    print(f"  ! oauth2-proxy answered {r.status}; treating the "
+                          "caller as not signed in")
+                if r.status != 202:
+                    return None
+                user = (r.headers.get("X-Auth-Request-Email") or "").strip().lower()
+                return user or None
+    except Exception as exc:
+        # Shut, not open: no answer is no sign-in.
+        print(f"  ! could not ask oauth2-proxy who this is ({type(exc).__name__})")
+        return None
+
+
 def caller_key(request):
     """Who is doing this, for the attempt and request limits.
 
     Session and address together. The session alone is one logout from
-    being a different person; the address alone is a shared office.
+    being a different person; the address alone is a shared office. With
+    Auth0 it is the signed-in user, which signing in again cannot reset.
     """
+    held = session_for(request) or {}
+    if held.get("user"):
+        return hashlib.sha256(f"user|{held['user']}".encode()).hexdigest()[:32]
     token = request.cookies.get(COOKIE_NAME) or "-"
     return hashlib.sha256(
         f"{token}|{client_ip(request)}".encode()).hexdigest()[:32]
@@ -3463,14 +3513,27 @@ async def gate(request, handler):
 
 async def login(request):
     if request.method == "GET":
+        if AUTH_PROXY:
+            # Auth0 has already said who this is; what is left is the consent.
+            with open(os.path.join(STATIC, "login.html"), encoding="utf-8") as f:
+                page = PASSPHRASE_PARTS.sub("", f.read())
+            return web.Response(text=page, content_type="text/html")
         return web.FileResponse(os.path.join(STATIC, "login.html"))
 
     data = await request.post()
-    given = (data.get("passphrase") or "").strip()
-
-    # Constant-time compare so the response time leaks nothing about the value.
-    if not hmac.compare_digest(given, PASSPHRASE):
-        raise web.HTTPFound("/login?bad=1")
+    user = None
+    if AUTH_PROXY:
+        # No passphrase: Auth0 is the gate, and the proxy, not any header,
+        # says who signed in. Round the ingress, or with a made-up header,
+        # there is no user and nothing is given.
+        user = await verified_user(request)
+        if not user:
+            return web.Response(status=401, text="sign in through the site")
+    else:
+        given = (data.get("passphrase") or "").strip()
+        # Constant-time compare so the response time leaks nothing about the value.
+        if not hmac.compare_digest(given, PASSPHRASE):
+            raise web.HTTPFound("/login?bad=1")
 
     # Checked here as well as in the page. The box is a convenience; this is
     # the part that cannot be skipped by posting the form directly.
@@ -3483,6 +3546,7 @@ async def login(request):
         "until": now + SESSION_HOURS * 3600,
         "consent_at": now,
         "policy": policies.VERSION,
+        "user": user,
     }
     print(f"  consent recorded, policy {policies.VERSION}, "
           f"{time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(now))} UTC")
@@ -3618,7 +3682,9 @@ def main():
                                                         if host != "127.0.0.1" else ""))
     # Only ever print one we made up. A passphrase set in .env is a secret,
     # and in a container this line goes wherever the pod's stdout goes.
-    if GENERATED_PASSPHRASE:
+    if AUTH_PROXY:
+        print("  sign-in: Auth0 at the ingress (no passphrase; consent still asked)")
+    elif GENERATED_PASSPHRASE:
         print(f"  passphrase: {PASSPHRASE}")
         print("  (generated for this run — set DEMO_PASSPHRASE in .env to fix it)")
     else:

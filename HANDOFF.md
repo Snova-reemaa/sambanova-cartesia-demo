@@ -151,8 +151,9 @@ local container rather than the pod.
    `rke2-ingress-nginx` runs with `use-forwarded-headers: true` the app now
    reads the rightmost untrusted `X-Forwarded-For` entry, with a test that a
    spoofed header cannot change a caller's rate-limit key.
-3. **Auth0** — not built. See "Auth0, if you want it" below for exactly
-   what it needs.
+3. **Auth0** — built and off; waiting on the Auth0 application from Tamas.
+   See "Auth0 — built, off" below for the callback URL and the five lines
+   of `.env` that switch it on.
 4. ~~Listen to the voices~~ — **done 28 Oct 2026: all 24 approved by ear
    and locked in as the defaults.** For reference,
    `<lang>.wav` is the main agent, `<lang>-billing.wav` Maya,
@@ -166,33 +167,55 @@ local container rather than the pod.
 7. **Native review** of the Italian, Portuguese and Dutch letter names
    (`NEEDS_NATIVE_REVIEW` in `slots.py`).
 
-## Auth0, if you want it
+## Auth0 — built, off
 
-Not implemented, and nothing in the app knows about it. What it would need:
+Built the way sn-agent-swarms does it, and **off by default**: nothing about
+it renders until `auth.enabled=true`. Waiting on the Auth0 application from
+Tamas.
 
-**Does it replace the passphrase?** It should. They do the same job — a gate
-in front of a demo — and keeping both means two things to get past and two
-places to get wrong. Auth0 gives you per-person identity, which also fixes
-the one real weakness of the current limits: the caller key is session plus
-IP, and with a shared passphrase anybody can get a fresh session by signing
-in again. With real accounts it would key on the user.
+- **oauth2-proxy** (`quay.io/oauth2-proxy/oauth2-proxy:v7.9.0`, OIDC) as its
+  own Deployment, Service and `/oauth2` Ingress on the same host; the app's
+  Ingress gets `auth-url` / `auth-signin`, so nobody reaches the app without
+  signing in. Only `@sambanovasystems.com` addresses (`auth.emailDomains`).
+- **The passphrase goes, the consent box stays.** `/privacy` then also says
+  the sign-in email is recorded with the time and policy version, kept as
+  long as the session's consent record (12h, or a restart), and lists Auth0
+  as a processor. Off, it says neither.
+- **No header is believed.** The app asks the proxy itself who signed in
+  (`AUTH_CHECK_URL`, the caller's own oauth2 cookie, 202 or nothing) and
+  keys its limits on that user. Forged `X-Auth-Request-*` headers, a made-up
+  cookie, a slow or failing proxy: all refused, and the failures logged
+  (`tests/auth.py`). This matters because the NetworkPolicy **cannot**
+  keep other pods off the app here: the ingress controller is on the host
+  cluster, out of reach of a selector in this vcluster, and sn-agent-swarms
+  leaves 8080 open to everything for the same reason.
+- **Network paths** (`tests/chart.py`): app → proxy on 4180 open (the app's
+  policy restricts Ingress only); proxy admits 4180 from the app and, since
+  the controller can't be named, from anywhere; proxy egress open so it
+  reaches Auth0 on 443. Not narrowed to "53 + 443": vcluster CoreDNS
+  listens on 1053 behind its Service, and that rule would break sign-in.
 
-**Redirect / callback URLs** for the Auth0 application
-(`https://aiskshowcase1.cloud.snova.ai` throughout):
+**The Auth0 application** (Regular Web Application):
 
-- Allowed Callback URLs: `https://<host>/auth/callback`
-- Allowed Logout URLs: `https://<host>/login`
-- Allowed Web Origins: `https://<host>`
-- Application type: Regular Web Application
+- Allowed Callback URLs: `https://aiskshowcase1.cloud.snova.ai/oauth2/callback`
 
-**Environment variables** it would read:
+**To switch it on**, in `.env` (`./scripts/check-env.sh` lists them):
 
-- `AUTH0_DOMAIN`, `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET`
-- `AUTH0_AUDIENCE` (only if an API is involved; not needed for login alone)
-- `SESSION_SECRET` for signing the session cookie
+```
+VOXNOVA_AUTH=1
+AUTH0_ISSUER_URL=https://<tenant>.us.auth0.com/
+AUTH0_CLIENT_ID=...
+AUTH0_CLIENT_SECRET=...
+AUTH0_COOKIE_SECRET=...      # openssl rand -base64 32 | tr -- '+/' '-_'
+```
 
-The consent gate stays either way: agreeing to the terms is separate from
-proving who you are, and the record of consent is per session.
+then `scripts/deploy-dev.sh <tag>`. The three keys go into `voxnova-keys`
+with the others and never into values or git. One side effect: the app's
+container gets them in its environment too (it reads the whole Secret with
+`envFrom`); it never uses them.
+
+Not built: a sign-out link that also logs out of Auth0 (sn-agent-swarms has
+a `/signout` redirect for that; it needs the client ID in an annotation).
 
 ## Deferred backlog
 

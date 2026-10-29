@@ -43,6 +43,12 @@ spec:
             - {name: HOST, value: "0.0.0.0"}
             - {name: PORT, value: "8080"}
             - {name: MEMORY_FILE, value: /data/memory.sqlite3}
+            {{- if .Values.auth.enabled }}
+            # Signed in through Auth0 at the ingress: no passphrase, consent still asked.
+            - {name: AUTH_PROXY, value: "1"}
+            # The app asks the proxy itself who signed in; it never believes a header.
+            - {name: AUTH_CHECK_URL, value: "http://{{ include "voxnova.name" . }}-oauth2-proxy:4180/oauth2/auth"}
+            {{- end }}
             {{- range $name, $value := .Values.env }}
             - {name: {{ $name }}, value: {{ $value | quote }}}
             {{- end }}

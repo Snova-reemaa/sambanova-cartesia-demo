@@ -11,6 +11,8 @@
 #   VOXNOVA_HOST (required: the *.cloud.snova.ai name to serve on), KUBE_CONTEXT (read from the kubeconfig, else ai-starter-kits-dev-1),
 #   NAMESPACE (default default), and the keys SAMBANOVA_API_KEY, CARTESIA_API_KEY, DEMO_PASSPHRASE,
 #   TAVILY_API_KEY, EXA_API_KEY.
+#   Auth0 (off unless VOXNOVA_AUTH=1): AUTH0_ISSUER_URL, and the keys AUTH0_CLIENT_ID,
+#   AUTH0_CLIENT_SECRET, AUTH0_COOKIE_SECRET, which go into the same Secret as the others.
 
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -18,7 +20,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 REGISTRY="us-west2-docker.pkg.dev/acp-starterkits-development-57/oci-us-west2-starerkits"
 RELEASE="voxnova"
 SECRET_NAME="voxnova-keys"
-KEY_NAMES="SAMBANOVA_API_KEY CARTESIA_API_KEY DEMO_PASSPHRASE TAVILY_API_KEY EXA_API_KEY"
+KEY_NAMES="SAMBANOVA_API_KEY CARTESIA_API_KEY DEMO_PASSPHRASE TAVILY_API_KEY EXA_API_KEY AUTH0_CLIENT_ID AUTH0_CLIENT_SECRET AUTH0_COOKIE_SECRET"
 REQUIRED_KEYS="SAMBANOVA_API_KEY CARTESIA_API_KEY DEMO_PASSPHRASE"
 
 DRY_RUN=0
@@ -37,7 +39,7 @@ done
 log() { echo "==> $*"; }
 
 # --- .env: only these names are taken, and the environment wins over the file ----------------
-ENV_NAMES=" VOXNOVA_HOST KUBE_CONTEXT NAMESPACE TRUSTED_PROXIES KUBECONFIG $KEY_NAMES "
+ENV_NAMES=" VOXNOVA_HOST KUBE_CONTEXT NAMESPACE TRUSTED_PROXIES KUBECONFIG VOXNOVA_AUTH AUTH0_ISSUER_URL $KEY_NAMES "
 from_file=""
 if [ -f .env ]; then
     while IFS= read -r line || [ -n "$line" ]; do
@@ -120,6 +122,16 @@ if ! gcloud artifacts docker images describe "$IMAGE" >/dev/null 2>&1; then
     exit 1
 fi
 
+# --- Auth0, only when asked for: the passphrase gives way to sign-in, so the three Auth0 keys
+# and the issuer become required instead of it.
+auth_args=()
+if [ "${VOXNOVA_AUTH:-0}" = 1 ]; then
+    REQUIRED_KEYS="SAMBANOVA_API_KEY CARTESIA_API_KEY AUTH0_CLIENT_ID AUTH0_CLIENT_SECRET AUTH0_COOKIE_SECRET"
+    if [ -z "${AUTH0_ISSUER_URL:-}" ]; then echo "error: VOXNOVA_AUTH=1 needs AUTH0_ISSUER_URL" >&2; exit 1; fi
+    auth_args=(--set "auth.enabled=true" --set "auth.issuerUrl=$AUTH0_ISSUER_URL")
+    log "Auth0 sign-in: on"
+fi
+
 # --- 3. keys into the Secret (never printed, never on a command line) ---------------------------
 tmpfile=""
 cleanup() { if [ -n "$tmpfile" ]; then rm -f "$tmpfile"; fi; return 0; }
@@ -158,6 +170,7 @@ helm_args=(upgrade --install "$RELEASE" deploy/helm/voxnova
     --kube-context "$KUBE_CONTEXT" --namespace "$NAMESPACE"
     --set "image.tag=$TAG" --set "ingress.host=$VOXNOVA_HOST"
     --set "env.TRUSTED_PROXIES=${TRUSTED_PROXIES:-}"
+    ${auth_args[@]+"${auth_args[@]}"}
     ${checksum_args[@]+"${checksum_args[@]}"} --wait --timeout 5m)
 [ "$DRY_RUN" = 1 ] && helm_args+=(--dry-run=server)
 log "helm upgrade --install $RELEASE (tag $TAG)"

@@ -44,6 +44,8 @@ OFFLINE_SUITES = [
     ("tests/verification.py", "one-time codes, lockout, retention, deletion"),
     ("tests/protocol.py", "code holds the step, the model cannot move it"),
     ("tests/voices.py", "every language in a native voice, whoever speaks"),
+    ("tests/auth.py", "Auth0: no way in on a header, fails closed"),
+    ("tests/chart.py", "the chart with Auth0 off and on"),
 ]
 
 LIVE_SUITES = [

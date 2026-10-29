@@ -103,9 +103,35 @@ Version {VERSION}
 """.strip()
 
 
+# Only true when the site sits behind Auth0 sign-in (AUTH_PROXY, set by the
+# chart's auth.enabled), so only said then. The consent record lives in the
+# server's memory with the session and goes when it does; the consent line
+# in the log carries the time and version, never the email.
+SIGNED_IN = [
+    ("Your sign-in email", "When you accept these terms, the email you signed "
+                           "in with is recorded with the time and the version "
+                           "of the terms you accepted. It is kept as long as "
+                           "the other consent records: until your session "
+                           "ends, at most {hours} hours, or sooner if the "
+                           "service restarts."),
+]
+SIGNED_IN_BY = [
+    ("Auth0 (Okta)", "Signs you in. Receives your sign-in details and tells "
+                     "this service your email address."),
+]
+
+
+def _signed_in():
+    return os.getenv("AUTH_PROXY", "").lower() in ("1", "true", "yes", "on")
+
+
 def privacy_text():
-    processors = "\n".join(f"- **{who}** — {what}" for who, what in PROCESSORS)
-    collected = "\n".join(f"- **{what}** — {why}" for what, why in COLLECTED)
+    hours = os.getenv("SESSION_HOURS", "12")
+    extra = _signed_in()
+    processors = "\n".join(f"- **{who}** — {what}" for who, what
+                           in PROCESSORS + (SIGNED_IN_BY if extra else []))
+    collected = "\n".join(f"- **{what}** — {why.format(hours=hours)}"
+                          for what, why in COLLECTED + (SIGNED_IN if extra else []))
     days = os.getenv("RETENTION_DAYS", "30")
     return f"""
 # Privacy Notice

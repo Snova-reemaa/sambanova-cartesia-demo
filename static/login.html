@@ -68,11 +68,15 @@
 
 <div class="gate">
   <h1>VoxNova</h1>
+  <!-- passphrase: cut by the server when Auth0 signs people in -->
   <p>SambaNova and Cartesia voice agent demo. Enter the passphrase you were given.</p>
+  <!-- /passphrase -->
 
   <form method="post" action="/login" id="gatehere">
+    <!-- passphrase -->
     <input type="password" name="passphrase" placeholder="Passphrase" aria-label="Passphrase"
            autocomplete="current-password" autofocus required>
+    <!-- /passphrase -->
     <button type="submit" id="enter" disabled>Enter</button>
   </form>
 

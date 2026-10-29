@@ -41,6 +41,15 @@ check DEMO_PASSPHRASE   required "without it the pod makes a new one each restar
 check TAVILY_API_KEY    optional "web search; falls back to DuckDuckGo"
 check EXA_API_KEY       optional
 
+
+echo
+echo "Auth0 sign-in (only with VOXNOVA_AUTH=1; off by default)"
+check VOXNOVA_AUTH         optional "1 switches Auth0 on, and the passphrase off"
+check AUTH0_ISSUER_URL     optional "https://<tenant>.us.auth0.com/"
+check AUTH0_CLIENT_ID      optional "from the Auth0 application"
+check AUTH0_CLIENT_SECRET  optional "from the Auth0 application"
+check AUTH0_COOKIE_SECRET  optional "32 random bytes: openssl rand -base64 32 | tr -- '+/' '-_'"
+
 echo
 echo "Deployment"
 expect VOXNOVA_HOST aiskshowcase1.cloud.snova.ai

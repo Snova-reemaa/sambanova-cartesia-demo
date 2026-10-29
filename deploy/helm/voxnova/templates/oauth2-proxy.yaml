@@ -1,0 +1,143 @@
+{{- if .Values.auth.enabled }}
+{{- /*
+Auth0 sign-in in front of the app, the way sn-agent-swarms does it: oauth2-proxy answers
+nginx's auth subrequest (/oauth2/auth) and runs the login round trip (/oauth2/start,
+/oauth2/callback). The app's own Ingress carries the auth-url / auth-signin annotations, so
+nothing reaches the app without a signed-in Auth0 user.
+
+Client ID, client secret and cookie secret come from the same key Secret as the app's keys
+(AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET, AUTH0_COOKIE_SECRET in .env), never from values.
+*/}}
+{{- $host := required "set ingress.host" .Values.ingress.host }}
+{{- $issuer := required "set auth.issuerUrl (https://<your tenant>.auth0.com/)" .Values.auth.issuerUrl }}
+{{- $name := printf "%s-oauth2-proxy" (include "voxnova.name" .) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels: {{- include "voxnova.authLabels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {{- include "voxnova.authLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "voxnova.authLabels" . | nindent 8 }}
+      annotations:
+        checksum/keys: {{ .Values.secretChecksum | quote }}
+    spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: oauth2-proxy
+          image: {{ .Values.auth.image }}
+          args:
+            - --provider=oidc
+            - --http-address=0.0.0.0:4180
+            # Answers the auth subrequest only; it never proxies to the app.
+            - --upstream=static://202
+            - --reverse-proxy=true
+            - --redirect-url=https://{{ $host }}/oauth2/callback
+            - --scope=openid profile email
+            - --skip-provider-button=true
+            - --set-xauthrequest=true
+            - --cookie-secure=true
+            - --cookie-expire={{ .Values.auth.cookieExpire }}
+            - --cookie-csrf-per-request=true
+            - --whitelist-domain={{ trimSuffix "/" (trimPrefix "https://" $issuer) }}
+            {{- range .Values.auth.emailDomains }}
+            - --email-domain={{ . }}
+            {{- end }}
+          env:
+            - {name: OAUTH2_PROXY_OIDC_ISSUER_URL, value: {{ $issuer | quote }}}
+            - name: OAUTH2_PROXY_CLIENT_ID
+              valueFrom: {secretKeyRef: {name: {{ .Values.apiKeysSecret }}, key: AUTH0_CLIENT_ID}}
+            - name: OAUTH2_PROXY_CLIENT_SECRET
+              valueFrom: {secretKeyRef: {name: {{ .Values.apiKeysSecret }}, key: AUTH0_CLIENT_SECRET}}
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom: {secretKeyRef: {name: {{ .Values.apiKeysSecret }}, key: AUTH0_COOKIE_SECRET}}
+          ports:
+            - {name: http, containerPort: 4180}
+          readinessProbe:
+            httpGet: {path: /ping, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /ping, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources: {{- toYaml .Values.auth.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels: {{- include "voxnova.authLabels" . | nindent 4 }}
+spec:
+  selector: {{- include "voxnova.authLabels" . | nindent 4 }}
+  ports:
+    - {name: http, port: 4180, targetPort: http}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $name }}
+  labels: {{- include "voxnova.authLabels" . | nindent 4 }}
+  annotations:
+    # Auth0's tokens make the session cookie larger than nginx's default buffer.
+    nginx.ingress.kubernetes.io/proxy-buffer-size: "16k"
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- with .Values.ingress.tls.secretName }}
+  tls:
+    - hosts: [{{ $host }}]
+      secretName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ $host }}
+      http:
+        paths:
+          - path: /oauth2
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $name }}
+                port: {name: http}
+{{- if .Values.networkPolicy.enabled }}
+---
+# Who may reach the sign-in proxy, on 4180 only:
+#   - the app, which asks it who signed in (AUTH_CHECK_URL), named so it is never lost;
+#   - the ingress controller, for /oauth2/* and nginx's auth subrequests. It runs on the host
+#     cluster, out of reach of any selector here, so 4180 stays open to other sources too.
+#     That is the public sign-in endpoint and safe to be reachable: the app trusts only what
+#     the proxy says about the caller's own cookie, never a header.
+# Egress is deliberately not restricted: the proxy has to reach Auth0 over 443, and DNS. In
+# a vcluster CoreDNS listens on 1053 behind the port-53 Service, so an egress rule written as
+# "53 and 443" can break name resolution and, with it, every sign-in.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+  labels: {{- include "voxnova.authLabels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "voxnova.authLabels" . | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - {port: 4180, protocol: TCP}
+      from:
+        - podSelector:
+            matchLabels: {{- include "voxnova.labels" . | nindent 14 }}
+    - ports:
+        - {port: 4180, protocol: TCP}
+{{- end }}
+{{- end }}

@@ -54,6 +54,24 @@ voices:
   nl: {main: "", billing: "", technical: ""}
   ar: {main: "", billing: "", technical: ""}
 
+# Auth0 sign-in in front of the whole site, built the way sn-agent-swarms does it (oauth2-proxy
+# plus the ingress's auth annotations). Off until the Auth0 application exists. When on, the
+# passphrase screen goes and the consent checkbox stays. The Auth0 app needs:
+#   Allowed Callback URLs  https://<ingress.host>/oauth2/callback
+#   Application type       Regular Web Application
+# Client ID, client secret and cookie secret are keys, not settings: AUTH0_CLIENT_ID,
+# AUTH0_CLIENT_SECRET and AUTH0_COOKIE_SECRET in .env, which deploy-dev.sh puts in the
+# apiKeysSecret. Never here.
+auth:
+  enabled: false
+  issuerUrl: ""                # https://<tenant>.us.auth0.com/ (not a secret)
+  emailDomains: [sambanovasystems.com]
+  cookieExpire: 12h
+  image: quay.io/oauth2-proxy/oauth2-proxy:v7.9.0
+  resources:
+    requests: {cpu: 10m, memory: 32Mi}
+    limits: {memory: 128Mi}
+
 ingress:
   enabled: true
   className: nginx
