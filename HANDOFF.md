@@ -29,6 +29,7 @@ Updated after every committed piece. Offline tests: `venv/bin/python tests/run.p
 | Fix | Retention runs: sweep on startup then every `RETENTION_SWEEP_HOURS` (24), guarded and cancelled on shutdown, counts logged and never addresses. `/privacy` is now true |
 | Deploy | `voxnova:90946f2` pushed, linux/amd64, digest `sha256:40ba0d62…`; 7/7 smoke against the pushed image |
 | Deploy | **Live at https://aiskshowcase1.cloud.snova.ai**: release `voxnova` rev 2, namespace `default`, pod 1/1, 7/7 smoke through a port-forward |
+| Deploy | Rev 7, `voxnova:2543fbe`: names and emails confirmed (read back, spelled, typed). 8/8 smoke on the pod; demo customers unchanged |
 | Confirming | Names and emails read back, then spelled, then typed (3 tries), in all 8 languages; typed values kept exactly, any script, right to left for Arabic; corrected names saved. 147 checks |
 | Deploy | Rev 6, `voxnova:fdad519`: back to passphrase sign-in (new passphrase), Auth0 built and off, ready with VOXNOVA_AUTH=1. Policy pages public; 8/8 smoke on the pod; demo customers unchanged |
 | Deploy | Rev 5, `voxnova:fdad519`: Auth0 sign-in on; the signed-in email is the caller's identity (no code for it, history tied to it, forget deletes it). Redirect chain to the tenant's login checked; demo customers unchanged |
@@ -40,8 +41,8 @@ Updated after every committed piece. Offline tests: `venv/bin/python tests/run.p
 
 ## In progress
 
-Nothing. Deployed `fdad519` with the passphrase as revision 6; the tree is
-clean and the offline suite is 560/560 across 16 suites.
+Nothing. Deployed `2543fbe` as revision 7; the tree is clean and the
+offline suite is 707/707 across 17 suites.
 
 ## Verified locally, as the pod will run it
 
@@ -64,11 +65,17 @@ before believing it.
 
 ## On the cluster now
 
-Release `voxnova`, **revision 6**, namespace `default`, context `default`,
-image tag **`fdad519`**, **passphrase sign-in (Auth0 off)**. Installed 27
+Release `voxnova`, **revision 7**, namespace `default`, context `default`,
+image tag **`2543fbe`**, **passphrase sign-in (Auth0 off)**. Installed 27
 Oct 2026, moved to the `aiskshowcase1` slot, then upgraded to `f209930`
 (rev 3) and `e727fc4` (rev 4) on 28 Oct 2026; Auth0 switched on (rev 5) and
-back off (rev 6) on 29 Oct 2026.
+back off (rev 6), and names and emails confirmed before use (rev 7), on
+29 Oct 2026.
+
+Revision 7 changed the image tag and nothing else. 8/8 smoke on the pod
+(the smoke test now answers the email read-back with a yes); the demo
+customers identical to a snapshot taken before.
+
 
 Revision 6 went back to the passphrase, with a new one, on the same
 image: the oauth2-proxy and its Ingress, Service and NetworkPolicy were
