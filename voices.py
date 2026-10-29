@@ -25,9 +25,10 @@ role, text only for a language. The server checks every configured id
 against Cartesia at startup and refuses to start if any is not in its
 language (check()).
 
-Chosen from Cartesia's descriptions, not by ear: listening/voices/ has a
-sample of each. Billing is a woman's voice and technical a man's, to
-match Maya and Omar, and each differs from the main voice.
+Chosen from Cartesia's descriptions, then listened to and approved, all
+24 (28 Oct 2026): listening/voices/ has a sample of each. Billing is a
+woman's voice and technical a man's, to match Maya and Omar, and each
+differs from the main voice.
 """
 
 import os

@@ -153,8 +153,8 @@ local container rather than the pod.
    spoofed header cannot change a caller's rate-limit key.
 3. **Auth0** — not built. See "Auth0, if you want it" below for exactly
    what it needs.
-4. **Listen to `listening/voices/*.wav`** and tell me which to change.
-   24 voices, chosen from Cartesia's descriptions rather than by ear:
+4. ~~Listen to the voices~~ — **done 28 Oct 2026: all 24 approved by ear
+   and locked in as the defaults.** For reference,
    `<lang>.wav` is the main agent, `<lang>-billing.wav` Maya,
    `<lang>-technical.wav` Omar. Dutch was never missing: Cartesia has 11
    Dutch voices in its public library, just none owned by this account.
