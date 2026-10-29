@@ -12,16 +12,7 @@ import voices                                                 # noqa: E402
 
 OUT = os.path.join(ROOT, "listening", "voices")
 RATE = 44100
-LINES = {
-    "en": "Hello, you're through to support. I can see your order here — how can I help?",
-    "es": "Hola, ha llamado a atención al cliente. Veo su pedido aquí. ¿En qué puedo ayudarle?",
-    "fr": "Bonjour, vous êtes au service client. Je vois votre commande. Comment puis-je vous aider ?",
-    "de": "Guten Tag, Sie sind beim Kundenservice. Ich sehe Ihre Bestellung. Wie kann ich helfen?",
-    "it": "Buongiorno, è in contatto con l'assistenza. Vedo il suo ordine. Come posso aiutarla?",
-    "pt": "Olá, ligou para o apoio ao cliente. Estou a ver a sua encomenda. Como posso ajudar?",
-    "nl": "Hallo, u spreekt met de klantenservice. Ik zie uw bestelling. Waarmee kan ik helpen?",
-    "ar": "مرحبًا، وصلت إلى خدمة العملاء. أرى طلبك هنا. كيف أقدر أساعدك؟",
-}
+LINES = voices.SAMPLE
 
 async def main(only):
     try:

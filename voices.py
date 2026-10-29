@@ -69,6 +69,47 @@ VOICES = {
     },
 }
 
+# A word or two for the picker, from Cartesia's own description of each.
+DESCRIBED = {
+    "db6b0ed5-d5d3-463d-ae85-518a07d3c2b4": "approachable",
+    "3597a26f-80ef-4bd5-8101-9699bc764917": "steady, clear",
+    "7c58f4a4-a72c-42fa-a503-41b9408820f3": "confident, articulate",
+    "57a3a9e0-a91c-4c94-a2bb-e6cbab3ae649": "clear, articulate",
+    "00e9ec78-2002-41dd-8d19-6b1d3b17a461": "composed",
+    "8a6d0b8e-8cd8-4952-a41e-b7af18662135": "articulate, even",
+    "96355f3d-0179-4c9a-a8d8-11ef0779a9b8": "soft, clear",
+    "92f27ee5-d8b9-4c0a-a0c2-f401f6ab0a72": "assured, helpful",
+    "0ee8beaa-db49-4024-940d-c7ea09b590b3": "polished",
+    "b4b8e2af-6139-466e-a93a-30c20d2e1fc5": "approachable",
+    "e70cceed-576e-4fc1-9fc1-f1e137f15367": "methodical, supportive",
+    "43a317e9-f1b9-45bf-bbdb-1d4a52e46f0d": "calm",
+    "90c7d657-9599-4cd0-9ed2-2568359e4d1a": "polished",
+    "a5b0fceb-cc32-4eef-8929-421f55d32e16": "calm, articulate",
+    "225ba8cf-9fc2-4371-a78c-fe38ba38898a": "clear, articulate",
+    "731ace69-ee17-41bc-8c6f-665c9f1db95c": "polite, steady",
+    "d46abd1d-2d02-43e8-819f-51fb652c1c61": "reliable, clear",
+    "4b5112be-c461-44a2-a66b-0dd7f98db4a0": "steady, warm",
+    "5def377d-908b-4540-8bd7-3c968fcae351": "clear, methodical",
+    "e00dd3df-19e7-4cd4-827a-7ff6687b6954": "confident",
+    "79693aee-1207-4771-a01e-20c393c89e6f": "friendly",
+    "c8750946-6b70-4dbf-b760-8cc554e98a0c": "clear",
+    "95e9fdaf-cf0b-4739-b1de-3350ca50774a": "clear, methodical",
+    "b068aef8-2c18-4a1d-bafb-e8f6d2239d60": "composed",
+}
+
+# What a voice says when previewed, and in listening/voices/: one short
+# support line per language, in that language.
+SAMPLE = {
+    "en": "Hello, you're through to support. I can see your order here — how can I help?",
+    "es": "Hola, ha llamado a atención al cliente. Veo su pedido aquí. ¿En qué puedo ayudarle?",
+    "fr": "Bonjour, vous êtes au service client. Je vois votre commande. Comment puis-je vous aider ?",
+    "de": "Guten Tag, Sie sind beim Kundenservice. Ich sehe Ihre Bestellung. Wie kann ich helfen?",
+    "it": "Buongiorno, è in contatto con l'assistenza. Vedo il suo ordine. Come posso aiutarla?",
+    "pt": "Olá, ligou para o apoio ao cliente. Estou a ver a sua encomenda. Como posso ajudar?",
+    "nl": "Hallo, u spreekt met de klantenservice. Ik zie uw bestelling. Waarmee kan ik helpen?",
+    "ar": "مرحبًا، وصلت إلى خدمة العملاء. أرى طلبك هنا. كيف أقدر أساعدك؟",
+}
+
 # The two settings that came before this table set one voice for a
 # specialist in every language. Honoured for English only, which is the
 # only way they can be right.

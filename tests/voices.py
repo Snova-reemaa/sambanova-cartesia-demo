@@ -70,6 +70,22 @@ async def through_the_socket(check):
                 used, _ = await turn_voice(ws, "ar", "a-voice-nobody-has")
                 check("an id the server does not know is ignored", used == reem)
 
+            # Previews speak only the picker's own voices, and only for a
+            # signed-in visitor. Offline the server is TEXT_ONLY, so the
+            # offered voice answers 503 and nothing is spent.
+            thai = "3b72e1b6-0c4f-4e6a-a5a5-7b0e2b1b6a11"
+            async with http.get(f"{s.base}/voice-sample?id={thai}") as r:
+                check("a preview of a voice the picker does not offer is refused",
+                      r.status == 404)
+            async with http.get(f"{s.base}/voice-sample?id={reem}") as r:
+                check("an offered voice is not synthesised with speech off",
+                      r.status == 503)
+        async with aiohttp.ClientSession() as stranger:
+            async with stranger.get(f"{s.base}/voice-sample?id={reem}",
+                                    allow_redirects=False) as r:
+                check("and nobody signed out gets a preview at all",
+                      r.status in (302, 401))
+
 
 def main():
     results = []

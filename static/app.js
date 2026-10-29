@@ -1032,6 +1032,10 @@ function showVoicesFor(code) {
     const o = document.createElement('option');
     o.value = v.id;
     o.textContent = `${v.name} (${ROLE_LABEL[v.role] || v.role})`;
+    o.dataset.name = v.name;
+    o.dataset.role = v.role;
+    o.dataset.hint = v.describe || '';
+    o.lang = code;
     ui.pickVoice.append(o);
   });
   // A new language starts on its own main voice.
@@ -1039,6 +1043,297 @@ function showVoicesFor(code) {
   ui.pickVoice.value = main.id;
   ui.pickVoice.disabled = !audioAvailable;
 }
+
+/* ------------------------------------------------- the two fancy pickers */
+
+// Voice and Language look like the rest of the page instead of the
+// browser's dropdown: a pill that opens a frosted panel. The <select>
+// underneath stays the source of truth, hidden, so everything that reads
+// ui.pickVoice.value, rebuilds its options or disables it keeps working;
+// a MutationObserver redraws the panel whenever any of that happens.
+//
+// ARIA listbox pattern: the pill is a button with aria-haspopup, the panel
+// a role=listbox driven by aria-activedescendant. Arrows, Home/End, Enter
+// or Space to choose, Esc to close, P to preview a voice. The panel lives
+// on <body>, not in the dock: the dock's backdrop-filter would otherwise
+// make it the containing block and trap the panel inside it.
+
+const ICON_CHEVRON = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="m4 6 4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const ICON_CHECK = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="m3.5 8.5 3 3 6-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const ICON_PLAY = '<svg class="i-play" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M5 3.5v9l7.5-4.5z" fill="currentColor"/></svg><svg class="i-stop" viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor"/></svg>';
+
+let fancyCount = 0;
+
+function fancySelect(select, { labelId, groupOf = null, preview = null }) {
+  const n = ++fancyCount;
+  const wrap = select.parentElement;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'fancy-btn';
+  btn.id = `fancy-btn-${n}`;
+  btn.setAttribute('aria-haspopup', 'listbox');
+  btn.setAttribute('aria-expanded', 'false');
+  btn.setAttribute('aria-labelledby', `${labelId} ${btn.id}`);
+  btn.innerHTML = `<bdi class="fancy-current"></bdi>${ICON_CHEVRON}`;
+  const current = btn.querySelector('.fancy-current');
+
+  let play = null;
+  if (preview) {
+    play = document.createElement('button');
+    play.type = 'button';
+    play.className = 'fancy-play';
+    play.innerHTML = ICON_PLAY;
+    play.addEventListener('click', () => preview(select.value, play));
+  }
+
+  const panel = document.createElement('div');
+  panel.className = 'fancy-panel';
+  panel.id = `fancy-list-${n}`;
+  panel.setAttribute('role', 'listbox');
+  panel.setAttribute('aria-labelledby', labelId);
+  panel.tabIndex = -1;
+  panel.hidden = true;
+  btn.setAttribute('aria-controls', panel.id);
+  document.body.append(panel);
+  wrap.append(btn);
+  if (play) wrap.append(play);
+
+  let items = [];
+  let active = -1;
+
+  function label(o) { return o.dataset.name || o.textContent; }
+
+  function render() {
+    const opts = [...select.options];
+    const chosen = select.selectedOptions[0];
+    current.textContent = chosen ? label(chosen) : '';
+    current.lang = chosen && chosen.lang ? chosen.lang : '';
+    current.dir = chosen && chosen.dir ? chosen.dir : 'auto';
+    btn.disabled = select.disabled;
+    btn.classList.toggle('wants-attention', select.classList.contains('wants-attention'));
+    if (play) {
+      play.disabled = select.disabled || !select.value;
+      play.setAttribute('aria-label', chosen ? `Preview ${label(chosen)}` : 'Preview');
+      play.title = play.getAttribute('aria-label');
+    }
+
+    panel.innerHTML = '';
+    items = [];
+    let group = null;
+    let lastKey;
+    opts.forEach((o, i) => {
+      const key = groupOf ? groupOf(o) : null;
+      if (key && key !== lastKey) {
+        group = document.createElement('div');
+        group.setAttribute('role', 'group');
+        const head = document.createElement('div');
+        head.className = 'fancy-head';
+        head.id = `${panel.id}-g${i}`;
+        head.textContent = key;
+        group.setAttribute('aria-labelledby', head.id);
+        group.append(head);
+        panel.append(group);
+        lastKey = key;
+      }
+      const row = document.createElement('div');
+      row.className = 'fancy-opt';
+      row.id = `${panel.id}-o${i}`;
+      row.setAttribute('role', 'option');
+      row.setAttribute('aria-selected', String(o.selected));
+      if (o.disabled) row.setAttribute('aria-disabled', 'true');
+      row.dataset.value = o.value;
+      const text = document.createElement('span');
+      text.className = 'fancy-text';
+      const name = document.createElement('span');
+      name.className = 'fancy-name';
+      name.textContent = label(o);
+      if (o.lang) name.lang = o.lang;
+      if (o.dir) name.dir = o.dir;
+      text.append(name);
+      if (o.dataset.hint) {
+        const hint = document.createElement('span');
+        hint.className = 'fancy-hint';
+        hint.textContent = o.dataset.hint;
+        text.append(hint);
+      }
+      row.append(text);
+      if (preview && o.value) {
+        // A pointer shortcut only; from the keyboard it is P on the row.
+        const p = document.createElement('button');
+        p.type = 'button';
+        p.className = 'fancy-play small';
+        p.tabIndex = -1;
+        p.setAttribute('aria-hidden', 'true');
+        p.innerHTML = ICON_PLAY;
+        p.addEventListener('click', (e) => { e.stopPropagation(); preview(o.value, p); });
+        row.append(p);
+      }
+      const tick = document.createElement('span');
+      tick.className = 'fancy-tick';
+      tick.innerHTML = ICON_CHECK;
+      row.append(tick);
+      row.addEventListener('click', () => { if (!o.disabled) choose(i); });
+      row.addEventListener('pointermove', () => setActive(i));
+      (group || panel).append(row);
+      items.push(row);
+    });
+    if (!panel.hidden) setActive(Math.max(0, select.selectedIndex));
+  }
+
+  function setActive(i) {
+    if (!items.length) return;
+    active = (i + items.length) % items.length;
+    items.forEach((r, k) => r.classList.toggle('active', k === active));
+    panel.setAttribute('aria-activedescendant', items[active].id);
+    items[active].scrollIntoView({ block: 'nearest' });
+  }
+
+  function place() {
+    const r = btn.getBoundingClientRect();
+    panel.classList.toggle('sheet', innerWidth <= 560);
+    if (innerWidth <= 560) {
+      panel.style.left = panel.style.top = panel.style.bottom = panel.style.width = '';
+      return;
+    }
+    const width = Math.max(240, Math.min(320, r.width + 140));
+    panel.style.width = `${width}px`;
+    panel.style.left = `${Math.min(Math.max(12, r.left - 8), innerWidth - width - 12)}px`;
+    const below = innerHeight - r.bottom;
+    const tall = Math.min(panel.scrollHeight || 320, 360);
+    if (below >= tall + 16 || below >= r.top) {
+      panel.style.top = `${r.bottom + 8}px`; panel.style.bottom = '';
+      panel.classList.remove('up');
+    } else {
+      panel.style.bottom = `${innerHeight - r.top + 8}px`; panel.style.top = '';
+      panel.classList.add('up');
+    }
+  }
+
+  function open() {
+    if (btn.disabled || !panel.hidden) return;
+    render();
+    panel.hidden = false;
+    place();
+    btn.setAttribute('aria-expanded', 'true');
+    requestAnimationFrame(() => panel.classList.add('open'));
+    setActive(Math.max(0, select.selectedIndex));
+    panel.focus({ preventScroll: true });
+  }
+
+  function close(refocus) {
+    if (panel.hidden) return;
+    panel.classList.remove('open');
+    btn.setAttribute('aria-expanded', 'false');
+    setTimeout(() => { if (!panel.classList.contains('open')) panel.hidden = true; }, 170);
+    if (refocus) btn.focus();
+  }
+
+  function choose(i) {
+    const value = items[i].dataset.value;
+    if (select.value !== value) {
+      select.value = value;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    render();
+    close(true);
+  }
+
+  btn.addEventListener('click', () => (panel.hidden ? open() : close(true)));
+  btn.addEventListener('keydown', (e) => {
+    if (['ArrowDown', 'ArrowUp', 'Enter', ' '].includes(e.key)) { e.preventDefault(); open(); }
+  });
+  panel.addEventListener('keydown', (e) => {
+    const go = { ArrowDown: active + 1, ArrowUp: active - 1, Home: 0, End: items.length - 1 }[e.key];
+    if (go !== undefined) { e.preventDefault(); setActive(go); return; }
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (active >= 0) choose(active); return; }
+    if (e.key === 'Escape') { e.preventDefault(); close(true); return; }
+    if (e.key === 'Tab') { close(false); return; }
+    if (preview && (e.key === 'p' || e.key === 'P') && active >= 0) {
+      e.preventDefault();
+      const p = items[active].querySelector('.fancy-play');
+      if (p) preview(items[active].dataset.value, p);
+    }
+  });
+  // A tap outside closes the panel and does nothing else, as a native
+  // dropdown does: it used to land on whatever was underneath too, and a
+  // suggestion chip there sent a question nobody meant to ask.
+  let swallow = false;
+  document.addEventListener('pointerdown', (e) => {
+    if (!panel.hidden && !panel.contains(e.target) && !btn.contains(e.target)) {
+      swallow = true;
+      // A drag or scroll sends no click; never eat a later, real one.
+      setTimeout(() => { swallow = false; }, 400);
+      close(false);
+    }
+  }, true);
+  document.addEventListener('click', (e) => {
+    if (!swallow) return;
+    swallow = false;
+    e.preventDefault();
+    e.stopPropagation();
+  }, true);
+  addEventListener('resize', () => { if (!panel.hidden) place(); });
+
+  new MutationObserver(render).observe(select, {
+    childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'class'],
+  });
+  select.addEventListener('change', render);
+  render();
+  return { render };
+}
+
+// Previews: one fetch per voice per page, the clip kept as a blob URL, and
+// the server keeps its own copy too, so Cartesia hears about each voice once.
+const previewClips = new Map();
+let previewing = null;
+
+function stopPreview() {
+  if (!previewing) return;
+  previewing.audio.pause();
+  document.querySelectorAll('.fancy-play.playing').forEach((b) => b.classList.remove('playing'));
+  previewing = null;
+}
+
+async function previewVoice(id, button) {
+  if (!id) return;
+  const again = previewing && previewing.id === id;
+  stopPreview();
+  if (again) return;                      // a second press stops it
+  if (!previewClips.has(id)) {
+    previewClips.set(id, fetch(`/voice-sample?id=${encodeURIComponent(id)}`)
+      .then((r) => { if (!r.ok) throw new Error(`preview ${r.status}`); return r.blob(); })
+      .then((blob) => URL.createObjectURL(blob)));
+  }
+  button.classList.add('loading');
+  let url;
+  try {
+    url = await previewClips.get(id);
+  } catch (e) {
+    previewClips.delete(id);              // let a later press try again
+    button.classList.remove('loading');
+    button.title = 'Preview unavailable right now';
+    return;
+  }
+  button.classList.remove('loading');
+  const audio = new Audio(url);
+  previewing = { id, audio };
+  document.querySelectorAll(`.fancy-play`).forEach((b) => {
+    const row = b.closest('.fancy-opt');
+    if (b === button || (row && row.dataset.value === id) || (!row && ui.pickVoice.value === id)) {
+      b.classList.add('playing');
+    }
+  });
+  audio.addEventListener('ended', stopPreview);
+  audio.play().catch(stopPreview);
+}
+
+const VOICE_GROUP = { front: 'Main agent', billing: 'Billing · Maya', technical: 'Technical · Omar' };
+fancySelect(ui.pickVoice, {
+  labelId: 'pk-voice',
+  groupOf: (o) => VOICE_GROUP[o.dataset.role] || null,
+  preview: previewVoice,
+});
+const langPicker = fancySelect(ui.pickLang, { labelId: 'pk-lang' });
 ui.pickSearch.addEventListener('change', () => remember('voiceloop.search', ui.pickSearch.checked ? '1' : '0'));
 if (recall('voiceloop.search') === '0') ui.pickSearch.checked = false;
 ui.pickCheck.addEventListener('change', () => remember('voiceloop.check', ui.pickCheck.checked ? '1' : '0'));
@@ -2395,6 +2690,7 @@ ui.pickLang.addEventListener('change', () => {
   if (saved && [...ui.pickLang.options].some((o) => o.value === saved)) {
     ui.pickLang.value = saved;
     if (saved !== 'auto') recLang = saved;
+    langPicker.render();   // set without an event, so the pill is told
   }
 }
 

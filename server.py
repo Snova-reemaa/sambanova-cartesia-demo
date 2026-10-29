@@ -935,8 +935,48 @@ def native_voices():
             if vid and vid not in seen:
                 seen.add(vid)
                 out.append({"id": vid, "name": voices.name_for(role, code),
-                            "language": code, "role": role})
+                            "language": code, "role": role,
+                            "describe": voices.DESCRIBED.get(vid, "")})
     return out
+
+
+# Preview clips, one per voice, made the first time anyone asks and kept
+# for the life of the pod: 24 short lines at most, ever, rather than one
+# per click. The browser keeps its own copy as well.
+SAMPLES = {}
+_sample_locks = {}
+
+
+async def voice_sample(request):
+    """The sample line in one of the picker's voices, as WAV.
+
+    Only the voices the picker offers, each in its own language: this is
+    not a way to have anything else synthesised.
+    """
+    vid = request.query.get("id", "")
+    code = {v["id"]: v["language"] for v in native_voices()}.get(vid)
+    if not code:
+        return web.Response(status=404, text="not a voice the picker offers")
+    if TEXT_ONLY:
+        return web.Response(status=503, text="speech is switched off")
+    if vid not in SAMPLES:
+        async with _sample_locks.setdefault(vid, asyncio.Lock()):
+            if vid not in SAMPLES:
+                tts = get_tts()
+                try:
+                    clip = await tts.tts.generate(
+                        model_id=tts_model_for(code), transcript=voices.SAMPLE[code],
+                        voice={"mode": "id", "id": vid}, language=code,
+                        output_format={"container": "wav", "encoding": "pcm_s16le",
+                                       "sample_rate": 24000})
+                    SAMPLES[vid] = await clip.read()
+                except Exception as exc:
+                    log_error(exc, "voice preview")
+                    return web.Response(status=503, text=safe_error(exc, "speech"))
+                finally:
+                    await tts.close()
+    return web.Response(body=SAMPLES[vid], content_type="audio/wav",
+                        headers={"Cache-Control": "private, max-age=86400"})
 
 
 async def check_voices(tts):
@@ -3684,6 +3724,7 @@ def main():
         app.router.add_get("/whoami", whoami)
     app.router.add_get("/terms", terms)
     app.router.add_get("/privacy", privacy)
+    app.router.add_get("/voice-sample", voice_sample)
     app.router.add_post("/login", login)
     app.router.add_get("/ws", websocket_handler)
     app.router.add_static("/static", STATIC)

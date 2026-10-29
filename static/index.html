@@ -256,24 +256,26 @@
           <span class="pk-label">Model</span>
           <select id="pick-model"><option>loading…</option></select>
         </label>
-        <label class="picker">
-          <span class="pk-label">Voice</span>
-          <select id="pick-voice"><option>loading…</option></select>
-        </label>
-        <label class="picker">
-          <span class="pk-label">Language</span>
-          <select id="pick-lang" title="Speech recognition has to know the language before it hears it">
-            <option value="auto">Auto</option>
-            <option value="en">English</option>
-            <option value="ar">العربية</option>
-            <option value="es">Español</option>
-            <option value="fr">Français</option>
-            <option value="de">Deutsch</option>
-            <option value="it">Italiano</option>
-            <option value="pt">Português</option>
-            <option value="nl">Nederlands</option>
+        <!-- Voice and Language: the select stays as the value everything else
+             reads; app.js draws the pill and panel over it (fancySelect). -->
+        <div class="picker fancy">
+          <span class="pk-label" id="pk-voice">Voice</span>
+          <select id="pick-voice" class="fancy-native" tabindex="-1" aria-hidden="true"><option>loading…</option></select>
+        </div>
+        <div class="picker fancy">
+          <span class="pk-label" id="pk-lang">Language</span>
+          <select id="pick-lang" class="fancy-native" tabindex="-1" aria-hidden="true">
+            <option value="auto" data-hint="follows the caller">Auto</option>
+            <option value="en" lang="en">English</option>
+            <option value="ar" lang="ar" dir="rtl" data-hint="Arabic">العربية</option>
+            <option value="es" lang="es" data-hint="Spanish">Español</option>
+            <option value="fr" lang="fr" data-hint="French">Français</option>
+            <option value="de" lang="de" data-hint="German">Deutsch</option>
+            <option value="it" lang="it" data-hint="Italian">Italiano</option>
+            <option value="pt" lang="pt" data-hint="Portuguese">Português</option>
+            <option value="nl" lang="nl" data-hint="Dutch">Nederlands</option>
           </select>
-        </label>
+        </div>
         <label class="picker toggle">
           <input type="checkbox" id="pick-search" checked>
           <span class="switch" aria-hidden="true"></span>
