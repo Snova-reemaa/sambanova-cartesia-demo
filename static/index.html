@@ -91,6 +91,18 @@
         <p class="codenote" id="code-note"></p>
       </div>
 
+      <!-- A name or email that would not come through by voice, typed:
+           any script, kept exactly. dir=auto lays Arabic out right to left. -->
+      <div class="codebox" id="idbox" hidden>
+        <label for="id-input" id="id-label">Type your name</label>
+        <div class="coderow">
+          <input id="id-input" dir="auto" autocomplete="off" autocapitalize="off"
+                 spellcheck="false" maxlength="120" aria-labelledby="id-label">
+          <button type="button" id="id-send">Save</button>
+        </div>
+        <p class="codenote" id="id-note"></p>
+      </div>
+
       <div class="demoinbox" id="demo-inbox" hidden>
         <p class="demoinbox-label">Demo mode: code shown on screen.
           In production it's emailed.</p>

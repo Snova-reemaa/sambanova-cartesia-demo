@@ -46,6 +46,7 @@ OFFLINE_SUITES = [
     ("tests/voices.py", "every language in a native voice, whoever speaks"),
     ("tests/auth.py", "Auth0: no way in on a header, fails closed"),
     ("tests/chart.py", "the chart with Auth0 off and on"),
+    ("tests/confirming.py", "names and emails read back, spelled, typed, 8 languages"),
 ]
 
 LIVE_SUITES = [

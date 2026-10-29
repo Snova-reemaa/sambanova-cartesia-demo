@@ -1018,6 +1018,14 @@ body.policy {
 }
 .coderow button:disabled { opacity: .45; cursor: not-allowed; }
 .codenote { margin: 6px 0 0; font-size: 12px; color: var(--faint); }
+/* The name and email box: text, not digits, so ordinary type; any script,
+   and dir=auto in the markup turns Arabic right to left as it is typed. */
+#id-input {
+  font-family: var(--sans); font-size: 15px; letter-spacing: normal;
+  unicode-bidi: plaintext;
+}
+#id-input:lang(ar) { font-size: 16px; }
+.coderow input:focus-visible { outline: 2px solid var(--paper); outline-offset: 1px; }
 .codenote.bad { color: var(--bad); }
 
 /* The demo inbox is not verification and must never be mistaken for it. */

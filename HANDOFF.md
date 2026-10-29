@@ -29,6 +29,7 @@ Updated after every committed piece. Offline tests: `venv/bin/python tests/run.p
 | Fix | Retention runs: sweep on startup then every `RETENTION_SWEEP_HOURS` (24), guarded and cancelled on shutdown, counts logged and never addresses. `/privacy` is now true |
 | Deploy | `voxnova:90946f2` pushed, linux/amd64, digest `sha256:40ba0d62…`; 7/7 smoke against the pushed image |
 | Deploy | **Live at https://aiskshowcase1.cloud.snova.ai**: release `voxnova` rev 2, namespace `default`, pod 1/1, 7/7 smoke through a port-forward |
+| Confirming | Names and emails read back, then spelled, then typed (3 tries), in all 8 languages; typed values kept exactly, any script, right to left for Arabic; corrected names saved. 147 checks |
 | Deploy | Rev 6, `voxnova:fdad519`: back to passphrase sign-in (new passphrase), Auth0 built and off, ready with VOXNOVA_AUTH=1. Policy pages public; 8/8 smoke on the pod; demo customers unchanged |
 | Deploy | Rev 5, `voxnova:fdad519`: Auth0 sign-in on; the signed-in email is the caller's identity (no code for it, history tied to it, forget deletes it). Redirect chain to the tenant's login checked; demo customers unchanged |
 | Deploy | Rev 4, `voxnova:e727fc4`: picker offers only native voices for the language spoken; redesigned Voice and Language pickers (keyboard, RTL, mobile sheet, cached previews). 8/8 smoke on the pod |
@@ -300,6 +301,20 @@ first-audio latency before/after Task 1; more evals.
   own screen; anyone looking at it passes. It demonstrates the flow.
 - `main.py` is a separate CLI measurement tool, not used by the server.
 - Arabic uses English letter names for Latin letters, as Arabic speakers do.
+- **Names and emails are confirmed before they are used** (`confirming.py`).
+  Read back in the caller's language; on a no, spelled letter by letter
+  in that language's letter names (accents spoken as "acute", "cédille",
+  "Umlaut"..., Arabic names in Arabic letter names); on a second no, a box
+  on screen, and what is typed is kept exactly. These turns are fixed
+  sentences, with no model call: quick, cheap, and the model never
+  reports a fact about state. A question asked mid read-back goes to the
+  model, which answers and asks again. A surname alone ("it's Patel") is
+  read back as said, never with the first name on file. A returning
+  caller's corrected name replaces the saved one, never a demo
+  customer's. Emails are keyed lower case, as before; a typed name is
+  stored exactly. The Italian, Portuguese and Dutch letter names are
+  still `NEEDS_NATIVE_REVIEW`, and they now decode spellings as well as
+  read them.
 - **New callers are put on file before they verify.** Saying an address
   nobody has creates an unverified record under the name they gave (picked
   out of "my name is…" in any of the eight languages, else from the

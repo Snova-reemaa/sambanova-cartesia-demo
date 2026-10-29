@@ -82,7 +82,9 @@ async def checks():
             # 7/7 and went live as "ready, text only".
             results.append(line("voice is on", ready.get("audio") is True,
                                 (ready.get("audio_trouble") or "")[:90]))
-            a = await say(ws, f"hi it's {WHO}")
+            # The address is read back first; the code comes after a yes.
+            await say(ws, f"hi it's {WHO}")
+            a = await say(ws, "yes")
             code = a["demo"]
             b = await say(ws, f"the code is {code}") if code else {"caller":None}
             ok = bool(code) and b["caller"] and b["caller"][0]=="verified"
@@ -90,7 +92,8 @@ async def checks():
         # hang up, call back, remembered
         async with http.ws_connect(f"{B}/ws") as ws:
             await ws.receive()
-            c = await say(ws, f"hi it's {WHO}")
+            await say(ws, f"hi it's {WHO}")
+            c = await say(ws, "yes")
             d = await say(ws, f"{c['demo']}") if c["demo"] else {"reply":""}
             e = await say(ws, "what did we talk about last time")
             ok = bool(re.search(r"kettle|blue", (e["reply"] or ""), re.I))
@@ -98,7 +101,8 @@ async def checks():
         # forget me
         async with http.ws_connect(f"{B}/ws") as ws:
             await ws.receive()
-            f1 = await say(ws, f"hi it's {WHO}")
+            await say(ws, f"hi it's {WHO}")
+            f1 = await say(ws, "yes")
             f2 = await say(ws, f"{f1['demo']}") if f1["demo"] else {}
             f3 = await say(ws, "delete my data please")
             ok = f3["caller"] and f3["caller"][0]=="forgotten"

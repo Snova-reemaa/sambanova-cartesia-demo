@@ -128,7 +128,9 @@ async def signed_in_identity(check, http, s, session):
         check("giving their own email asks for no code",
               not any(e["status"] == "code_sent" or e.get("demo_code") for e in said))
 
-        said = await turn(ws, "actually it's r.patel@example.com")
+        # Read back first, like any address; the code after a yes.
+        await turn(ws, "actually it's r.patel@example.com")
+        said = await turn(ws, "yes")
         sent = next((e for e in said if e["status"] == "code_sent"), None)
         check("another email is a claim: a code, as without Auth0",
               sent and sent.get("demo_code"))
@@ -164,7 +166,8 @@ async def code_flow_without_auth0(check):
             async with http.ws_connect(f"{s.base}/ws") as ws:
                 _, hello = await opening(ws)
                 check("without Auth0, a call starts knowing nobody", hello is None)
-                said = await turn(ws, "my email is fresh.person@example.org")
+                await turn(ws, "my email is fresh.person@example.org")
+                said = await turn(ws, "yes")
                 sent = next((e for e in said if e["status"] == "code_sent"), None)
                 check("and an email still gets a code",
                       sent and sent.get("demo_code"))

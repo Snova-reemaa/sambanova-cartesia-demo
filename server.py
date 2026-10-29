@@ -42,6 +42,7 @@ from search import search, as_context, provider as search_provider
 from knowledge_base import Knowledge, as_context as kb_context
 import languages
 import heard
+import confirming
 import memory
 import orders
 import policies
@@ -1117,6 +1118,12 @@ class Session:
         self.stated_name = None  # the name they gave, for a new caller's record
         self.signed_in = None    # the Auth0 email, when sign-in is on: their identity
         self.signed_in_forgotten = False  # they said "forget me" on this call
+        self.confirming = None   # a confirming.Step: a name or email being read back
+        self.confirmed_name = None
+        self.name_explicit = False   # they said "my name is ...", not just a surname
+        self.queued_email = None     # said with the name; confirmed after it
+        self.name_match_email = None # "it's Patel": whose record that name finds
+        self.confirm_aside = False   # asked something else mid read-back
         self.caller = None               # who is on the line, once an order is looked up
         self.said = {}                   # turn_id -> (assistant message in history, full reply)
         self.turns_used = 0              # counted, not derived: history is trimmed
@@ -1204,6 +1211,8 @@ def read_opts(data):
         "check": bool(data.get("check", True)),
         "mode": "interpret" if data.get("mode") == "interpret" else "agent",
         "pair": data.get("pair") if data.get("pair") in languages.SUPPORTED else "ar",
+        # Typed into the name or email box: kept exactly, never parsed as speech.
+        "typed": data.get("typed_field") if data.get("typed_field") in ("name", "email") else None,
         "source": "screen" if data.get("source") == "screen" else "camera",
     }
 
@@ -1346,6 +1355,10 @@ def hear_code(session, said):
     c = session.caller
     verdict = memory.check_code(c["email"], checked.value, caller=session.key)
     if verdict == "ok":
+        # They told us their name outright and confirmed it, and it is not
+        # the one on file: a returning caller's correction, kept.
+        if session.name_explicit and session.confirmed_name:
+            memory.rename(c["email"], session.confirmed_name)
         person = memory.customer(c["email"]) or {}
         c.update(verified=True, name=person.get("name") or c.get("claimed"),
                  calls=memory.history(c["email"]), mismatch=False)
@@ -1400,6 +1413,142 @@ def identify(session, prompt):
     c["mismatch"] = True
     c["attempts"] = c.get("attempts", 0) + 1
     return caller_event(c, "mismatch")
+
+
+# ===================================================== confirming name and email
+#
+# A name or an address is read back before anything is done with it: the
+# recogniser hears "Rima" for Reema and "our dot patel" for r.patel as a
+# matter of course. Three tries, each a different way in (confirming.py):
+# heard and read back, spelled and read back, typed into a box. These turns
+# are said in fixed sentences in the caller's language, with no model call:
+# what was heard and what happens next are facts, and the model is not
+# trusted to report facts about state.
+
+def name_heard(prompt):
+    """'Hi, it's Patel' -> ("Patel", her address), from a verified
+    customer's name, as the caller said it. Only what they said is read
+    back, never the rest of the name on file: that would tell an unverified
+    caller who the customer is."""
+    email = memory.find_customer(prompt)
+    person = memory.customer(email) if email else None
+    if not person:
+        return None
+    parts = {memory.fold(p) for p in (person["name"] or "").split()}
+    said = [w for w in re.findall(r"[^\W\d_][\w'\-]*", prompt) if memory.fold(w) in parts]
+    return (" ".join(said), email) if said else None
+
+
+def confirm_event(step, stage, value=None):
+    event = {"type": "confirm", "field": step.field, "stage": stage,
+             "value": value if value is not None else step.value,
+             "language": step.code}
+    if stage == "typed":
+        # The box is labelled in the caller's language; any script goes in.
+        event["label"] = confirming.say(f"box_{step.field}", step.code)
+        event["button"] = confirming.say("box_button", step.code)
+    return event
+
+
+def said_after_claim(who, code):
+    """The fixed sentence for what claiming an address led to."""
+    status = (who or {}).get("status")
+    key = {"code_sent": "code_sent", "unavailable": "unavailable",
+           "too_many": "too_many"}.get(status)
+    return confirming.say(key, code) if key else ""
+
+
+def begin(session, field, value, code):
+    step = confirming.Step(field, value, code)
+    session.confirming = step
+    opening = step.opening()
+    return [confirm_event(step, opening["stage"])], opening["say"]
+
+
+def confirmation(session, prompt, code, typed=None):
+    """This turn as part of confirming a name or email: (events, sentence),
+    or None when it is not one and the turn goes on as usual."""
+    step = session.confirming
+    if step:
+        if typed:
+            if typed != step.field:
+                return None
+            out = step.typed(prompt, code)
+        else:
+            if step.stage == "readback" and confirming.yes_or_no(prompt, code) is None \
+                    and len(prompt.split()) > 4:
+                # A question in the middle of a read-back: answer it, then ask
+                # again (caller_rules says so), rather than "yes or no?".
+                session.confirm_aside = True
+                return None
+            out = step.heard(prompt, code)
+            if out is None:
+                return None        # the box is up; a spoken turn is an ordinary one
+        if "done" in out:
+            session.confirming = None
+            return confirmed(session, step, out["done"], out["how"], code)
+        return [confirm_event(step, out["stage"])], out["say"]
+
+    if typed:
+        return None
+    c = session.caller
+    signed = bool(session.signed_in and not session.signed_in_forgotten)
+    if c and not c.get("verified") and not signed:
+        return None                # an order lookup or a code under way: identify()
+    name = stated_name(prompt)
+    email = memory.find_email(prompt)
+    if email and signed and email == session.signed_in:
+        email = None               # their own sign-in address: nothing to confirm
+    if c and c.get("verified") and not signed:
+        email = None               # already verified: only a name correction counts
+    match = None
+    if not name and not email and not c and not signed:
+        match = name_heard(prompt)
+    if name:
+        session.name_explicit = True
+        session.queued_email = email
+        return begin(session, "name", name, code)
+    if match:
+        session.name_explicit = False
+        session.name_match_email = match[1]
+        return begin(session, "name", match[0], code)
+    if email:
+        return begin(session, "email", email, code)
+    return None
+
+
+def confirmed(session, step, value, how, code):
+    """A name or email they have agreed to. What it is for depends on who
+    they already are."""
+    events = [confirm_event(step, "done", value)]
+    thanks = confirming.say("thanks", code, v=value)
+    if step.field == "name":
+        session.confirmed_name = value
+        session.stated_name = value
+        c = session.caller
+        if c and c.get("verified"):
+            # A returning caller correcting the name on their record.
+            if session.name_explicit and memory.rename(c["email"], value):
+                c["name"] = value
+                events.append(caller_event(c, "verified"))
+            return events, thanks
+        if session.queued_email:
+            email, session.queued_email = session.queued_email, None
+            more, said = begin(session, "email", email, code)
+            return events + more, f"{thanks} {said}"
+        if session.name_match_email:
+            email, session.name_match_email = session.name_match_email, None
+            who = claim(session, email)
+            return events + [who], f"{thanks} {said_after_claim(who, code)}"
+        return events, f"{thanks} {confirming.say('ask_email', code)}"
+
+    email = value.lower()
+    if session.signed_in and email == session.signed_in:
+        who = identify_signed_in(session, email)
+        name = (session.caller or {}).get("name") or name_from(email)
+        return events + ([who] if who else []), confirming.say("thanks", code, v=name)
+    who = claim(session, email)
+    return events + [who], said_after_claim(who, code)
 
 
 def claim(session, email):
@@ -2284,7 +2433,11 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
             pair = source_lang
         turn.language = code
     else:
-        code = resolve_language(session, prompt, opts["language"])
+        # Something typed into the name or email box says nothing about the
+        # language of the call: an Arabic name typed on an English call is
+        # still an English call.
+        code = (session.speaking["code"] if opts.get("typed")
+                else resolve_language(session, prompt, opts["language"]))
         session.speaking["code"] = code
         turn.language = code
         # Known before a word is generated, so the voice is set from the start.
@@ -2301,6 +2454,8 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
     # Identity first: a caller who has just confirmed their email changes what
     # the model is told, which is also why a draft made before it is no use.
     who = None
+    # A turn confirming a name or email says a fixed sentence and nothing else.
+    scripted, confirm_events = None, []
     if not interpreting and not intro:
         session.just_verified = False
         session.just_forgot = None
@@ -2318,9 +2473,23 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
             # and would otherwise have the agent say it does not know how
             # to delete anything, on the turn it has just deleted it all.
             session.just_forgot = forget["message"]
-        who = hear_code(session, prompt) or identify(session, prompt)
+        who = None if opts.get("typed") else hear_code(session, prompt)
+        if not who and not forget:
+            step = confirmation(session, prompt, code, opts.get("typed"))
+            if step:
+                confirm_events, scripted = step
+        if not who and not scripted and not opts.get("typed"):
+            who = identify(session, prompt)
+        if session.confirm_aside and session.confirming:
+            session.confirm_aside = False
+            notes.append(
+                "You had just read something back to the caller to confirm it "
+                f"and asked whether it was right: \"{session.confirming.readback()}\" "
+                "They asked something else instead. Answer that briefly, then "
+                "ask again, in the same words, whether it is right. Do not say "
+                "it has been saved.")
     session.just_named = bool(who)
-    if who:
+    if who or scripted:
         if draft:
             draft.cancel()
         draft = None
@@ -2339,6 +2508,8 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
     })
     if who:
         await chan.event(who)
+    for event in confirm_events:
+        await chan.event(event)
 
     # The language model runs right away; text waits here for a synthesis slot.
     pending_text = asyncio.Queue()
@@ -2694,6 +2865,10 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
 
     async def generate():
         try:
+            if scripted:
+                # Confirming a name or email: the fixed sentence, no model.
+                await release(scripted)
+                return
             if interpreting:
                 await generate_interpretation()
             else:
@@ -2904,7 +3079,7 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
         del session.history[:-MAX_HISTORY]
 
     # One slot for the whole turn, held across every model call it makes.
-    if LLM_SLOTS is not None:
+    if LLM_SLOTS is not None and not scripted:
         try:
             await asyncio.wait_for(LLM_SLOTS.acquire(), LLM_QUEUE_SECONDS)
         except asyncio.TimeoutError:
@@ -3236,8 +3411,12 @@ async def websocket_handler(request):
                     # next_turn_id, not turns_used: drafts and cancelled turns
                     # make them diverge, and the browser matches this against the
                     # turn_start that follows.
-                    prompt = clean_up(chan, said_text(data),
-                                      tell=True, turn_id=next_turn_id)
+                    # Typed into the name or email box: kept as typed. The
+                    # repair below is for speech, and would "fix" an
+                    # address someone typed carefully.
+                    prompt = (said_text(data) if read_opts(data)["typed"] else
+                              clean_up(chan, said_text(data),
+                                       tell=True, turn_id=next_turn_id))
                     opts_preview = read_opts(data)
                     if opts_preview["dropped_images"]:
                         # Say which pictures did not make it, before answering

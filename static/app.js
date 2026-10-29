@@ -32,6 +32,8 @@ const ui = {
   callerPanel: el('caller-panel'), callerTitle: el('caller-title'),
   codeBox: el('codebox'), codeInput: el('code-input'), codeSend: el('code-send'),
   codeNote: el('code-note'), demoInbox: el('demo-inbox'), demoCode: el('demo-code'),
+  idBox: el('idbox'), idLabel: el('id-label'), idInput: el('id-input'),
+  idSend: el('id-send'), idNote: el('id-note'),
   callerStatus: el('caller-status'), callerCalls: el('caller-calls'),
   memoryReset: el('memory-reset'),
   visuals: el('visuals'), replayCall: el('replay-call'),
@@ -710,6 +712,49 @@ function sendTypedCode() {
   ui.codeNote.textContent = 'Checking…';
   ui.codeNote.className = 'codenote';
 }
+
+// The name or email box. The server opens it on the third try, after a
+// name or address has been misheard twice, and labels it in the caller's
+// language. What is typed is sent as typed: no trimming of accents, no
+// guessing at script, and the server keeps it exactly.
+let idField = null;
+
+function onConfirm(m) {
+  if (m.stage === 'typed') {
+    idField = m.field;
+    ui.callerPanel.hidden = false;
+    ui.idLabel.textContent = m.label || (m.field === 'email' ? 'Type your email address' : 'Type your name');
+    ui.idSend.textContent = m.button || 'Save';
+    // The label is in the caller's language, so it reads in that direction.
+    ui.idLabel.lang = m.language || '';
+    ui.idLabel.dir = 'auto';
+    ui.idInput.lang = m.language || '';
+    ui.idInput.type = 'text';
+    ui.idInput.inputMode = m.field === 'email' ? 'email' : 'text';
+    ui.idNote.textContent = '';
+    ui.idBox.hidden = false;
+    ui.idInput.focus();
+  } else if (idField === m.field) {
+    ui.idBox.hidden = true;
+    ui.idInput.value = '';
+    idField = null;
+  }
+}
+
+function sendTyped() {
+  const value = ui.idInput.value;
+  if (!value.trim() || !idField) return;
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'prompt', text: value, call: false,
+                             search: false, typed_field: idField }));
+  }
+  ui.idNote.textContent = '…';
+}
+
+ui.idSend.addEventListener('click', sendTyped);
+ui.idInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); sendTyped(); }
+});
 
 ui.codeSend.addEventListener('click', sendTypedCode);
 ui.codeInput.addEventListener('keydown', (e) => {
@@ -2059,6 +2104,10 @@ function onEvent(m) {
 
     case 'caller':
       showCaller(m);
+      break;
+
+    case 'confirm':
+      onConfirm(m);
       break;
 
     case 'order':

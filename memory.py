@@ -224,6 +224,18 @@ def add_caller(email, name, verified=False):
             db.execute("UPDATE customers SET verified = 1 WHERE email = ?", (email,))
 
 
+def rename(email, name):
+    """A caller corrected their name: keep the corrected one. True if it
+    changed. Never a demo customer: anyone can verify as one through the
+    demo inbox, and the demo is built on their names."""
+    email = (email or "").lower().strip()
+    if not name or email in {e for e, _ in SEED_CUSTOMERS}:
+        return False
+    with _lock, _connect() as db:
+        return db.execute("UPDATE customers SET name = ? WHERE email = ? AND name != ?",
+                          (name, email, name)).rowcount > 0
+
+
 def history(email, limit=20):
     """Past calls, most recent first."""
     with _lock, _connect() as db:
