@@ -1115,6 +1115,8 @@ class Session:
         self.audio_off = False   # synthesis gave out part way through the call
         self.just_named = False  # they said who they are and nothing else yet
         self.stated_name = None  # the name they gave, for a new caller's record
+        self.signed_in = None    # the Auth0 email, when sign-in is on: their identity
+        self.signed_in_forgotten = False  # they said "forget me" on this call
         self.caller = None               # who is on the line, once an order is looked up
         self.said = {}                   # turn_id -> (assistant message in history, full reply)
         self.turns_used = 0              # counted, not derived: history is trimmed
@@ -1302,6 +1304,19 @@ def wants_forgetting(session, said):
     if not FORGET.search(said or ""):
         return None
     c = session.caller
+    if session.signed_in and not session.signed_in_forgotten:
+        # Signed in, "me" is the address they signed in with, whatever
+        # other address this call has been about. It is not made again for
+        # the rest of this call; a later sign-in starts a fresh record.
+        removed = memory.forget(session.signed_in)
+        session.signed_in_forgotten = True
+        session.caller = None
+        session.awaiting_code = False
+        session.unanswered = []
+        return {"type": "forget", "done": True, "removed": removed["calls"],
+                "message": "Their record is deleted: calls, name and address, "
+                           "all of it. Say so plainly in one sentence and do "
+                           "not offer to put it back."}
     if not c or not c.get("verified"):
         return {"type": "forget", "done": False,
                 "message": "They asked to be forgotten but have not been "
@@ -1362,6 +1377,8 @@ def identify(session, prompt):
     this is where a one-time code would go. Here it opens the same door that
     confirming it against an order already opens.
     """
+    if session.signed_in:
+        return identify_signed_in(session, prompt)
     c = session.caller
     if c and c["verified"]:
         return None
@@ -1374,27 +1391,7 @@ def identify(session, prompt):
     if not email:
         return None
     if not c:
-        person = memory.customer(email)
-        if not person:
-            # A new caller. Only an address said out loud gets here: a name
-            # alone finds nobody who is not already on file. Put them on
-            # file, unverified, so the code below can be made for them, and
-            # from then on it is the same path a known customer takes, with
-            # the same event at the end, so the answer does not say which.
-            if not delivery.available():
-                session.caller = {"email": email.lower(), "order": None,
-                                  "verified": False, "name": None, "calls": [],
-                                  "mismatch": False, "claimed": None}
-                return start_verification(session)
-            memory.add_caller(email, session.stated_name or name_from(email))
-            person = memory.customer(email)
-        # Known, but not yet proven to be them. A name and an address are
-        # a claim; the code is what makes it a fact. Nothing personal is
-        # attached to the session until it checks out.
-        session.caller = {"email": email.lower(), "order": None,
-                          "verified": False, "name": None, "calls": [],
-                          "mismatch": False, "claimed": person["name"]}
-        return start_verification(session)
+        return claim(session, email)
     if email == c["email"]:
         person = memory.customer(email) or {"name": email.split("@")[0]}
         c.update(verified=True, name=person["name"], calls=memory.history(email),
@@ -1403,6 +1400,73 @@ def identify(session, prompt):
     c["mismatch"] = True
     c["attempts"] = c.get("attempts", 0) + 1
     return caller_event(c, "mismatch")
+
+
+def claim(session, email):
+    """Someone says an address is theirs: start the code, share nothing yet."""
+    person = memory.customer(email)
+    if not person:
+        # A new caller. Only an address said out loud gets here: a name
+        # alone finds nobody who is not already on file. Put them on
+        # file, unverified, so the code below can be made for them, and
+        # from then on it is the same path a known customer takes, with
+        # the same event at the end, so the answer does not say which.
+        if not delivery.available():
+            session.caller = {"email": email.lower(), "order": None,
+                              "verified": False, "name": None, "calls": [],
+                              "mismatch": False, "claimed": None}
+            return start_verification(session)
+        memory.add_caller(email, session.stated_name or name_from(email))
+        person = memory.customer(email)
+    # Known, but not yet proven to be them. A name and an address are
+    # a claim; the code is what makes it a fact. Nothing personal is
+    # attached to the session until it checks out.
+    session.caller = {"email": email.lower(), "order": None,
+                      "verified": False, "name": None, "calls": [],
+                      "mismatch": False, "claimed": person["name"]}
+    return start_verification(session)
+
+
+def signed_in_caller(session):
+    """The signed-in user as the caller, record and all.
+
+    With Auth0 on, the email they signed in with is who they are: Auth0
+    verified it, and oauth2-proxy refuses an unverified one. So there is no
+    code to read back for it. Their record is made the first time, under a
+    name taken from the address, and marked verified either way.
+    """
+    email = session.signed_in
+    memory.add_caller(email, name_from(email), verified=True)
+    person = memory.customer(email) or {}
+    return {"email": email, "order": None, "verified": True,
+            "name": person.get("name") or name_from(email),
+            "calls": memory.history(email), "mismatch": False,
+            "claimed": None, "signed_in": True}
+
+
+def identify_signed_in(session, prompt):
+    """identify(), for a caller Auth0 has already signed in.
+
+    Their own address changes nothing: it is already them. Any other
+    address is an ordinary claim, the code flow and nothing from that
+    record until it checks out, however signed in they are. A name on its
+    own claims nobody here: it is too easily someone they are calling
+    about rather than who they are.
+    """
+    email = memory.find_email(prompt)
+    if not email:
+        return None
+    c = session.caller
+    if email == session.signed_in:
+        if session.signed_in_forgotten or (c and c.get("signed_in")):
+            return None
+        # Back to themselves after claiming another address.
+        session.awaiting_code = False
+        session.caller = signed_in_caller(session)
+        return caller_event(session.caller, "verified")
+    if c and c["email"] == email:
+        return None
+    return claim(session, email)
 
 
 # How a caller says who they are, in each of the eight languages. Two
@@ -1536,6 +1600,7 @@ def caller_event(c, status):
         "type": "caller", "status": status,
         "order": c.get("order"), "email": memory.mask(c.get("email")),
         "name": c.get("name") if c.get("verified") else None,
+        "signed_in": bool(c.get("signed_in")),
         "calls": [
             {"at": x["at"], "summary": x["summary"], "outcome": x.get("outcome"),
              "actions": x.get("actions"), "seeded": bool(x.get("seeded"))}
@@ -1559,6 +1624,14 @@ def caller_rules(session):
                     "introduced themselves — greet them by name, warmly and "
                     "briefly, and ask what you can do for them.\n"
                     if session.just_verified else "")
+        if c.get("signed_in"):
+            # Auth0 already said who this is. Asking for an email or a code
+            # would be asking them to prove it twice.
+            just_now = ("\nThey are signed in, so you already know who they are. "
+                        "Never ask for their email address or a code. "
+                        + ("This is the start of the call: greet them by name, "
+                           "warmly and briefly, and ask what you can do for them.\n"
+                           if session.user_turns == 0 else "\n"))
         return (
             just_now + "\n" + memory.as_context(c["name"], c.get("calls") or []) +
             "\nUse this the way a good agent who remembers them would: if a previous "
@@ -2988,6 +3061,13 @@ async def websocket_handler(request):
     tts = get_tts()
     session = Session()
     session.key = caller_key(request)
+    # With Auth0 on, whoever signed in is the caller from the first word:
+    # their record, their history, no code. The session's user came from
+    # oauth2-proxy at sign-in, never from a header.
+    held = session_for(request) or {}
+    if AUTH_PROXY and held.get("user"):
+        session.signed_in = held["user"]
+        session.caller = signed_in_caller(session)
     chan = Channel(ws)
     running = {}       # turn_id -> task
     next_turn_id = 1
@@ -3050,6 +3130,8 @@ async def websocket_handler(request):
         # has started yet, so there is nothing to unwind.
         await tts.close()
         return ws
+    if session.signed_in:
+        await chan.event(caller_event(session.caller, "verified"))
 
     def drop_drafts(keep=None):
         for did in [d for d in session.drafts if d != keep]:

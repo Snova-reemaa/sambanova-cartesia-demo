@@ -200,7 +200,7 @@ def customer(email):
         return dict(row) if row else None
 
 
-def add_caller(email, name):
+def add_caller(email, name, verified=False):
     """Put a new caller on file, unverified, so a code can be made for them.
 
     An address already on file is left exactly as it is, name and all:
@@ -208,6 +208,10 @@ def add_caller(email, name):
     hears the same thing either way. Nobody else can find an unverified
     record by name (see _people), and one that never verifies has no calls,
     so the retention sweep removes it.
+
+    verified=True is for an address something else has already proved,
+    which is Auth0 signing someone in: the record is marked verified,
+    whether it was just made or already there.
     """
     email = (email or "").lower().strip()
     with _lock, _connect() as db:
@@ -216,6 +220,8 @@ def add_caller(email, name):
             "VALUES (?, ?, 0, ?)",
             (email, name or email.split("@")[0],
              time.strftime("%Y-%m-%d %H:%M", time.gmtime())))
+        if verified:
+            db.execute("UPDATE customers SET verified = 1 WHERE email = ?", (email,))
 
 
 def history(email, limit=20):

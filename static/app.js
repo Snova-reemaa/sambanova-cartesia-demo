@@ -618,9 +618,12 @@ function showCaller(m) {
   ui.callerPanel.dataset.status = m.status;
   if (m.status === 'verified') {
     ui.callerTitle.textContent = m.name || 'Caller';
+    // How we know who this is: signed in, an order, or a code read back.
+    const how = m.signed_in ? `Signed in as ${m.email}.`
+      : (m.order ? `Recognised from order ${m.order}.` : 'Verified by code.');
     ui.callerStatus.textContent = m.calls.length
-      ? `Recognised from order ${m.order}. ${m.calls.length} earlier call${m.calls.length === 1 ? '' : 's'} in memory:`
-      : `Recognised from order ${m.order}. First call on record.`;
+      ? `${how} ${m.calls.length} earlier call${m.calls.length === 1 ? '' : 's'} in memory:`
+      : `${how} First call on record.`;
     m.calls.forEach((c) => {
       const li = document.createElement('li');
       const when = document.createElement('span');
@@ -641,7 +644,7 @@ function showCaller(m) {
   } else if (m.status === 'code_sent') {
     ui.callerTitle.textContent = 'Caller';
     ui.callerStatus.textContent =
-      'If that address is on file, a six digit code has been sent to it. '
+      'A six digit code has been sent to that address. '
       + 'Read it out, or type it below.';
     // Voice first: the box only appears once saying it has failed, which
     // is what the server tells us with show_typed.

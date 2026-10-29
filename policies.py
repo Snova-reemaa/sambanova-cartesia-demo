@@ -114,10 +114,17 @@ SIGNED_IN = [
                            "the other consent records: until your session "
                            "ends, at most {hours} hours, or sooner if the "
                            "service restarts."),
+    ("Your calls, under your sign-in email", "Signed in, you do not have to "
+                                             "give your email on a call: the "
+                                             "agent remembers your calls under "
+                                             "the address you signed in with, "
+                                             "for as long as any other call "
+                                             "summary, and \"forget me\" "
+                                             "deletes them."),
 ]
 SIGNED_IN_BY = [
-    ("Auth0 (Okta)", "Signs you in. Receives your sign-in details and tells "
-                     "this service your email address."),
+    ("Auth0 (Okta)", "Handles signing in. Sees your email address and your "
+                     "login activity: when you sign in, and from where."),
 ]
 
 
