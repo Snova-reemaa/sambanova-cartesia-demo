@@ -11,6 +11,18 @@ Client ID, client secret and cookie secret come from the same key Secret as the 
 {{- $host := required "set ingress.host" .Values.ingress.host }}
 {{- $issuer := required "set auth.issuerUrl (https://<your tenant>.auth0.com/)" .Values.auth.issuerUrl }}
 {{- $name := printf "%s-oauth2-proxy" (include "voxnova.name" .) }}
+{{- $page := .Files.Get "files/sign_in.html" }}
+# Our own sign-in page in front of Auth0's, so the Terms and the Privacy Notice are one click
+# away before anyone signs in. Loaded verbatim: it is an oauth2-proxy template, not a Helm one.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-templates
+  labels: {{- include "voxnova.authLabels" . | nindent 4 }}
+data:
+  sign_in.html: |
+{{ $page | indent 4 }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -25,6 +37,7 @@ spec:
       labels: {{- include "voxnova.authLabels" . | nindent 8 }}
       annotations:
         checksum/keys: {{ .Values.secretChecksum | quote }}
+        checksum/sign-in-page: {{ sha256sum $page | quote }}
     spec:
       {{- with .Values.nodeSelector }}
       nodeSelector: {{- toYaml . | nindent 8 }}
@@ -32,6 +45,9 @@ spec:
       {{- with .Values.tolerations }}
       tolerations: {{- toYaml . | nindent 8 }}
       {{- end }}
+      volumes:
+        - name: templates
+          configMap: {name: {{ $name }}-templates}
       containers:
         - name: oauth2-proxy
           image: {{ .Values.auth.image }}
@@ -43,7 +59,9 @@ spec:
             - --reverse-proxy=true
             - --redirect-url=https://{{ $host }}/oauth2/callback
             - --scope=openid profile email
-            - --skip-provider-button=true
+            # Show our sign-in page (Terms and Privacy links) rather than going straight to Auth0.
+            - --skip-provider-button=false
+            - --custom-templates-dir=/templates
             - --set-xauthrequest=true
             - --cookie-secure=true
             - --cookie-expire={{ .Values.auth.cookieExpire }}
@@ -60,6 +78,8 @@ spec:
               valueFrom: {secretKeyRef: {name: {{ .Values.apiKeysSecret }}, key: AUTH0_CLIENT_SECRET}}
             - name: OAUTH2_PROXY_COOKIE_SECRET
               valueFrom: {secretKeyRef: {name: {{ .Values.apiKeysSecret }}, key: AUTH0_COOKIE_SECRET}}
+          volumeMounts:
+            - {name: templates, mountPath: /templates, readOnly: true}
           ports:
             - {name: http, containerPort: 4180}
           readinessProbe:

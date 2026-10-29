@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<!--
+  oauth2-proxy's sign-in page, in VoxNova's colours, so the Terms and the
+  Privacy Notice can be read before anyone signs in. A Go template filled
+  in by oauth2-proxy (.ProxyPrefix, .Redirect, .ProviderName), loaded into
+  a ConfigMap verbatim by the chart: Helm never renders it. Self-contained,
+  because everything on the site but /terms, /privacy and the stylesheet
+  is behind the sign-in this page leads to.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · VoxNova</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px 16px;
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: #F6F3FF;
+    background: radial-gradient(1200px 700px at 30% 25%, #3B2A8C 0%, #22105C 45%, #120838 100%);
+  }
+  .card {
+    position: relative; width: min(420px, 100%); padding: 40px 32px 28px; text-align: center;
+    background: rgba(22, 10, 66, .62);
+    border: 1px solid rgba(246, 243, 255, .12); border-radius: 28px;
+    box-shadow: 0 30px 80px -20px rgba(8, 2, 30, .8);
+    -webkit-backdrop-filter: blur(22px); backdrop-filter: blur(22px);
+  }
+  .rings {
+    width: 86px; height: 86px; margin: 0 auto 22px; border-radius: 50%;
+    box-shadow: 0 0 0 1px rgba(246,243,255,.5), 0 0 0 9px rgba(246,243,255,.06),
+                0 0 0 10px rgba(246,243,255,.28), 0 0 0 19px rgba(246,243,255,.04),
+                0 0 0 20px rgba(246,243,255,.16);
+  }
+  h1 { margin: 0 0 6px; font-size: 26px; font-weight: 800; letter-spacing: -.01em; }
+  p { margin: 0 0 22px; color: #CBC0FF; }
+  button {
+    width: 100%; padding: 13px 20px; border: 0; border-radius: 999px; cursor: pointer;
+    font: 600 15px/1 inherit; font-family: inherit; color: #22105C; background: #F6F3FF;
+    transition: box-shadow .3s ease, background .2s;
+  }
+  button:hover { background: #fff; box-shadow: 0 0 26px -4px rgba(185, 157, 255, .8); }
+  button:focus-visible, a:focus-visible { outline: 2px solid #F6F3FF; outline-offset: 3px; }
+  .who { margin: 14px 0 0; font-size: 13px; color: #9C8FDA; }
+  .links { margin-top: 26px; padding-top: 18px; border-top: 1px solid rgba(246,243,255,.10);
+           font-size: 13px; color: #9C8FDA; }
+  .links a { color: #F6F3FF; text-decoration: underline; text-decoration-color: rgba(246,243,255,.35);
+             text-underline-offset: 3px; }
+  .links a:hover { text-decoration-color: #F6F3FF; }
+  .msg { margin: 0 0 18px; color: #FFB4C4; font-size: 14px; }
+</style>
+</head>
+<body>
+<main class="card">
+  <div class="rings" aria-hidden="true"></div>
+  <h1>VoxNova</h1>
+  <p>SambaNova and Cartesia voice agent demo.</p>
+  {{ if .SignInMessage }}<p class="msg">{{ .SignInMessage }}</p>{{ end }}
+  <form method="GET" action="{{ .ProxyPrefix }}/start">
+    <input type="hidden" name="rd" value="{{ .Redirect }}">
+    <button type="submit">Sign in with your SambaNova account</button>
+  </form>
+  <p class="who">Sign-in is handled by Auth0. You will be asked to agree to the
+    Terms after signing in.</p>
+  <nav class="links" aria-label="Policies">
+    Before you sign in: <a href="/terms">Terms of Use</a> · <a href="/privacy">Privacy Notice</a>
+  </nav>
+</main>
+</body>
+</html>

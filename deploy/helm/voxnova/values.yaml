@@ -65,7 +65,7 @@ voices:
 auth:
   enabled: false
   issuerUrl: ""                # https://<tenant>.us.auth0.com/ (not a secret)
-  emailDomains: [sambanovasystems.com]
+  emailDomains: [sambanovasystems.com, sambanova.ai]
   cookieExpire: 12h
   image: quay.io/oauth2-proxy/oauth2-proxy:v7.9.0
   resources:

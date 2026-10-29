@@ -60,6 +60,8 @@ def main():
     notes = find(off, "Ingress", "voxnova")["metadata"]["annotations"]
     check("off: the ingress has no auth annotations",
           not any("auth-" in k for k in notes))
+    check("off: no separate public Ingress either (everything is public)",
+          not find(off, "Ingress", "voxnova-public"))
 
     code, on, _ = render(ON)
     check("renders with Auth0 on", code == 0 and on)
@@ -89,11 +91,41 @@ def main():
     notes = find(on, "Ingress", "voxnova")["metadata"]["annotations"]
     check("on: every request is checked with the proxy first",
           notes.get("nginx.ingress.kubernetes.io/auth-url") == "https://$host/oauth2/auth"
-          and "oauth2/start" in notes.get("nginx.ingress.kubernetes.io/auth-signin", ""))
+          and "/oauth2/sign_in?rd=" in notes.get("nginx.ingress.kubernetes.io/auth-signin", ""))
     route = find(on, "Ingress", "voxnova-oauth2-proxy")
     check("on: /oauth2 on the same host goes to the proxy",
           route and route["spec"]["rules"][0]["host"] == HOST
           and route["spec"]["rules"][0]["http"]["paths"][0]["path"] == "/oauth2")
+
+    # The Terms and the Privacy Notice, readable before signing in.
+    public = find(on, "Ingress", "voxnova-public")
+    paths = public and [(p["path"], p["pathType"]) for p in
+                        public["spec"]["rules"][0]["http"]["paths"]]
+    check("on: /terms and /privacy have their own Ingress, same host",
+          public and public["spec"]["rules"][0]["host"] == HOST
+          and public["spec"]["tls"][0]["hosts"] == [HOST])
+    check("on: with exactly those pages and their stylesheet, Exact, nothing else",
+          paths and sorted(paths) == [("/privacy", "Exact"),
+                                      ("/static/style.css", "Exact"),
+                                      ("/terms", "Exact")])
+    check("on: and no auth annotations on it",
+          public and not any("auth" in k for k in
+                             (public["metadata"].get("annotations") or {})))
+
+    # Our sign-in page, with the policy links, before Auth0's.
+    page = find(on, "ConfigMap", "voxnova-oauth2-proxy-templates")
+    html = (page or {}).get("data", {}).get("sign_in.html", "")
+    check("on: the proxy shows our sign-in page rather than going straight to Auth0",
+          "--skip-provider-button=false" in box["args"]
+          and "--custom-templates-dir=/templates" in box["args"]
+          and any(m.get("mountPath") == "/templates" for m in box.get("volumeMounts", [])))
+    check("on: the page links the Terms and the Privacy Notice",
+          'href="/terms"' in html and 'href="/privacy"' in html)
+    check("on: and is passed to oauth2-proxy unrendered by Helm",
+          "{{ .ProxyPrefix }}/start" in html and "{{ .Redirect }}" in html)
+    check("on: both SambaNova domains may sign in",
+          {"--email-domain=sambanovasystems.com", "--email-domain=sambanova.ai"}
+          <= set(box["args"]))
 
     # The paths a sign-in needs, through the NetworkPolicies.
     app_policy = find(on, "NetworkPolicy", "voxnova")

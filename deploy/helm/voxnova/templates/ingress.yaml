@@ -17,7 +17,8 @@ metadata:
     # stranger is sent to sign in, and the signed-in user's email is passed to the app. nginx
     # sets these headers from the proxy's answer, replacing anything the client sent.
     nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
-    nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/start?rd=$escaped_request_uri"
+    # Our sign-in page first (it links the Terms and the Privacy Notice), then Auth0.
+    nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/sign_in?rd=$escaped_request_uri"
     nginx.ingress.kubernetes.io/auth-response-headers: "X-Auth-Request-User,X-Auth-Request-Email"
     nginx.ingress.kubernetes.io/proxy-buffer-size: "16k"
     {{- end }}
@@ -41,4 +42,35 @@ spec:
               service:
                 name: {{ include "voxnova.name" . }}
                 port: {name: http}
+{{- end }}
+{{- if and .Values.ingress.enabled .Values.auth.enabled }}
+---
+# The Terms and the Privacy Notice, readable before signing in: a second Ingress on the same
+# host with no auth annotations. nginx merges the two, and an Exact path here wins over the
+# app's catch-all "/", so only these three paths skip Auth0: the two pages and the one
+# stylesheet they load. The app serves them without a session already.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "voxnova.name" . }}-public
+  labels: {{- include "voxnova.labels" . | nindent 4 }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- with .Values.ingress.tls.secretName }}
+  tls:
+    - hosts: [{{ $.Values.ingress.host }}]
+      secretName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          {{- range list "/terms" "/privacy" "/static/style.css" }}
+          - path: {{ . }}
+            pathType: Exact
+            backend:
+              service:
+                name: {{ include "voxnova.name" $ }}
+                port: {name: http}
+          {{- end }}
 {{- end }}
