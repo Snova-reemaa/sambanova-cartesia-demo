@@ -898,10 +898,6 @@ class Turn:
         }
 
 
-def default_voice():
-    return os.getenv("CARTESIA_VOICE_ID", "6ccbfb76-1fc6-48f7-b71d-91ac6298247b")
-
-
 def pick_model(requested):
     """Only ever hand the API a model this account was told it has."""
     if requested and (not CATALOG["models"] or requested in CATALOG["models"]):
@@ -909,16 +905,38 @@ def pick_model(requested):
     return get_model()
 
 
-def pick_voice(requested):
-    known = {v["id"] for v in CATALOG["voices"]}
-    if requested and (not known or requested in known):
-        return requested
-    return default_voice()
-
-
 # What Cartesia says each voice's language is: the catalog, plus every
 # voice in voices.py, looked up by id at startup.
 VOICE_LANGUAGE = {}
+
+
+def known_languages():
+    """Our own table's voices are known without asking: each is configured
+    for one language, and check_voices refuses to start if Cartesia says
+    otherwise. Without this a picked native voice was ignored whenever
+    Cartesia could not be reached at startup."""
+    for (role, code), vid in voices.configured().items():
+        VOICE_LANGUAGE.setdefault(vid, code)
+
+
+known_languages()
+
+
+def native_voices():
+    """What the voice picker may offer: per language, the three people on
+    the line, and nothing from the rest of the account. One language at a
+    time is shown, so a Thai voice, or Skylar on an Arabic call, is never
+    there to pick."""
+    out = []
+    for code in voices.LANGUAGES:
+        seen = set()
+        for role in voices.ROLES:
+            vid = voices.for_role(role, code)
+            if vid and vid not in seen:
+                seen.add(vid)
+                out.append({"id": vid, "name": voices.name_for(role, code),
+                            "language": code, "role": role})
+    return out
 
 
 async def check_voices(tts):
@@ -2967,8 +2985,8 @@ async def websocket_handler(request):
             "tts_model": tts_model_for("en"),
             "sample_rate": SAMPLE_RATE,
             "models": CATALOG["models"],
-            "voices": CATALOG["voices"],
-            "default_voice": default_voice(),
+            "voices": native_voices(),
+            "default_voice": voices.for_role("front", "en"),
             "max_concurrent": MAX_CONCURRENT,
             "max_turns": MAX_TURNS,
             "max_minutes": MAX_MINUTES,

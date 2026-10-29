@@ -20,6 +20,57 @@ import cartesia                                               # noqa: E402
 import voices                                                 # noqa: E402
 
 
+async def through_the_socket(check):
+    import aiohttp
+    from tests.harness import PASSPHRASE, Server
+
+    skylar = voices.VOICES["front"]["en"][1]
+    reem = voices.VOICES["front"]["ar"][1]
+    fatima = voices.VOICES["billing"]["ar"][1]
+
+    async def turn_voice(ws, language, picked):
+        await ws.send_json({"type": "prompt", "text": "مرحبا", "call": False,
+                            "search": False, "language": language,
+                            "voice_id": picked})
+        while True:
+            m = await asyncio.wait_for(ws.receive_json(), 30)
+            if m["type"] == "turn_start":
+                return m["voice_id"], m["language"]
+
+    with Server() as s:
+        # unsafe: the default jar drops cookies set by a bare IP address.
+        async with aiohttp.ClientSession(
+                cookie_jar=aiohttp.CookieJar(unsafe=True)) as http:
+            async with http.post(f"{s.base}/login", data={
+                    "passphrase": PASSPHRASE, "consent": "yes"}) as r:
+                assert r.status == 200
+            async with http.ws_connect(f"{s.base}/ws") as ws:
+                ready = await ws.receive_json()
+                offered = ready.get("voices") or []
+                check("the picker is offered only the eight languages",
+                      offered and {v.get("language") for v in offered}
+                      == set(voices.LANGUAGES))
+                check("three voices each, labelled main / billing / technical",
+                      all(sorted(v.get("role", "?") for v in offered if v.get("language") == c)
+                          == ["billing", "front", "technical"]
+                          for c in voices.LANGUAGES))
+                check("and every one is a voice from the native table",
+                      all(v["id"] == voices.for_role(v.get("role"), v.get("language"))
+                          for v in offered))
+
+                used, lang = await turn_voice(ws, "ar", skylar)
+                check("Arabic with Skylar picked is spoken by Reem",
+                      lang == "ar" and used == reem)
+                used, lang = await turn_voice(ws, "ar", fatima)
+                check("a picked Arabic voice is used for Arabic",
+                      used == fatima)
+                used, lang = await turn_voice(ws, "en", fatima)
+                check("and not when the turn is in English",
+                      lang == "en" and used == skylar)
+                used, _ = await turn_voice(ws, "ar", "a-voice-nobody-has")
+                check("an id the server does not know is ignored", used == reem)
+
+
 def main():
     results = []
 
@@ -150,6 +201,11 @@ def main():
                 foreign.append(f"{persona}/{code} not their own")
     check("Maya and Omar speak every language in their own native voice",
           not foreign)
+
+    # Through the socket, as the page uses it. The picker cannot force a
+    # foreign voice: the voice a turn reports in turn_start is the one its
+    # sentences are synthesised in.
+    asyncio.run(through_the_socket(check))
 
     for what, ok in results:
         print(f"  {'ok  ' if ok else 'FAIL'} {what}")

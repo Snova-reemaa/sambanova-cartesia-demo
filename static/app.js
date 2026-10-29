@@ -997,26 +997,9 @@ function fillPickers(m) {
   ui.pickModel.value = (wantModel === 'auto' || !wantModel) ? 'auto'
     : (models.includes(wantModel) ? wantModel : 'auto');
 
-  const voices = m.voices || [];
-  ui.pickVoice.innerHTML = '';
-  if (!voices.length) {
-    const o = document.createElement('option');
-    o.value = m.default_voice; o.textContent = 'default voice';
-    ui.pickVoice.append(o);
-    ui.pickVoice.disabled = true;
-  } else {
-    voices.forEach((v) => {
-      const o = document.createElement('option');
-      o.value = v.id;
-      o.textContent = v.language && v.language !== 'en' ? `${v.name} (${v.language})` : v.name;
-      o.title = v.description || '';
-      ui.pickVoice.append(o);
-    });
-    const want = recall('voiceloop.voice');
-    const ids = voices.map((v) => v.id);
-    ui.pickVoice.value = ids.includes(want) ? want
-      : (ids.includes(m.default_voice) ? m.default_voice : ids[0]);
-  }
+  nativeVoices = m.voices || [];
+  voicesFor = null;
+  showVoicesFor(ui.pickLang.value === 'auto' ? recLang : ui.pickLang.value);
   ui.llmModel.textContent = ui.pickModel.value === 'auto' ? 'Auto' : shortModel(ui.pickModel.value);
 }
 
@@ -1024,7 +1007,38 @@ ui.pickModel.addEventListener('change', () => {
   remember('voiceloop.model', ui.pickModel.value);
   ui.llmModel.textContent = ui.pickModel.value === 'auto' ? 'Auto' : shortModel(ui.pickModel.value);
 });
-ui.pickVoice.addEventListener('change', () => remember('voiceloop.voice', ui.pickVoice.value));
+// The voice picker only ever holds the voices native to the language being
+// spoken: the main agent, Maya and Omar in that language, from the server's
+// table. It used to list every voice on the account, Thai included, and
+// would happily send Skylar on an Arabic call. The server ignores a voice
+// from the wrong language anyway; this is so the page never offers one.
+let nativeVoices = [];
+let voicesFor = null;
+const ROLE_LABEL = { front: 'main agent', billing: 'billing, Maya', technical: 'technical, Omar' };
+
+function showVoicesFor(code) {
+  if (!code || code === voicesFor) return;
+  voicesFor = code;
+  const here = nativeVoices.filter((v) => v.language === code);
+  ui.pickVoice.innerHTML = '';
+  if (!here.length) {
+    const o = document.createElement('option');
+    o.value = ''; o.textContent = 'no voice: text only';
+    ui.pickVoice.append(o);
+    ui.pickVoice.disabled = true;
+    return;
+  }
+  here.forEach((v) => {
+    const o = document.createElement('option');
+    o.value = v.id;
+    o.textContent = `${v.name} (${ROLE_LABEL[v.role] || v.role})`;
+    ui.pickVoice.append(o);
+  });
+  // A new language starts on its own main voice.
+  const main = here.find((v) => v.role === 'front') || here[0];
+  ui.pickVoice.value = main.id;
+  ui.pickVoice.disabled = !audioAvailable;
+}
 ui.pickSearch.addEventListener('change', () => remember('voiceloop.search', ui.pickSearch.checked ? '1' : '0'));
 if (recall('voiceloop.search') === '0') ui.pickSearch.checked = false;
 ui.pickCheck.addEventListener('change', () => remember('voiceloop.check', ui.pickCheck.checked ? '1' : '0'));
@@ -1520,6 +1534,8 @@ function onEvent(m) {
       } else if (m.language) {
         followLanguage(m.language);
       }
+      // The language this turn is spoken in, picked or detected: its voices.
+      if (m.language) showVoicesFor(m.language);
       const t = newTurn(m.turn_id, m.prompt, m.model);
       t.speaker = m.speaker || null;
       t.attachments = m.attachments || 0;
@@ -2370,6 +2386,7 @@ ui.shareStop.addEventListener('click', stopScreen);
 ui.pickLang.addEventListener('change', () => {
   remember('voiceloop.lang', ui.pickLang.value);
   setRecLang(ui.pickLang.value === 'auto' ? 'en' : ui.pickLang.value);
+  if (ui.pickLang.value !== 'auto') showVoicesFor(ui.pickLang.value);
   // They answered the question, so stop asking it.
   clearMishearing();
 });
