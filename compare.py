@@ -45,7 +45,11 @@ SETTINGS = {
 }
 TIMEOUT_SECONDS = float(os.getenv("COMPARE_TIMEOUT_SECONDS", "60"))
 MAX_RUNS = 5
-METRICS = ("ttft", "tps", "total")
+# First token and tokens per second are the headline: neither depends on how
+# long the reply is. Full reply time does (a 60-token answer beats a
+# 120-token one at the same speed), so it comes with per100: seconds per
+# hundred output tokens, the full time divided by the reply's length.
+METRICS = ("ttft", "tps", "total", "per100")
 # Lower is better for the times; higher is better for tokens per second.
 BETTER_HIGH = {"tps"}
 
@@ -180,6 +184,8 @@ async def race(names, messages, emit, settings=None):
                     total=end - shared["t0"],
                     tps=stats.get("stream_tokens_per_sec"),
                     tokens=stats.get("stream_output_tokens"),
+                    per100=((end - shared["t0"]) / stats["stream_output_tokens"] * 100
+                            if stats.get("stream_output_tokens") else None),
                     tokens_from=stats.get("stream_tokens_source"),
                     provider_tps=stats.get("completion_tokens_after_first_per_sec"),
                     # Stopped by max_tokens: an answer, but not a whole one.
@@ -220,12 +226,14 @@ def summarise(names, rounds):
             side[metric] = {"median": statistics.median(values), "worst": worst,
                             "best": max(values) if metric in BETTER_HIGH else min(values)}
         out[name] = side
-    # Which side was faster, on the median full reply time, and by how much.
-    timed = [(out[n]["total"]["median"], n) for n in names if out[n]["total"]]
+    # Which side was faster, and by how much: on median tokens per second,
+    # which a shorter reply cannot win by being short.
+    rated = [(out[n]["tps"]["median"], n) for n in names if out[n]["tps"]]
     faster = None
-    if len(timed) == len(names) == 2:
-        (fast, fast_name), (slow, _) = sorted(timed)
-        faster = {"side": fast_name, "by": slow / fast if fast > 0 else None}
+    if len(rated) == len(names) == 2:
+        (slow, _), (fast, fast_name) = sorted(rated)
+        faster = {"side": fast_name, "by": fast / slow if slow > 0 else None,
+                  "on": "tokens per second"}
     return {"sides": out, "faster": faster}
 
 

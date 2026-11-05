@@ -118,14 +118,17 @@ body.compare { overflow: auto; height: auto; min-height: 100%; }
 .cmp-model { margin: -8px 0 0; font-family: var(--mono, ui-monospace, monospace); font-size: 12.5px;
   color: var(--faint); overflow-wrap: anywhere; }
 
-.cmp-timer { display: grid; grid-template-columns: auto 1fr; align-items: baseline; column-gap: 6px; }
+/* The two headline numbers, side by side: first token and tokens/sec. */
+.cmp-heads { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.cmp-head-num { display: grid; grid-template-columns: auto 1fr; align-items: baseline; column-gap: 6px; }
 .cmp-big {
-  font: 700 clamp(46px, 6.4vw, 76px)/1 var(--display); letter-spacing: -.03em;
+  font: 700 clamp(38px, 4.8vw, 62px)/1 var(--display); letter-spacing: -.03em;
   font-variant-numeric: tabular-nums;
 }
-.cmp-unit { font: 600 clamp(18px, 2vw, 24px) var(--display); color: var(--muted); }
-.cmp-big-label, .cmp-sub { grid-column: 1 / -1; font-size: 13px; color: var(--muted); }
-.cmp-sub { color: var(--faint); min-height: 1.2em; }
+.cmp-big.est { opacity: .55; }
+.cmp-unit { font: 600 clamp(15px, 1.5vw, 19px) var(--display); color: var(--muted); }
+.cmp-big-label { grid-column: 1 / -1; margin-top: 4px; font-size: 13px; color: var(--muted); }
+.cmp-sub { margin-top: -6px; font-size: 13px; color: var(--faint); min-height: 1.2em; }
 .cmp-panel.running .cmp-big { color: var(--paper); }
 .cmp-panel.done .cmp-big { color: var(--side); }
 
@@ -133,7 +136,7 @@ body.compare { overflow: auto; height: auto; min-height: 100%; }
 .cmp-stats div { padding: 10px 14px; border-radius: 14px; background: rgba(246, 243, 255, .05);
   border: 1px solid var(--hairline); }
 .cmp-stats dt { font-size: 12px; color: var(--muted); }
-.cmp-stats dd { margin: 2px 0 0; font: 600 clamp(20px, 2.2vw, 26px)/1.2 var(--display);
+.cmp-stats dd { margin: 2px 0 0; font: 600 clamp(17px, 1.8vw, 21px)/1.2 var(--display);
   font-variant-numeric: tabular-nums; }
 
 .cmp-reply {
@@ -156,6 +159,7 @@ body.compare { overflow: auto; height: auto; min-height: 100%; }
 .cmp-error small { display: block; margin-top: 4px; font-weight: 400; color: var(--muted); }
 .cmp-panel.failed .cmp-big, .cmp-panel.failed .cmp-stats dd { color: var(--faint); }
 .cmp-panel.failed .cmp-unit { visibility: hidden; }
+.cmp-panel.failed .cmp-big { font-size: clamp(30px, 3.4vw, 44px); }
 
 /* ---- the bars, once both are done ---- */
 .cmp-bars {

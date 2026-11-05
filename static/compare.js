@@ -89,11 +89,14 @@ function buildPanel(slot, side) {
   caveat.hidden = !side.note;
   return {
     node, name: side.name, label: side.label,
-    big: node.querySelector('[data-v="total"]'), sub: node.querySelector('[data-v="total-sub"]'),
+    // The headline: first token and tokens per second, neither of which a
+    // shorter reply can win by being short.
     ttft: node.querySelector('[data-v="ttft"]'), tps: node.querySelector('[data-v="tps"]'),
+    total: node.querySelector('[data-v="total"]'), per100: node.querySelector('[data-v="per100"]'),
+    sub: node.querySelector('[data-v="sub"]'),
     reply: node.querySelector('.cmp-reply'), error: node.querySelector('.cmp-error'),
     badge: node.querySelector('.cmp-badge'),
-    first: null, done: null,
+    first: null, firstAt: null, done: null,
   };
 }
 
@@ -113,9 +116,14 @@ ui.a.addEventListener('change', preview);
 ui.b.addEventListener('change', preview);
 ui.ownModel.addEventListener('input', preview);
 
+function blank(p) {
+  p.ttft.textContent = '0.00'; p.tps.textContent = '—'; p.tps.classList.remove('est');
+  p.total.textContent = '—'; p.per100.textContent = '—'; p.sub.textContent = '';
+}
+
 function resetRound() {
   for (const p of Object.values(state.panels)) {
-    p.first = null; p.done = null;
+    p.first = null; p.firstAt = null; p.done = null;
     p.node.classList.remove('done', 'failed', 'won');
     p.node.classList.add('running');
     p.badge.hidden = true;
@@ -124,24 +132,42 @@ function resetRound() {
     // Before "go" both sides are warming their connections, off the clock.
     p.reply.classList.remove('thinking');
     p.reply.dataset.empty = 'Lining up…';
-    p.big.textContent = '0.00'; p.ttft.textContent = '0.00 s'; p.tps.textContent = '—';
-    p.sub.textContent = '';
+    blank(p);
   }
   ui.bars.hidden = true;
 }
 
-// Count up while running, at the display's own pace.
+// Count up while running, at the display's own pace. First token counts
+// until it arrives; tokens per second shows a rough running figure from the
+// text so far (dimmed, "≈") until the provider's count replaces it.
 function tick() {
   if (!state || !state.goAt) return;
-  const now = (performance.now() - state.goAt) / 1000;
+  const nowMs = performance.now();
+  const now = (nowMs - state.goAt) / 1000;
   let live = false;
   for (const p of Object.values(state.panels)) {
     if (p.done) continue;
     live = true;
-    p.big.textContent = fmt(now);
-    if (p.first === null) p.ttft.textContent = `${fmt(now)} s`;
+    p.total.textContent = `${fmt(now)} s`;
+    if (p.first === null) {
+      p.ttft.textContent = fmt(now);
+    } else {
+      const since = (nowMs - p.firstAt) / 1000;
+      if (since > 0.3 && p.reply.textContent.length) {
+        p.tps.textContent = `≈${Math.round(p.reply.textContent.length / 4 / since)}`;
+        p.tps.classList.add('est');
+      }
+    }
   }
   if (live) requestAnimationFrame(tick);
+}
+
+function showResult(p, r) {
+  p.ttft.textContent = fmt(r.ttft);
+  p.tps.textContent = fmtRate(r.tps);
+  p.tps.classList.remove('est');
+  p.total.textContent = `${fmt(r.total)} s`;
+  p.per100.textContent = r.per100 ? `${fmt(r.per100)} s` : '—';
 }
 
 function handle(m) {
@@ -175,7 +201,8 @@ function handle(m) {
       break;
     case 'first_token':
       p.first = m.t;
-      p.ttft.textContent = `${fmt(m.t)} s`;
+      p.firstAt = performance.now();
+      p.ttft.textContent = fmt(m.t);
       break;
     case 'text':
       p.reply.classList.remove('thinking');
@@ -189,16 +216,15 @@ function handle(m) {
       delete p.reply.dataset.empty;
       if (m.ok) {
         p.node.classList.add('done');
-        p.big.textContent = fmt(m.total);
-        p.ttft.textContent = `${fmt(m.ttft)} s`;
-        p.tps.textContent = fmtRate(m.tps);
+        showResult(p, m);
         // Replies differ in length, so say how long each one was.
         p.sub.textContent = (m.tokens ? `${m.tokens} tokens${m.tokens_from === 'estimate' ? ' (estimated)' : ''}` : '')
           + (m.truncated ? ' · cut off at the token limit' : '');
         p.tps.title = m.provider_tps ? `${p.label} reports ${Math.round(m.provider_tps)} tok/s itself` : '';
       } else {
         p.node.classList.add('failed');
-        p.big.textContent = '—'; p.ttft.textContent = '—'; p.tps.textContent = '—';
+        p.ttft.textContent = '—'; p.tps.textContent = '—'; p.tps.classList.remove('est');
+        p.total.textContent = '—'; p.per100.textContent = '—';
         p.error.hidden = false;
         p.error.innerHTML = '';
         p.error.append(document.createTextNode(m.message));
@@ -221,20 +247,20 @@ function handle(m) {
   }
 }
 
+const METRICS = ['ttft', 'tps', 'total', 'per100'];
+
 function singleRun() {
   const [a, b] = Object.values(state.panels).map((x) => x.done);
   const summary = { sides: {}, faster: null };
   for (const r of [a, b]) {
-    summary.sides[r.side] = {
-      runs: 1, ok: r.ok ? 1 : 0, failures: r.ok ? [] : [r.message],
-      ttft: r.ok ? { median: r.ttft, worst: r.ttft } : null,
-      tps: r.ok && r.tps ? { median: r.tps, worst: r.tps } : null,
-      total: r.ok ? { median: r.total, worst: r.total } : null,
-    };
+    const side = { runs: 1, ok: r.ok ? 1 : 0, failures: r.ok ? [] : [r.message] };
+    for (const k of METRICS) side[k] = r.ok && r[k] ? { median: r[k], worst: r[k] } : null;
+    summary.sides[r.side] = side;
   }
-  if (a.ok && b.ok) {
-    const [fast, slow] = a.total <= b.total ? [a, b] : [b, a];
-    summary.faster = { side: fast.side, by: slow.total / fast.total };
+  // Faster means more tokens per second: what a shorter reply cannot fake.
+  if (a.ok && b.ok && a.tps && b.tps) {
+    const [fast, slow] = a.tps >= b.tps ? [a, b] : [b, a];
+    summary.faster = { side: fast.side, by: fast.tps / slow.tps, on: 'tokens per second' };
   }
   return summary;
 }
@@ -248,7 +274,8 @@ function crown(summary) {
   const winner = state.bySide[summary.faster.side];
   winner.node.classList.add('won');
   const by = summary.faster.by;
-  winner.badge.textContent = by >= 1.05 ? `${by.toFixed(1)}× faster` : 'Faster';
+  winner.badge.textContent = by >= 1.05 ? `${by.toFixed(1)}× the tokens/sec` : 'Faster';
+  winner.badge.title = 'Compared on tokens per second, which does not depend on how long the reply is';
   winner.badge.hidden = false;
   drawBars(summary);
 }
@@ -259,16 +286,15 @@ function summarise(m) {
     // under it, and how many of the five got through.
     for (const [name, side] of Object.entries(m.sides)) {
       const p = state.bySide[name];
-      if (side.total) {
+      if (side.ttft) {
         p.node.classList.remove('failed');
         p.node.classList.add('done');
-        p.big.textContent = fmt(side.total.median);
-        p.ttft.textContent = `${fmt(side.ttft.median)} s`;
-        p.tps.textContent = fmtRate(side.tps && side.tps.median);
-        p.sub.textContent = `median of ${side.ok} · worst ${fmt(side.total.worst)} s`
+        const med = Object.fromEntries(METRICS.map((k) => [k, side[k] ? side[k].median : null]));
+        showResult(p, med);
+        p.sub.textContent = `median of ${side.ok} · worst first token ${fmt(side.ttft.worst)} s`
+          + (side.tps ? ` · worst ${fmtRate(side.tps.worst)} tok/s` : '')
           + (side.ok < side.runs ? ` · ${side.runs - side.ok} of ${side.runs} failed` : '')
           + (side.truncated ? ` · ${side.truncated} cut off` : '');
-        p.node.querySelector('.cmp-big-label').textContent = 'Full reply, median';
       } else {
         p.sub.textContent = `all ${side.runs} runs failed: ${side.failures[0] || ''}`;
       }
@@ -284,7 +310,8 @@ function drawBars(summary) {
   const rows = [
     ['ttft', 'First token', 'seconds · lower is faster', (v) => `${fmt(v)} s`, false],
     ['tps', 'Tokens / sec', 'measured by us · higher is faster', (v) => `${fmtRate(v)}`, true],
-    ['total', 'Full reply', 'seconds · lower is faster', (v) => `${fmt(v)} s`, false],
+    ['total', 'Full reply', 'seconds · depends on reply length', (v) => `${fmt(v)} s`, false],
+    ['per100', 'Per 100 tokens', 'full reply ÷ length · lower is faster', (v) => `${fmt(v)} s`, false],
   ];
   for (const [key, label, hint, show, high] of rows) {
     const values = names.map((n) => summary.sides[n] && summary.sides[n][key] ? summary.sides[n][key].median : null);
@@ -319,9 +346,10 @@ function drawBars(summary) {
     });
     ui.bars.insertBefore(row, ui.barsNote);
   }
-  ui.barsNote.textContent = state.runs > 1
-    ? `Median of ${state.runs} runs each. Tokens per second is measured the same way for both: output tokens over first to last token.`
-    : 'One run. Use “5 runs” for the typical result rather than a lucky one.';
+  ui.barsNote.textContent = (state.runs > 1
+    ? `Median of ${state.runs} runs each. `
+    : 'One run; use “5 runs” for the typical result rather than a lucky one. ')
+    + 'Faster means more tokens per second, measured the same way for both. Full reply time depends on how long each reply is, so per 100 tokens is shown beside it.';
   ui.bars.hidden = false;
 }
 

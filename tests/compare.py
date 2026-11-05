@@ -192,8 +192,12 @@ async def main():
               kinds[0] == "go" and kinds.count("first_token") == 2
               and kinds.count("side_done") == 2 and "text" in kinds)
         summary = compare.summarise(["sambanova", "fireworks"], [rounds])
-        check("the faster side is named, and by how much",
-              summary["faster"]["side"] == "fireworks" and 2 < summary["faster"]["by"] < 3.5)
+        check("the faster side is named, on tokens per second, and by how much",
+              summary["faster"]["side"] == "fireworks" and summary["faster"]["on"] == "tokens per second"
+              and 1.8 < summary["faster"]["by"] < 3.5)
+        check("full reply time comes with time per 100 tokens, so length is accounted for",
+              abs(a["per100"] - a["total"] / a["tokens"] * 100) < 1e-9
+              and summary["sides"]["fireworks"]["per100"]["median"] == b["per100"])
 
         # Failures, each as what it was, and no number for it.
         compare_timeout = compare.TIMEOUT_SECONDS

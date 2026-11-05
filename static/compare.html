@@ -82,14 +82,20 @@
   </header>
   <p class="cmp-model"></p>
   <p class="cmp-caveat" hidden></p>
-  <div class="cmp-timer">
-    <span class="cmp-big" data-v="total">0.00</span><span class="cmp-unit">s</span>
-    <span class="cmp-big-label">Full reply</span>
-    <span class="cmp-sub" data-v="total-sub"></span>
+  <div class="cmp-heads">
+    <div class="cmp-head-num">
+      <span class="cmp-big" data-v="ttft">0.00</span><span class="cmp-unit">s</span>
+      <span class="cmp-big-label">First token</span>
+    </div>
+    <div class="cmp-head-num">
+      <span class="cmp-big" data-v="tps">—</span><span class="cmp-unit">tok/s</span>
+      <span class="cmp-big-label">Tokens per second</span>
+    </div>
   </div>
+  <span class="cmp-sub" data-v="sub"></span>
   <dl class="cmp-stats">
-    <div><dt>First token</dt><dd><span data-v="ttft">—</span></dd></div>
-    <div><dt>Tokens / sec</dt><dd><span data-v="tps">—</span></dd></div>
+    <div><dt>Full reply</dt><dd><span data-v="total">—</span></dd></div>
+    <div><dt>Per 100 tokens</dt><dd><span data-v="per100">—</span></dd></div>
   </dl>
   <div class="cmp-error" hidden></div>
   <div class="cmp-reply" aria-live="polite"></div>

@@ -1,0 +1,124 @@
+{
+ "captured": "2026-11-05T01:56:33",
+ "sambanova": {
+  "model": "gpt-oss-120b",
+  "not_streamed": {
+   "finish_reason": "stop",
+   "content_start": "Ah, I see. Your order 44812 is marked as delayed and is currently considered lost. I can go ahead and process a full refund for you, or if you’d prefer, we can ",
+   "tool_calls": [],
+   "reasoning_start": "We need to lookup order.",
+   "usage": {
+    "completion_tokens": 81,
+    "prompt_tokens": 534,
+    "total_tokens": 615,
+    "completion_tokens_details": {
+     "accepted_prediction_tokens": null,
+     "audio_tokens": null,
+     "reasoning_tokens": 7,
+     "rejected_prediction_tokens": null
+    },
+    "prompt_tokens_details": null,
+    "completion_tokens_after_first_per_sec": 587.6185939645269,
+    "completion_tokens_after_first_per_sec_first_ten": 591.2018930057104,
+    "completion_tokens_after_first_per_sec_graph": 591.2018930057104,
+    "completion_tokens_per_sec": 204.0825223822499,
+    "end_time": 1793872584.9779983,
+    "is_last_response": true,
+    "start_time": 1793872584.5811,
+    "stop_reason": "stop",
+    "time_to_first_token": 0.2607555389404297,
+    "time_to_first_token_graph": 0.05105304718017578,
+    "total_latency": 0.3968982696533203,
+    "total_tokens_per_sec": 1549.5154477170827
+   }
+  },
+  "first_stream_deltas": [
+   {
+    "channel": "analysis",
+    "reasoning": "We need to lookup order."
+   },
+   {
+    "content": "lookup_order 44812",
+    "channel": "commentary"
+   },
+   {
+    "content": "Ah, I see. Your order 44812 is marked as late. I can either send you a replacement right away or process a full refund. Which option would you"
+   },
+   {
+    "content": " prefer?"
+   }
+  ]
+ },
+ "fireworks": {
+  "model": "accounts/fireworks/models/gpt-oss-120b",
+  "not_streamed": {
+   "finish_reason": "stop",
+   "content_start": "Ah, I see it’s been quite a while. Your headphones are marked as in transit, but they’re now 11 working days past the promised delivery date, which means we tre",
+   "tool_calls": [],
+   "reasoning_start": "We need to respond. Order is 11 working days past promised, treated as lost. Offer replacement or full refund. Also delivery charge refunded automatically. So say that.",
+   "usage": {
+    "completion_tokens": 114,
+    "prompt_tokens": 1162,
+    "total_tokens": 1276,
+    "completion_tokens_details": {
+     "accepted_prediction_tokens": null,
+     "audio_tokens": null,
+     "reasoning_tokens": 34,
+     "rejected_prediction_tokens": null
+    },
+    "prompt_tokens_details": {
+     "audio_tokens": null,
+     "cache_write_tokens": null,
+     "cached_tokens": 0
+    },
+    "output_tokens_details": {
+     "reasoning_tokens": 34
+    }
+   }
+  },
+  "first_stream_deltas": [
+   {
+    "reasoning_content": "We"
+   },
+   {
+    "reasoning_content": " need"
+   },
+   {
+    "reasoning_content": " to"
+   },
+   {
+    "reasoning_content": " respond"
+   },
+   {
+    "reasoning_content": "."
+   },
+   {
+    "reasoning_content": " Order"
+   },
+   {
+    "reasoning_content": " is"
+   },
+   {
+    "reasoning_content": " "
+   },
+   {
+    "reasoning_content": "11"
+   },
+   {
+    "reasoning_content": " working"
+   },
+   {
+    "reasoning_content": " days"
+   },
+   {
+    "reasoning_content": " past"
+   },
+   {
+    "reasoning_content": " promised"
+   },
+   {
+    "reasoning_content": ","
+   }
+  ]
+ }
+}
