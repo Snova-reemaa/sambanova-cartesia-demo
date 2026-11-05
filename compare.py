@@ -39,7 +39,9 @@ from sambanova import StreamClock, stream_chat
 
 SETTINGS = {
     "temperature": float(os.getenv("COMPARE_TEMPERATURE", "0.3")),
-    "max_tokens": int(os.getenv("COMPARE_MAX_TOKENS", "400")),
+    # Room for a reasoning model to think a little and still answer; the
+    # same cap for every side.
+    "max_tokens": int(os.getenv("COMPARE_MAX_TOKENS", "1500")),
 }
 TIMEOUT_SECONDS = float(os.getenv("COMPARE_TIMEOUT_SECONDS", "60"))
 MAX_RUNS = 5
@@ -130,6 +132,8 @@ async def race(names, messages, emit, settings=None):
     async def run(entry):
         name, client = entry.name, entry.client
         extra = {"max_tokens": settings["max_tokens"]}
+        if entry.reasoning:
+            extra["reasoning_effort"] = entry.reasoning
         if entry.ask_for_usage:
             extra["stream_options"] = {"include_usage": True}
         clock = StreamClock(on_first=lambda at: emit(

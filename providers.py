@@ -42,18 +42,23 @@ PROVIDERS = {
         # SambaNova closes every stream with a usage frame unasked; the
         # others need asking.
         "ask_for_usage": False,
+        # Accepts reasoning_effort on its reasoning models (tried, 5 Nov 2026).
+        "reasoning_effort": True,
     },
     "fireworks": {
         "label": "Fireworks",
         "base_url": lambda: os.getenv("FIREWORKS_BASE_URL", "https://api.fireworks.ai/inference/v1"),
         "key": "FIREWORKS_API_KEY",
         "ask_for_usage": True,
+        "reasoning_effort": True,
     },
     "together": {
         "label": "Together",
         "base_url": lambda: os.getenv("TOGETHER_BASE_URL", "https://api.together.xyz/v1"),
         "key": "TOGETHER_API_KEY",
         "ask_for_usage": True,
+        # Not tried yet (its key is refused): left at its default until it is.
+        "reasoning_effort": False,
     },
     "novita": {
         "label": "Novita",
@@ -61,6 +66,7 @@ PROVIDERS = {
         "base_url": lambda: os.getenv("NOVITA_BASE_URL", "https://api.novita.ai/v3/openai"),
         "key": "NOVITA_API_KEY",
         "ask_for_usage": True,
+        "reasoning_effort": False,
     },
 }
 
@@ -77,6 +83,29 @@ MODEL_IDS = {
         "fireworks": "accounts/fireworks/models/minimax-m3p1-flash",
     },
 }
+
+
+# Reasoning models think before they answer, and on VoxNova's prompt at
+# their default effort they can spend every token thinking and never say a
+# word (seen on 5 Nov 2026). The comparison asks them to keep it short,
+# where the provider is known to accept that, and says so on the result.
+REASONING_MODELS = ("gpt-oss", "minimax-m3", "minimax-m2", "deepseek-r", "qwq", "o1", "o3", "o4")
+REASONING_EFFORT = os.getenv("COMPARE_REASONING_EFFORT", "low").strip().lower()
+
+
+def is_reasoning(model):
+    tail = (model or "").lower().split("/")[-1]
+    return any(tail.startswith(p) for p in REASONING_MODELS)
+
+
+def reasoning_for(name, model):
+    """The reasoning_effort to send, or None: only to a reasoning model, on
+    a provider known to take it, and only if one is set."""
+    if not REASONING_EFFORT or not is_reasoning(model):
+        return None
+    if not PROVIDERS.get(name, {}).get("reasoning_effort"):
+        return None
+    return REASONING_EFFORT
 
 
 def names():
@@ -124,16 +153,21 @@ class Side:
     """One side of a comparison: who it is, how to reach it, how to label it."""
 
     def __init__(self, name, label, client, model, ask_for_usage, deployment,
-                 note=None, secret=None):
+                 note=None, secret=None, reasoning=None):
         self.name, self.label, self.client, self.model = name, label, client, model
         self.ask_for_usage, self.deployment, self.note = ask_for_usage, deployment, note
+        # reasoning_effort sent, or None; for a reasoning model, None means
+        # the provider's own default, and the page says which.
+        self.reasoning = reasoning
+        self.reasoning_model = is_reasoning(model)
         # Only for scrubbing it out of anything shown; never sent anywhere.
         self.secret = secret
 
     def public(self):
         """What the page may see. Never the key."""
         return {"name": self.name, "label": self.label, "model": self.model,
-                "deployment": self.deployment, "note": self.note, "ready": True}
+                "deployment": self.deployment, "note": self.note, "ready": True,
+                "reasoning": (self.reasoning or "provider default") if self.reasoning_model else None}
 
     async def close(self):
         if self.name == "custom":
@@ -143,8 +177,9 @@ class Side:
 
 def side(name):
     p = PROVIDERS[name]
-    return Side(name, p["label"], client(name), model_for(name), p["ask_for_usage"],
-                deployment(name))
+    model = model_for(name)
+    return Side(name, p["label"], client(name), model, p["ask_for_usage"],
+                deployment(name), reasoning=reasoning_for(name, model))
 
 
 # ================================================== a provider the user brings

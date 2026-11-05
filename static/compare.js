@@ -79,7 +79,10 @@ function buildPanel(slot, side) {
   const tag = node.querySelector('.cmp-tag');
   tag.textContent = side.deployment;
   tag.classList.toggle('dedicated', side.deployment === 'dedicated');
-  node.querySelector('.cmp-model').textContent = side.model;
+  // A reasoning model says how hard it was asked to think, so a side on its
+  // provider's default is never mistaken for a like-for-like run.
+  node.querySelector('.cmp-model').textContent = side.reasoning
+    ? `${side.model} · reasoning ${side.reasoning}` : side.model;
   tag.classList.toggle('unknown', side.deployment === 'serverless/unknown');
   const caveat = node.querySelector('.cmp-caveat');
   caveat.textContent = side.note || '';

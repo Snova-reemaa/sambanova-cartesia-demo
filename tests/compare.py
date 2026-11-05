@@ -162,6 +162,31 @@ async def main():
               and same[0]["max_tokens"] == compare.SETTINGS["max_tokens"])
         check("and each its own model", slow.bodies[0]["model"] == "sambanova-model"
               and quick.bodies[0]["model"] == "fireworks-model")
+        check("the cap is 1500 tokens, the same for both",
+              compare.SETTINGS["max_tokens"] == 1500
+              and slow.bodies[0]["max_tokens"] == quick.bodies[0]["max_tokens"] == 1500)
+        check("a model that does not reason is sent no reasoning setting",
+              "reasoning_effort" not in slow.bodies[0] and "reasoning_effort" not in quick.bodies[0])
+
+        # A reasoning model, on two providers known to take the setting:
+        # both are asked for low effort, and the page is told.
+        os.environ["COMPARE_MODEL_SAMBANOVA"] = "gpt-oss-120b"
+        os.environ["COMPARE_MODEL_FIREWORKS"] = "accounts/fireworks/models/gpt-oss-120b"
+        await compare.race(["sambanova", "fireworks"], messages, lambda e: None)
+        check("a reasoning model is asked for low effort on both sides",
+              slow.bodies[-1].get("reasoning_effort") == "low"
+              and quick.bodies[-1].get("reasoning_effort") == "low")
+        check("and each side's label says so",
+              providers.side("sambanova").public()["reasoning"] == "low")
+        check("a provider not known to take it is left at its default, and says so",
+              providers.reasoning_for("together", "openai/gpt-oss-120b") is None
+              and providers.Side("together", "Together", None, "openai/gpt-oss-120b", True,
+                                 "serverless").public()["reasoning"] == "provider default")
+        check("so is the visitor's own provider",
+              providers.reasoning_for("custom", "gpt-oss-120b") is None)
+        os.environ["COMPARE_MODEL_SAMBANOVA"] = "sambanova-model"
+        os.environ["COMPARE_MODEL_FIREWORKS"] = "fireworks-model"
+
         kinds = [e["type"] for e in events]
         check("the page is told go, then first tokens, text, and each side done",
               kinds[0] == "go" and kinds.count("first_token") == 2
