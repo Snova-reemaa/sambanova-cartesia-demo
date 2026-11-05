@@ -22,6 +22,9 @@ not been called.
 | Path | What it is |
 |---|---|
 | `scenarios/*.json` | The ten scripted calls: what the caller says each turn |
+| **`prompts/core.jsonl`** | **What to send for the main comparison**: the 33 core prompts in the kit's format (below) |
+| `prompts/fact-check.jsonl` | The 51 fact-checks, in the kit's format: the extra set |
+| `prompts/all.jsonl` | All 93, in the kit's format |
 | **`prompts/core/`** | **The main comparison set**: the 33 `answer` and `answer-after-tools` prompts, with their own `index.csv` / `index.json` |
 | `prompts/fact-check/` | The extra set: the 51 `fact-check` prompts, with their own index |
 | `prompts/NNN-<scenario>-t<turn>-<kind>.txt` | All 93 requests, flattened, one each (the two sets above are copies of some of these) |
@@ -68,6 +71,35 @@ exactly as sent:
 - Tool **calls** the model made are in `raw/requests.jsonl`, under each
   request's `response.tool_calls` (7 of them: `lookup_order` 5,
   `transfer_to_specialist` 1, `web_search` 1).
+
+## For the benchmarking kit: the `.jsonl` files
+
+The kit (`ai-starter-kit/benchmarking`, format as in its
+`prompts/custom_prompt_example.jsonl`) takes JSONL: one object per line,
+with a `prompt` key and nothing else:
+
+```json
+{"prompt": "{\"messages\":[{\"role\":\"system\",\"content\":\"You are a support agent on a phone call…\"}, …],\"tools\":[…]}"}
+```
+
+The value is the flattened prompt above **as one string**, the
+stringified JSON of messages and tools, as agreed with Jorge: identical,
+character for character, to that prompt's `.txt` file. That is why it
+appears with its quotes escaped.
+
+| File | Lines | Line *n* is |
+|---|---|---|
+| `prompts/core.jsonl` | 33 | row *n* of `prompts/core/index.csv` |
+| `prompts/fact-check.jsonl` | 51 | row *n* of `prompts/fact-check/index.csv` |
+| `prompts/all.jsonl` | 93 | row *n* of `prompts/index.csv` |
+
+So a result on line 12 of `core.jsonl` belongs to row 12 of
+`core/index.csv`: its scenario, turn, kind and token counts.
+
+`export.py` checks every line after writing it: it parses, has the
+`prompt` key and no other, holds a string identical to its row's `.txt`
+file, and that string parses back to `{"messages", "tools"}`; and there is
+one line per index row. It stops if any check fails.
 
 ## The index
 

@@ -10,6 +10,9 @@ bench/raw/turns.jsonl (when run.py played each turn), and writes:
     bench/prompts/core/                                the main comparison set:
                                                        answer, answer-after-tools
     bench/prompts/fact-check/                          the fact-checks, as an extra set
+    bench/prompts/core.jsonl, fact-check.jsonl, all.jsonl
+                                                       the same three sets in the
+                                                       benchmarking kit's format
 
 Each prompt file is the request's messages and tools, exactly as sent, as
 one line of JSON: {"messages": [...], "tools": [...]}. No roles are
@@ -46,6 +49,36 @@ KIND = {
 def approx_tokens(text):
     """About four characters a token: an estimate, labelled as one."""
     return round(len(text) / 4)
+
+
+def check_jsonl(path, rows):
+    """Every line parses, has the "prompt" key and no other, holds a string
+    identical to its row's prompt file, and that string is our flattened
+    request; and there is one line per row, in the same order."""
+    problems = []
+    lines = open(path, encoding="utf-8").read().split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    if len(lines) != len(rows):
+        problems.append(f"{len(lines)} lines for {len(rows)} rows")
+    for n, (line, row) in enumerate(zip(lines, rows), 1):
+        try:
+            obj = json.loads(line)
+        except ValueError as exc:
+            problems.append(f"line {n}: not JSON ({exc})")
+            continue
+        if not isinstance(obj, dict) or set(obj) != {"prompt"}:
+            problems.append(f"line {n}: keys {sorted(obj) if isinstance(obj, dict) else type(obj).__name__}")
+            continue
+        if not isinstance(obj["prompt"], str):
+            problems.append(f"line {n}: prompt is {type(obj['prompt']).__name__}, not a string")
+            continue
+        if obj["prompt"] != open(os.path.join(OUT, row["file"]), encoding="utf-8").read():
+            problems.append(f"line {n}: does not match {row['file']}")
+        inner = json.loads(obj["prompt"])
+        if set(inner) != {"messages", "tools"}:
+            problems.append(f"line {n}: the prompt is not a flattened request")
+    return problems
 
 
 def main():
@@ -132,6 +165,27 @@ def main():
         sizes = [row["approx_input_tokens"] for row in picked]
         print(f"  {folder}/: {len(picked)} prompts, approx input tokens "
               f"{min(sizes)}–{max(sizes)}")
+
+    # The benchmarking kit's input (ai-starter-kit benchmarking/prompts/
+    # custom_prompt_example.jsonl): one {"prompt": "<text>"} per line, and
+    # nothing else. The text is the flattened prompt as above, a string. Line
+    # n is row n of the matching index, so results map back to it.
+    sets = {"core": [row for row in rows if row["kind"] in subsets["core"]],
+            "fact-check": [row for row in rows if row["kind"] in subsets["fact-check"]],
+            "all": rows}
+    for name, picked in sets.items():
+        path = os.path.join(OUT, f"{name}.jsonl")
+        with open(path, "w", encoding="utf-8") as f:
+            for row in picked:
+                text = open(os.path.join(OUT, row["file"]), encoding="utf-8").read()
+                f.write(json.dumps({"prompt": text}, ensure_ascii=False) + "\n")
+        problems = check_jsonl(path, picked)
+        print(f"  {name}.jsonl: {len(picked)} lines, "
+              + ("every line valid" if not problems else f"{len(problems)} PROBLEMS"))
+        for problem in problems[:5]:
+            print("    " + problem)
+        if problems:
+            raise SystemExit(1)
 
     by_kind = {}
     for row in rows:
