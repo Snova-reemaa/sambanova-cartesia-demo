@@ -302,6 +302,21 @@ Laughter rules and samples; real address backends (Loqate / Ideal Postcodes
 script; two-call transcript; sonic-3 vs 3.6 vs preview listening;
 first-audio latency before/after Task 1; more evals.
 
+## Provider comparison (Part 2, local only so far)
+
+`/compare` (behind the same sign-in) asks two providers the same question
+at the same moment and shows them side by side: time to first token,
+tokens/sec (ours), full reply time, five-run median and worst, failures
+named. `providers.py` holds the providers; the app itself still uses only
+SambaNova. Not deployed. Model not chosen: set `COMPARE_MODEL` once Jorge
+confirms (see `bench/MODELS.md`, made by `bench/models.py`).
+
+Found on 5 Nov 2026: Together's key is refused (401); SambaNova and
+Fireworks share `gpt-oss-120b` and MiniMax M3.1 Flash serverless; and on
+VoxNova's prompt with no tools, SambaNova's `gpt-oss-120b` mostly returns
+an empty reply or a tool call written as JSON, while Fireworks' answers in
+words. The page shows that as a failure rather than a win.
+
 ## Known and deliberate
 
 - **The demo inbox is not verification.** The code appears on the caller's

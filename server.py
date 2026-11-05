@@ -42,7 +42,9 @@ from search import search, as_context, provider as search_provider
 from knowledge_base import Knowledge, as_context as kb_context
 import languages
 import heard
+import compare
 import confirming
+import providers
 import memory
 import orders
 import policies
@@ -3580,6 +3582,102 @@ async def index(request):
     return web.FileResponse(os.path.join(STATIC, "index.html"))
 
 
+# ================================================================== compare
+#
+# One question to two providers at once, side by side (compare.py does the
+# racing and the timing; this is the page and its socket). Behind the same
+# sign-in as everything else.
+
+def compare_messages(question):
+    """What VoxNova itself would send for this question as a first turn,
+    less the tools: the agent's system prompt, the question, the order
+    record if it names one (what the lookup tool would have added), and
+    the matching documentation. Tools are left out because each provider
+    handles them a little differently, and a reply that is only a tool
+    call has no words to time."""
+    session = Session()
+    code = languages.detect(question, "en")
+    opts = read_opts({"search": False})
+    route = {"tier": "standard", "model": None, "reason": "compare"}
+    messages = [{"role": "system", "content": build_system(session, code, opts, "neutral", route)},
+                {"role": "user", "content": question}]
+    number = orders.find_number(question)
+    record = orders.look_up(number) if number else None
+    if record:
+        messages.append({"role": "system", "content":
+                         "Order lookup result. This is the real record — answer "
+                         "from it and do not add anything it does not say.\n\n"
+                         + orders.describe(record)})
+    hits = KB.find(question)
+    messages.append({"role": "system", "content": policy_prompt(hits) if hits else NO_POLICY})
+    # The system prompt tells the agent to look orders up, and with no
+    # tools offered a model will write the call out as text instead:
+    # '{"order_number": "44812"}' in eight tokens, timed against a real
+    # answer from the other side. Say plainly there are none.
+    messages.append({"role": "system", "content": COMPARE_NO_TOOLS})
+    return messages
+
+
+COMPARE_NO_TOOLS = (
+    "No tools are available on this turn and none are needed: the order record, "
+    "if there is one, and the documentation are above. Answer the caller in plain "
+    "spoken words. Never write a tool call, a function name or JSON.")
+
+
+async def compare_page(request):
+    return web.FileResponse(os.path.join(STATIC, "compare.html"))
+
+
+async def compare_socket(request):
+    ws = web.WebSocketResponse(heartbeat=25, max_msg_size=64 * 1024)
+    await ws.prepare(request)
+    out = asyncio.Queue()
+
+    async def pump():
+        while True:
+            event = await out.get()
+            if event is None or ws.closed:
+                return
+            try:
+                await ws.send_json(event)
+            except (ConnectionResetError, RuntimeError):
+                return
+
+    pumping = asyncio.ensure_future(pump())
+    await out.put({"type": "providers", "providers": [providers.describe(n) for n in providers.names()],
+                   "settings": compare.SETTINGS, "max_runs": compare.MAX_RUNS})
+    running = None
+    try:
+        async for msg in ws:
+            if msg.type != WSMsgType.TEXT:
+                continue
+            try:
+                data = json.loads(msg.data)
+            except ValueError:
+                continue
+            if data.get("type") != "run" or (running and not running.done()):
+                continue
+            question = said_text(data, "question")
+            sides = [n for n in (data.get("sides") or []) if n in providers.PROVIDERS][:2]
+            ready = [providers.describe(n) for n in sides]
+            if not question or len(sides) != 2 or sides[0] == sides[1] \
+                    or not all(r["ready"] for r in ready):
+                await out.put({"type": "refused", "why":
+                               "; ".join(r["why"] for r in ready if r["why"])
+                               or "Pick two different providers and ask something."})
+                continue
+            runs = data.get("runs") if data.get("runs") in (1, compare.MAX_RUNS) else 1
+            await out.put({"type": "start", "question": question, "sides": ready, "runs": runs})
+            running = asyncio.ensure_future(compare.compare(
+                sides, compare_messages(question), out.put_nowait, runs=runs))
+    finally:
+        if running and not running.done():
+            running.cancel()
+        await out.put(None)
+        await pumping
+    return ws
+
+
 # A very small amount of markdown, because the policies are written as text
 # and a dependency to render them would be a dependency to review.
 def as_html(text, title):
@@ -3995,6 +4093,8 @@ def main():
             return web.Response(text=caller_key(request))
         app.router.add_get("/whoami", whoami)
     app.router.add_get("/terms", terms)
+    app.router.add_get("/compare", compare_page)
+    app.router.add_get("/compare/ws", compare_socket)
     app.router.add_get("/privacy", privacy)
     app.router.add_get("/voice-sample", voice_sample)
     app.router.add_post("/login", login)

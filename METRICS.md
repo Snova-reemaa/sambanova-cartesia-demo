@@ -138,6 +138,30 @@ no network. The panel shows ours first and SambaNova's in brackets:
 "`312 tok/s (SambaNova says 330)`" ([static/app.js:882](static/app.js:882),
 value from [static/app.js:2019](static/app.js:2019)).
 
+## The side-by-side comparison (`/compare`)
+
+The comparison page does not use the turn clock above. It has its own
+start line, in `compare.race` ([compare.py](compare.py)):
+
+- **Before the clock:** each side computes the SDK's headers and opens its
+  connection with a free models list (`warm`). Measured on loopback, the
+  SDK's first-use set-up alone is about 0.27 s; a cold connection also
+  pays for TCP and TLS. Neither is the model, so neither is timed.
+- **t0:** taken once both sides are lined up; both are released together,
+  and each records how long after t0 its request left (`sent_after`,
+  a few milliseconds).
+- **Time to first token:** t0 to the first streamed token, reasoning
+  included where a model streams it separately (`StreamClock.tick_reasoning`).
+- **Tokens per second:** the same `StreamClock` figure as above, from the
+  same `stream_chat` code, for every provider.
+- **Full reply time:** t0 to the end of the stream.
+- **No retries** (`max_retries=0`): a 429 is shown as a rate limit, not
+  hidden inside a slow time. Rate limits, refused keys, missing models,
+  timeouts, empty replies and replies that are only a tool call are each
+  shown as what they were, with no number.
+- **Five runs:** median and worst per side, and how many of the five got
+  through (`compare.summarise`).
+
 ## What this means for the provider comparison
 
 - `first_token_s` now starts at the model's first token, but the turn

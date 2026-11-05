@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VoxNova · Speed comparison</title>
+<meta name="theme-color" content="#22105C">
+<link rel="stylesheet" href="/static/fonts/fonts.css">
+<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/compare.css">
+</head>
+<body class="compare">
+
+<header class="cmp-top">
+  <div class="brand">
+    <span class="wordmark">VoxNova</span>
+    <span class="byline">Speed comparison</span>
+  </div>
+  <a class="ghost cmp-back" href="/">Back to the call</a>
+</header>
+
+<main class="cmp">
+  <form class="cmp-ask" id="ask" autocomplete="off">
+    <div class="cmp-pick">
+      <label class="cmp-sel"><span class="sr">Left provider</span><select id="side-a"></select></label>
+      <span class="cmp-vs">vs</span>
+      <label class="cmp-sel"><span class="sr">Right provider</span><select id="side-b"></select></label>
+      <div class="cmp-runs" role="radiogroup" aria-label="How many runs">
+        <label><input type="radio" name="runs" value="1" checked><span>1 run</span></label>
+        <label><input type="radio" name="runs" value="5"><span>5 runs</span></label>
+      </div>
+    </div>
+    <div class="cmp-askrow">
+      <input id="question" maxlength="600" placeholder="Ask both the same question"
+             value="Where is my order 44812, and what can you do if it's late?" aria-label="Question">
+      <button type="submit" class="send" id="go">Run</button>
+    </div>
+    <p class="cmp-note" id="note"></p>
+  </form>
+
+  <h1 class="cmp-question" id="shown-question" hidden></h1>
+  <p class="cmp-round" id="round" hidden></p>
+
+  <section class="cmp-panels" id="panels">
+    <article class="cmp-panel" data-slot="a"></article>
+    <article class="cmp-panel" data-slot="b"></article>
+  </section>
+
+  <section class="cmp-bars" id="bars" hidden aria-label="Comparison">
+    <p class="cmp-bars-note" id="bars-note"></p>
+  </section>
+</main>
+
+<template id="panel">
+  <header class="cmp-head">
+    <h2 class="cmp-name"></h2>
+    <span class="cmp-tag"></span>
+    <span class="cmp-badge" hidden></span>
+  </header>
+  <p class="cmp-model"></p>
+  <div class="cmp-timer">
+    <span class="cmp-big" data-v="total">0.00</span><span class="cmp-unit">s</span>
+    <span class="cmp-big-label">Full reply</span>
+    <span class="cmp-sub" data-v="total-sub"></span>
+  </div>
+  <dl class="cmp-stats">
+    <div><dt>First token</dt><dd><span data-v="ttft">—</span></dd></div>
+    <div><dt>Tokens / sec</dt><dd><span data-v="tps">—</span></dd></div>
+  </dl>
+  <div class="cmp-error" hidden></div>
+  <div class="cmp-reply" aria-live="polite"></div>
+</template>
+
+<script src="/static/compare.js"></script>
+</body>
+</html>

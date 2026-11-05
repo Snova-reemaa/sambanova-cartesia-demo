@@ -7,7 +7,13 @@ from openai import AsyncOpenAI
 DEFAULT_MODEL = "Meta-Llama-3.3-70B-Instruct"
 
 
-def get_client():
+def get_client(provider=None):
+    """The model client. With no provider, SambaNova, exactly as the app
+    has always used it; a provider name (providers.py) gives that one's
+    client instead, for the comparison."""
+    if provider and provider != "sambanova":
+        import providers
+        return providers.client(provider)
     client = AsyncOpenAI(
         api_key=os.environ["SAMBANOVA_API_KEY"],
         base_url=os.getenv("SAMBANOVA_BASE_URL", "https://api.sambanova.ai/v1"),
@@ -68,20 +74,40 @@ class StreamClock:
     frame. A stream without one falls back to characters / 4, and says so.
     """
 
-    def __init__(self):
+    def __init__(self, on_first=None):
         self.first = self.last = None
         self.chars = 0
+        # Told the moment the first token arrives, for a live timer.
+        self.on_first = on_first
+
+    def tick_reasoning(self, delta):
+        """Reasoning a model streams in a field of its own (gpt-oss does,
+        as reasoning_content or reasoning) is still output: it is in the
+        provider's token count, so it is in the time too. Otherwise one
+        provider's first token is its first thought and another's its
+        first word."""
+        for field in ("reasoning_content", "reasoning"):
+            text = getattr(delta, field, None)
+            if text:
+                self.tick(text)
+                return True
+        return False
 
     def tick(self, text):
         now = time.perf_counter()
         if self.first is None:
             self.first = now
+            if self.on_first:
+                self.on_first(now)
         self.last = now
         self.chars += len(text or "")
 
     def into(self, stats):
         if stats is None or self.first is None:
             return
+        # When, on this machine's clock: the comparison measures time to
+        # first token from its own start line, the same for every side.
+        stats.update(stream_first_at=self.first, stream_last_at=self.last)
         tokens = stats.get("completion_tokens")
         source = "usage"
         if not tokens:
@@ -221,6 +247,7 @@ async def stream_tools(client, messages, model=None, tools=None, stats=None,
             continue
 
         delta = chunk.choices[0].delta
+        clock.tick_reasoning(delta)
         parts = getattr(delta, "tool_calls", None)
         if parts:
             if not announced:
@@ -249,7 +276,8 @@ async def stream_tools(client, messages, model=None, tools=None, stats=None,
         yield ("tool", slot)
 
 
-async def stream_chat(client, messages, model=None, stats=None, temperature=None):
+async def stream_chat(client, messages, model=None, stats=None, temperature=None,
+                      extra=None, clock=None):
     """Stream deltas for a full message list. Reuses a caller-owned client so the
     TLS connection stays warm between turns.
 
@@ -261,10 +289,11 @@ async def stream_chat(client, messages, model=None, stats=None, temperature=None
         messages=messages,
         stream=True,
         **({"temperature": temperature} if temperature is not None else {}),
+        **(extra or {}),
     )
 
     think = ThinkFilter()
-    clock = StreamClock()
+    clock = clock or StreamClock()
     async for chunk in stream:
         # SambaNova closes the stream with a usage frame that carries no choices
         # — the one that used to crash this demo. It holds the inference timings.
@@ -274,6 +303,7 @@ async def stream_chat(client, messages, model=None, stats=None, temperature=None
                 stats.update(found)
         if not chunk.choices:
             continue
+        clock.tick_reasoning(chunk.choices[0].delta)
         delta = chunk.choices[0].delta.content
         if delta:
             clock.tick(delta)

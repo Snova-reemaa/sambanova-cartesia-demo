@@ -48,6 +48,7 @@ OFFLINE_SUITES = [
     ("tests/chart.py", "the chart with Auth0 off and on"),
     ("tests/confirming.py", "names and emails read back, spelled, typed, 8 languages"),
     ("tests/metrics.py", "tokens/sec timed by us; first token is the model's"),
+    ("tests/compare.py", "side by side: same start, planted timings, failures shown"),
 ]
 
 LIVE_SUITES = [
