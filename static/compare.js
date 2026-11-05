@@ -8,7 +8,17 @@ const ui = {
   ask: $('ask'), a: $('side-a'), b: $('side-b'), question: $('question'), go: $('go'),
   note: $('note'), shown: $('shown-question'), round: $('round'), bars: $('bars'),
   barsNote: $('bars-note'),
+  own: $('own'), ownUrl: $('own-url'), ownKey: $('own-key'), ownModel: $('own-model'),
 };
+
+// "Your own provider": always offered, needs nothing in .env. Its key stays
+// in this page's field; it goes to the server only inside a run request.
+const CUSTOM = { name: 'custom', label: 'Your own provider', ready: true, custom: true };
+const customSide = () => ({
+  name: 'custom', label: `Your provider (${ui.ownModel.value.trim() || 'model'})`,
+  model: ui.ownModel.value.trim() || 'your model', deployment: 'serverless/unknown',
+  note: "we can't verify how your provider is set up", ready: true,
+});
 const slots = { a: document.querySelector('[data-slot="a"]'), b: document.querySelector('[data-slot="b"]') };
 
 let providers = [];
@@ -31,10 +41,11 @@ function connect() {
 function fillProviders() {
   for (const [select, want] of [[ui.a, 'sambanova'], [ui.b, 'fireworks']]) {
     select.innerHTML = '';
-    for (const p of providers) {
+    for (const p of [...providers, CUSTOM]) {
       const o = document.createElement('option');
       o.value = p.name;
-      o.textContent = p.ready ? `${p.label} · ${shortModel(p.model)}` : `${p.label} (${p.why})`;
+      o.textContent = p.custom ? p.label
+        : (p.ready ? `${p.label} · ${shortModel(p.model)}` : `${p.label} (${p.why})`);
       o.disabled = !p.ready;
       select.append(o);
     }
@@ -45,10 +56,11 @@ function fillProviders() {
     const other = providers.find((p) => p.ready && p.name !== ui.a.value);
     if (other) ui.b.value = other.name;
   }
+  // One ready provider is enough: the other side can be the visitor's own.
   const ready = providers.filter((p) => p.ready).length;
-  ui.go.disabled = ready < 2;
+  ui.go.disabled = ready < 1;
   preview();
-  if (ready < 2) {
+  if (ready < 1) {
     ui.note.className = 'cmp-note bad';
     ui.note.textContent = 'Two providers need a key and a model before they can be compared: '
       + providers.filter((p) => !p.ready).map((p) => `${p.label}: ${p.why}`).join(' · ');
@@ -60,11 +72,18 @@ function buildPanel(slot, side) {
   node.innerHTML = '';
   node.append($('panel').content.cloneNode(true));
   node.className = 'cmp-panel';
-  node.querySelector('.cmp-name').textContent = side.label;
+  const title = node.querySelector('.cmp-name');
+  title.textContent = side.label;
+  // "Your provider (some-long-model-id)" would wrap at full size.
+  title.classList.toggle('long', side.label.length > 18);
   const tag = node.querySelector('.cmp-tag');
   tag.textContent = side.deployment;
   tag.classList.toggle('dedicated', side.deployment === 'dedicated');
   node.querySelector('.cmp-model').textContent = side.model;
+  tag.classList.toggle('unknown', side.deployment === 'serverless/unknown');
+  const caveat = node.querySelector('.cmp-caveat');
+  caveat.textContent = side.note || '';
+  caveat.hidden = !side.note;
   return {
     node, name: side.name, label: side.label,
     big: node.querySelector('[data-v="total"]'), sub: node.querySelector('[data-v="total-sub"]'),
@@ -78,8 +97,9 @@ function buildPanel(slot, side) {
 // Before anything runs, the panels already say who is racing.
 function preview() {
   if (state && !state.finished) return;
+  ui.own.hidden = ui.a.value !== 'custom' && ui.b.value !== 'custom';
   for (const [slot, select] of [['a', ui.a], ['b', ui.b]]) {
-    const side = providers.find((p) => p.name === select.value);
+    const side = select.value === 'custom' ? customSide() : providers.find((p) => p.name === select.value);
     if (!side) continue;
     const panel = buildPanel(slot, side);
     panel.reply.textContent = '';
@@ -88,6 +108,7 @@ function preview() {
 }
 ui.a.addEventListener('change', preview);
 ui.b.addEventListener('change', preview);
+ui.ownModel.addEventListener('input', preview);
 
 function resetRound() {
   for (const p of Object.values(state.panels)) {
@@ -306,7 +327,18 @@ ui.ask.addEventListener('submit', (e) => {
   ui.go.disabled = true;
   ui.note.className = 'cmp-note';
   ui.note.textContent = runs > 1 ? 'Running five times…' : 'Running…';
-  ws.send(JSON.stringify({ type: 'run', question: ui.question.value, sides: [ui.a.value, ui.b.value], runs }));
+  const request = { type: 'run', question: ui.question.value, sides: [ui.a.value, ui.b.value], runs };
+  if (request.sides.includes('custom')) {
+    const url = ui.ownUrl.value.trim();
+    if (!/^https:\/\//i.test(url)) {
+      ui.go.disabled = false;
+      ui.note.className = 'cmp-note bad';
+      ui.note.textContent = 'Your provider needs an https:// base URL.';
+      return;
+    }
+    request.custom = { base_url: url, key: ui.ownKey.value, model: ui.ownModel.value.trim() };
+  }
+  ws.send(JSON.stringify(request));
 });
 
 connect();

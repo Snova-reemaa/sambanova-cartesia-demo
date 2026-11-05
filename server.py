@@ -3624,6 +3624,24 @@ COMPARE_NO_TOOLS = (
     "spoken words. Never write a tool call, a function name or JSON.")
 
 
+# Runs against a visitor's own provider: per session, a few at a time. Each
+# one is a request from inside the cluster to an address a stranger typed,
+# so it is counted before anything is checked or sent.
+CUSTOM_RUNS = int(os.getenv("COMPARE_CUSTOM_RUNS", "10"))
+CUSTOM_WINDOW_SECONDS = 600
+_custom_runs = {}
+
+
+def custom_allowed(who, runs):
+    now = time.time()
+    used = [t for t in _custom_runs.get(who, []) if now - t < CUSTOM_WINDOW_SECONDS]
+    if len(used) + runs > CUSTOM_RUNS:
+        _custom_runs[who] = used
+        return False
+    _custom_runs[who] = used + [now] * runs
+    return True
+
+
 async def compare_page(request):
     return web.FileResponse(os.path.join(STATIC, "compare.html"))
 
@@ -3644,8 +3662,10 @@ async def compare_socket(request):
                 return
 
     pumping = asyncio.ensure_future(pump())
+    who = request.cookies.get(COOKIE_NAME) or caller_key(request)
     await out.put({"type": "providers", "providers": [providers.describe(n) for n in providers.names()],
-                   "settings": compare.SETTINGS, "max_runs": compare.MAX_RUNS})
+                   "settings": compare.SETTINGS, "max_runs": compare.MAX_RUNS,
+                   "custom": {"runs": CUSTOM_RUNS, "minutes": CUSTOM_WINDOW_SECONDS // 60}})
     running = None
     try:
         async for msg in ws:
@@ -3658,18 +3678,48 @@ async def compare_socket(request):
             if data.get("type") != "run" or (running and not running.done()):
                 continue
             question = said_text(data, "question")
-            sides = [n for n in (data.get("sides") or []) if n in providers.PROVIDERS][:2]
-            ready = [providers.describe(n) for n in sides]
-            if not question or len(sides) != 2 or sides[0] == sides[1] \
+            asked = [n for n in (data.get("sides") or [])
+                     if n in providers.PROVIDERS or n == "custom"][:2]
+            runs = data.get("runs") if data.get("runs") in (1, compare.MAX_RUNS) else 1
+            ready = [providers.describe(n) for n in asked if n != "custom"]
+            if not question or len(asked) != 2 or asked[0] == asked[1] \
                     or not all(r["ready"] for r in ready):
                 await out.put({"type": "refused", "why":
-                               "; ".join(r["why"] for r in ready if r["why"])
+                               "; ".join(f"{r['label']}: {r['why']}" for r in ready if r["why"])
                                or "Pick two different providers and ask something."})
                 continue
-            runs = data.get("runs") if data.get("runs") in (1, compare.MAX_RUNS) else 1
-            await out.put({"type": "start", "question": question, "sides": ready, "runs": runs})
-            running = asyncio.ensure_future(compare.compare(
-                sides, compare_messages(question), out.put_nowait, runs=runs))
+            sides = []
+            if "custom" in asked:
+                if not custom_allowed(who, runs):
+                    await out.put({"type": "refused", "why":
+                                   f"That's the limit for your own provider: {CUSTOM_RUNS} runs "
+                                   f"every {CUSTOM_WINDOW_SECONDS // 60} minutes. Try again shortly."})
+                    continue
+                theirs = data.get("custom") or {}
+                try:
+                    # The key goes straight into this run's client and
+                    # nowhere else; the message holding it is dropped below.
+                    mine = await providers.custom_side(
+                        theirs.get("base_url"), theirs.get("key"), theirs.get("model"))
+                except providers.Refused as why:
+                    await out.put({"type": "refused", "why": str(why)})
+                    continue
+                finally:
+                    theirs = data = msg = None
+            else:
+                mine = None
+            sides = [mine if n == "custom" else providers.side(n) for n in asked]
+            await out.put({"type": "start", "question": question,
+                           "sides": [s.public() for s in sides], "runs": runs})
+
+            async def go(sides=sides, mine=mine, question=question, runs=runs):
+                try:
+                    await compare.compare(sides, compare_messages(question),
+                                          out.put_nowait, runs=runs)
+                finally:
+                    if mine:
+                        await mine.close()
+            running = asyncio.ensure_future(go())
     finally:
         if running and not running.done():
             running.cancel()

@@ -24,8 +24,14 @@ saying which it was. Serverless unless COMPARE_DEPLOYMENT_<NAME> says
 otherwise.
 """
 
+import asyncio
+import ipaddress
 import os
+import re
+import socket
+import urllib.parse
 
+import httpx
 from openai import AsyncOpenAI
 
 PROVIDERS = {
@@ -104,12 +110,180 @@ def describe(name):
     model = model_for(name)
     why = None
     if not has_key(name):
-        why = f"No {p['key']} in .env"
+        # Shown in the picker as "Novita (no key set)", and the option is
+        # disabled until the key is in .env.
+        why = "no key set"
     elif not model:
         why = ("Set COMPARE_MODEL" if not os.getenv("COMPARE_MODEL")
                else f"No {name} id for {os.getenv('COMPARE_MODEL')}: set COMPARE_MODEL_{name.upper()}")
     return {"name": name, "label": p["label"], "model": model,
             "deployment": deployment(name), "ready": why is None, "why": why}
+
+
+class Side:
+    """One side of a comparison: who it is, how to reach it, how to label it."""
+
+    def __init__(self, name, label, client, model, ask_for_usage, deployment,
+                 note=None, secret=None):
+        self.name, self.label, self.client, self.model = name, label, client, model
+        self.ask_for_usage, self.deployment, self.note = ask_for_usage, deployment, note
+        # Only for scrubbing it out of anything shown; never sent anywhere.
+        self.secret = secret
+
+    def public(self):
+        """What the page may see. Never the key."""
+        return {"name": self.name, "label": self.label, "model": self.model,
+                "deployment": self.deployment, "note": self.note, "ready": True}
+
+    async def close(self):
+        if self.name == "custom":
+            await self.client.close()
+            self.client = self.secret = None
+
+
+def side(name):
+    p = PROVIDERS[name]
+    return Side(name, p["label"], client(name), model_for(name), p["ask_for_usage"],
+                deployment(name))
+
+
+# ================================================== a provider the user brings
+#
+# "Your own provider": any OpenAI-compatible endpoint, with the visitor's
+# own key, raced against ours. The server makes that request from inside
+# the cluster, to an address a stranger typed, so it is fenced in:
+#
+# - https only, and no user:password in the address;
+# - the host is resolved first and every address it gives must be public:
+#   no private, loopback, link-local, shared (100.64.0.0/10, where the pods
+#   live), multicast or reserved ranges, in IPv4 or IPv6, nor IPv4 hidden
+#   inside IPv6;
+# - the connection is pinned to the address that was checked, so a name
+#   that resolves somewhere else a moment later (DNS rebinding) cannot
+#   take it inside; TLS is still verified against the name;
+# - no redirects, and the transport refuses any host but the one given;
+# - a short timeout, the same max_tokens as everyone, no retries.
+#
+# The key lives only in that run's client and is dropped with it: it is
+# never logged, never written down, never sent back to the page, and is
+# scrubbed out of any error a provider echoes it in. The bench recorder
+# only ever wraps SambaNova's own client, so it never sees this one.
+
+CUSTOM_TIMEOUT_SECONDS = float(os.getenv("COMPARE_CUSTOM_TIMEOUT_SECONDS", "30"))
+CUSTOM_CONNECT_SECONDS = 5.0
+
+
+class Refused(Exception):
+    """A provider address that will not be called, and why, for the page."""
+
+
+def check_url(base_url):
+    """(scheme-checked URL, host, port), or Refused."""
+    url = (base_url or "").strip()
+    if not url:
+        raise Refused("Enter your provider's base URL, for example https://api.example.com/v1")
+    if len(url) > 300:
+        raise Refused("That URL is too long.")
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme != "https":
+        raise Refused("Use an https:// address. Plain http is not allowed.")
+    if parts.username or parts.password:
+        raise Refused("Leave the user name and password out of the URL; the key goes in its own field.")
+    if not parts.hostname:
+        raise Refused("That URL has no host name.")
+    try:
+        port = parts.port or 443
+    except ValueError:
+        raise Refused("That URL's port is not a number.")
+    host = parts.hostname.lower()
+    # An IP address must be written plainly. "2130706433", "0177.0.0.1" and
+    # "0x7f.1" are all 127.0.0.1 to some resolvers and something else to
+    # others (macOS reads 0177 as 177), and a guard that depends on which
+    # machine it runs on is not a guard.
+    labels = [part for part in host.split(".") if part]
+    if labels and all(re.fullmatch(r"0x[0-9a-f]*|[0-9]+", part) for part in labels):
+        try:
+            if str(ipaddress.ip_address(host)) != host:
+                raise ValueError
+        except ValueError:
+            raise Refused("That host looks like an IP address written in an unusual form. "
+                          "Use the provider's host name, or the address written plainly.")
+    return url.rstrip("/"), host, port
+
+
+def blocked(ip, allow=()):
+    """True for any address a request from inside the cluster must not reach."""
+    ip = ipaddress.ip_address(ip)
+    if getattr(ip, "ipv4_mapped", None):
+        ip = ip.ipv4_mapped
+    if any(ip in net for net in allow):
+        return False
+    return (not ip.is_global or ip.is_multicast or ip.is_reserved
+            or ip.is_loopback or ip.is_link_local or ip.is_private or ip.is_unspecified)
+
+
+async def resolve(host, port):
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(
+            host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        raise Refused(f"Could not find {host}. Check the URL.")
+    return sorted({info[4][0] for info in infos})
+
+
+class PinnedTransport(httpx.AsyncBaseTransport):
+    """Connects only to the one address that was checked, for the one host
+    that was given, and verifies TLS against that host's name."""
+
+    def __init__(self, host, ip, verify=True):
+        self.host, self.ip = host, ip
+        self.inner = httpx.AsyncHTTPTransport(verify=verify, retries=0)
+
+    async def handle_async_request(self, request):
+        if request.url.host != self.host or request.url.scheme != "https":
+            raise Refused("The provider tried to send the request somewhere else.")
+        request.url = request.url.copy_with(host=self.ip)
+        request.extensions = {**request.extensions, "sni_hostname": self.host}
+        return await self.inner.handle_async_request(request)
+
+    async def aclose(self):
+        await self.inner.aclose()
+
+
+async def custom_side(base_url, key, model, allow=(), verify=True):
+    """A Side for the visitor's own provider, or Refused with the reason.
+
+    `allow` and `verify` are for the tests' own local https server only;
+    nothing the page sends can set them.
+    """
+    url, host, port = check_url(base_url)
+    key = (key or "").strip()
+    model = (model or "").strip()
+    if not key:
+        raise Refused("Enter your provider's API key.")
+    if not model or len(model) > 200:
+        raise Refused("Enter the model name your provider uses, for example its id from /v1/models.")
+    try:
+        ipaddress.ip_address(host)
+        addresses = [host]
+    except ValueError:
+        addresses = await resolve(host, port)
+    if not addresses:
+        raise Refused(f"Could not find {host}. Check the URL.")
+    if any(blocked(ip, allow) for ip in addresses):
+        raise Refused(f"{host} points inside a private network, so it is blocked.")
+    try:
+        http = httpx.AsyncClient(
+            transport=PinnedTransport(host, addresses[0], verify=verify),
+            follow_redirects=False,
+            timeout=httpx.Timeout(CUSTOM_TIMEOUT_SECONDS, connect=CUSTOM_CONNECT_SECONDS))
+        client = AsyncOpenAI(api_key=key, base_url=url, max_retries=0, http_client=http,
+                             timeout=CUSTOM_TIMEOUT_SECONDS)
+    except (httpx.InvalidURL, ValueError):
+        raise Refused("That URL isn't valid. Check it and try again.")
+    return Side("custom", f"Your provider ({model})", client, model, True,
+                "serverless/unknown",
+                note=f"{host} · we can't verify how your provider is set up", secret=key)
 
 
 _clients = {}

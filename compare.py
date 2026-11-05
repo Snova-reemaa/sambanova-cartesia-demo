@@ -50,6 +50,15 @@ BETTER_HIGH = {"tps"}
 
 def failure(exc):
     """(kind, what to show) for anything that stopped a side."""
+    cause = exc.__cause__ or exc.__context__
+    if isinstance(exc, providers.Refused) or isinstance(cause, providers.Refused):
+        return "blocked", str(exc if isinstance(exc, providers.Refused) else cause)
+    if isinstance(exc, openai.APIStatusError) and 300 <= exc.status_code < 400:
+        return "redirect", f"The provider redirected ({exc.status_code}); redirects are not followed"
+    if isinstance(exc, openai.BadRequestError) and "model" in str(exc).lower():
+        return "not_found", "Unknown model (400): check the model name"
+    if isinstance(exc, openai.APIConnectionError) and "certificate" in str(cause or "").lower():
+        return "connection", "Could not connect securely (certificate problem)"
     if isinstance(exc, openai.RateLimitError):
         return "rate_limited", "Rate limited (429)"
     if isinstance(exc, openai.AuthenticationError):
@@ -67,10 +76,19 @@ def failure(exc):
     return "error", type(exc).__name__
 
 
-def detail(exc):
-    """The provider's own words, short, with anything key-shaped removed."""
+def detail(exc, secret=None):
+    """The provider's own words, short, with the key and anything key-shaped
+    removed: providers like to echo it ("Incorrect API key provided: sk-…")."""
     text = str(getattr(exc, "message", None) or exc)
-    return re.sub(r"[A-Za-z0-9_\-]{24,}", "…", text)[:160]
+    if secret:
+        text = text.replace(secret, "…")
+        if len(secret) >= 8:
+            text = text.replace(secret[:8], "…")
+    return re.sub(r"[A-Za-z0-9_\-]{20,}", "…", text)[:160]
+
+
+def scrub(text, secret):
+    return text.replace(secret, "…") if secret and text else text
 
 
 def looks_like_a_tool_call(text):
@@ -101,16 +119,18 @@ async def warm(client):
 
 
 async def race(names, messages, emit, settings=None):
-    """One round: every named provider, released at the same moment."""
+    """One round: every side, released at the same moment. A side is a
+    provider's name or a providers.Side (the visitor's own provider)."""
     settings = settings or SETTINGS
+    sides = [n if isinstance(n, providers.Side) else providers.side(n) for n in names]
     start = asyncio.Event()
     lined_up = []
     shared = {}
 
-    async def side(name):
-        client = providers.client(name)
+    async def run(entry):
+        name, client = entry.name, entry.client
         extra = {"max_tokens": settings["max_tokens"]}
-        if providers.PROVIDERS[name]["ask_for_usage"]:
+        if entry.ask_for_usage:
             extra["stream_options"] = {"include_usage": True}
         clock = StreamClock(on_first=lambda at: emit(
             {"type": "first_token", "side": name, "t": at - shared["t0"]}))
@@ -123,7 +143,7 @@ async def race(names, messages, emit, settings=None):
         out = {"side": name, "sent_after": sent - shared["t0"]}
 
         async def stream():
-            async for text in stream_chat(client, messages, model=providers.model_for(name),
+            async for text in stream_chat(client, messages, model=entry.model,
                                           stats=stats, temperature=settings["temperature"],
                                           extra=extra, clock=clock):
                 said.append(text)
@@ -151,12 +171,13 @@ async def race(names, messages, emit, settings=None):
                 )
         except Exception as exc:                              # every kind is shown
             kind, message = failure(exc)
-            out.update(ok=False, kind=kind, message=message, detail=detail(exc))
+            out.update(ok=False, kind=kind, message=scrub(message, entry.secret),
+                       detail=detail(exc, entry.secret))
         emit({"type": "side_done", **out})
         return out
 
-    tasks = [asyncio.ensure_future(side(n)) for n in names]
-    while len(lined_up) < len(names):
+    tasks = [asyncio.ensure_future(run(e)) for e in sides]
+    while len(lined_up) < len(sides):
         await asyncio.sleep(0)
     shared["t0"] = time.perf_counter()
     emit({"type": "go"})
@@ -166,6 +187,7 @@ async def race(names, messages, emit, settings=None):
 
 def summarise(names, rounds):
     """Median and worst per side and metric, over the runs that worked."""
+    names = [n.name if isinstance(n, providers.Side) else n for n in names]
     out = {}
     for name in names:
         results = [r for rnd in rounds for r in rnd if r["side"] == name]

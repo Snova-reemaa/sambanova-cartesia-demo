@@ -311,6 +311,20 @@ named. `providers.py` holds the providers; the app itself still uses only
 SambaNova. Not deployed. Model not chosen: set `COMPARE_MODEL` once Jorge
 confirms (see `bench/MODELS.md`, made by `bench/models.py`).
 
+**Your own provider** lets a visitor race SambaNova against any
+OpenAI-compatible endpoint with their own key. Because the server makes
+that request from inside the cluster, to an address a stranger typed:
+https only; the host is resolved and every address must be public
+(private, loopback, link-local, 100.64.0.0/10, cluster and IPv6 ranges
+blocked, and IPs in odd forms like `0177.0.0.1` refused outright, since
+resolvers disagree on them); the connection is pinned to the checked
+address with TLS verified against the name; no redirects; 30 s timeout,
+same max_tokens; 10 runs per 10 minutes per session
+(`COMPARE_CUSTOM_RUNS`). The key lives only in that run's client and is
+scrubbed from any error a provider echoes it in; `tests/compare_own.py`
+checks it never reaches a log, the bench recorder or the page. Novita
+stays listed as "no key set" until `NOVITA_API_KEY` is in `.env`.
+
 Found on 5 Nov 2026: Together's key is refused (401); SambaNova and
 Fireworks share `gpt-oss-120b` and MiniMax M3.1 Flash serverless; and on
 VoxNova's prompt with no tools, SambaNova's `gpt-oss-120b` mostly returns

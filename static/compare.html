@@ -30,6 +30,29 @@
         <label><input type="radio" name="runs" value="5"><span>5 runs</span></label>
       </div>
     </div>
+    <!-- Shown when either side is "Your own provider". The key is sent once,
+         for the run, and the server keeps it only in that run's memory. -->
+    <fieldset class="cmp-own" id="own" hidden>
+      <legend>Your own provider</legend>
+      <div class="cmp-own-row">
+        <label>Base URL
+          <input id="own-url" type="url" inputmode="url" placeholder="https://api.example.com/v1"
+                 autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="300">
+        </label>
+        <label>API key
+          <input id="own-key" type="password" autocomplete="off" autocapitalize="off"
+                 spellcheck="false" maxlength="400">
+        </label>
+        <label>Model name
+          <input id="own-model" placeholder="the model's id at your provider"
+                 autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="200">
+        </label>
+      </div>
+      <p class="cmp-own-note">Any OpenAI-compatible provider, over https. Your key is used for this
+        comparison only: kept in memory while it runs, then thrown away, never logged or stored.
+        We can't verify how your provider is set up (serverless or dedicated, what hardware), so its
+        results are labelled <strong>serverless/unknown</strong>.</p>
+    </fieldset>
     <div class="cmp-askrow">
       <input id="question" maxlength="600" placeholder="Ask both the same question"
              value="Where is my order 44812, and what can you do if it's late?" aria-label="Question">
@@ -58,6 +81,7 @@
     <span class="cmp-badge" hidden></span>
   </header>
   <p class="cmp-model"></p>
+  <p class="cmp-caveat" hidden></p>
   <div class="cmp-timer">
     <span class="cmp-big" data-v="total">0.00</span><span class="cmp-unit">s</span>
     <span class="cmp-big-label">Full reply</span>
