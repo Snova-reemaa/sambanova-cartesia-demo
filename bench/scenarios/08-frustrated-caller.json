@@ -1,0 +1,20 @@
+{
+  "id": "08-frustrated-caller",
+  "title": "Longer frustrated caller",
+  "about": "An escalating caller whose order has sat in 'preparing'; four turns of rising frustration.",
+  "language": "auto",
+  "turns": [
+    {
+      "say": "This is the third time I'm calling about order 45102. It's been stuck on 'preparing' for ages!"
+    },
+    {
+      "say": "No, that's not good enough. I paid for a stand mixer weeks ago."
+    },
+    {
+      "say": "Fine. What exactly are you going to do about it, and by when?"
+    },
+    {
+      "say": "If it isn't here by Friday I want a full refund, and I want that in writing."
+    }
+  ]
+}

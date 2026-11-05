@@ -1,0 +1,20 @@
+{
+  "id": "07-returning-caller",
+  "title": "Returning caller memory",
+  "about": "Riya Patel, a seeded customer with call history, confirms her email, reads back the code and asks about last time. Turns 1-2 are the code-driven read-back (no model call); turn 3 is the code.",
+  "language": "auto",
+  "turns": [
+    {
+      "say": "Hi, it's r.patel@example.com"
+    },
+    {
+      "say": "Yes, that's right."
+    },
+    {
+      "say": "{code}"
+    },
+    {
+      "say": "What did we talk about last time, and did that delivery update ever happen?"
+    }
+  ]
+}

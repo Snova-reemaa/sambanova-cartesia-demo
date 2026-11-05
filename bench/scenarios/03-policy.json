@@ -1,0 +1,14 @@
+{
+  "id": "03-policy",
+  "title": "Policy question",
+  "about": "Return-window questions answered from the knowledge base.",
+  "language": "auto",
+  "turns": [
+    {
+      "say": "What's your return window for unopened items?"
+    },
+    {
+      "say": "Can I return headphones once I've opened them?"
+    }
+  ]
+}

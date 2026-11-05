@@ -1,0 +1,17 @@
+{
+  "id": "02-refund-replacement",
+  "title": "Refund or replacement",
+  "about": "A faulty item from a delivered order: replacement or refund, and how long a refund takes.",
+  "language": "auto",
+  "turns": [
+    {
+      "say": "My Kelo travel kettle from order 44815 leaks at the base."
+    },
+    {
+      "say": "Can I get a replacement instead of a refund?"
+    },
+    {
+      "say": "And if I'd rather have the money back, how long does a refund take?"
+    }
+  ]
+}

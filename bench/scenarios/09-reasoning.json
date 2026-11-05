@@ -1,0 +1,14 @@
+{
+  "id": "09-reasoning",
+  "title": "Harder reasoning question",
+  "about": "Partial return arithmetic across an order's items, delivery charge and policy windows.",
+  "language": "auto",
+  "turns": [
+    {
+      "say": "On order 45102 I bought a stand mixer and a bowl set. If I return just the bowl set unopened and keep the mixer, how much do I get back, and is any of the delivery charge refunded?"
+    },
+    {
+      "say": "And if the mixer turned out to be faulty 40 days after delivery, what would my options be then?"
+    }
+  ]
+}

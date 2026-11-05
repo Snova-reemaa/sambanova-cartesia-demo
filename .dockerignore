@@ -34,3 +34,7 @@ listening
 
 # The suites run against the source tree, not against the image.
 tests
+
+# Benchmark scripts, prompts and notes: a dev tool, not part of the app.
+bench
+METRICS.md

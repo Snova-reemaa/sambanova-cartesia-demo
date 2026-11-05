@@ -1,0 +1,15 @@
+{
+  "id": "10-tool-heavy",
+  "title": "Tool-heavy turn",
+  "about": "Two order lookups in one turn, then a web search. Search is switched on for turn 2 only.",
+  "language": "auto",
+  "turns": [
+    {
+      "say": "Can you check orders 44812 and 44901 and tell me which one is more overdue?"
+    },
+    {
+      "say": "Is Evri having delivery problems in the UK at the moment?",
+      "search": true
+    }
+  ]
+}

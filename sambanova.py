@@ -7,10 +7,21 @@ DEFAULT_MODEL = "Meta-Llama-3.3-70B-Instruct"
 
 
 def get_client():
-    return AsyncOpenAI(
+    client = AsyncOpenAI(
         api_key=os.environ["SAMBANOVA_API_KEY"],
         base_url=os.getenv("SAMBANOVA_BASE_URL", "https://api.sambanova.ai/v1"),
     )
+    if os.getenv("BENCH_LOG"):
+        # Benchmark runs only: write down every request as sent. Loaded by
+        # path so a normal run, and the image, never import it.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "bench_recorder", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                           "bench", "recorder.py"))
+        recorder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(recorder)
+        recorder.attach(client, os.environ["BENCH_LOG"])
+    return client
 
 
 def get_model():

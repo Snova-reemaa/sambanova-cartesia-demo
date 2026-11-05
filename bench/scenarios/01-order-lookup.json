@@ -1,0 +1,17 @@
+{
+  "id": "01-order-lookup",
+  "title": "Order lookup",
+  "about": "A caller asks where an order is, then about its dates and tracking.",
+  "language": "auto",
+  "turns": [
+    {
+      "say": "Hi, where is my order 44812?"
+    },
+    {
+      "say": "When was it supposed to arrive?"
+    },
+    {
+      "say": "Who's the carrier, and do you have a tracking number?"
+    }
+  ]
+}

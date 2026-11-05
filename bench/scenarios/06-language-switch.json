@@ -1,0 +1,17 @@
+{
+  "id": "06-language-switch",
+  "title": "Language switch",
+  "about": "Starts in English and switches to Spanish mid-call; replies follow the caller's language.",
+  "language": "auto",
+  "turns": [
+    {
+      "say": "Hi, I'd like to check on order 44901."
+    },
+    {
+      "say": "¿Puede decirme cuándo llegará?"
+    },
+    {
+      "say": "Gracias. ¿Cuál es el número de seguimiento?"
+    }
+  ]
+}

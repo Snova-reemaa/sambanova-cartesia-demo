@@ -1,0 +1,14 @@
+{
+  "id": "04-uncovered",
+  "title": "Uncovered question (should decline)",
+  "about": "Questions the documentation does not cover: the agent should say so and offer a transfer, not invent a policy.",
+  "language": "auto",
+  "turns": [
+    {
+      "say": "Do you offer gift wrapping on orders?"
+    },
+    {
+      "say": "Will you price-match a cheaper competitor?"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "id": "05-handoff",
+  "title": "Handoff to a specialist",
+  "about": "A billing problem moves the call to Maya in billing, who introduces herself without waiting.",
+  "language": "auto",
+  "turns": [
+    {
+      "say": "I think I was charged twice for order 45010. I need to talk to someone about the payment."
+    },
+    {
+      "say": "Yes please, put me through."
+    },
+    {
+      "say": "Thanks. It's the second charge, on the 29th of September."
+    }
+  ]
+}
