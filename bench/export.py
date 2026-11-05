@@ -7,6 +7,9 @@ bench/raw/turns.jsonl (when run.py played each turn), and writes:
 
     bench/prompts/NNN-<scenario>-t<turn>-<kind>.txt   one request each
     bench/prompts/index.csv, index.json                what each file is
+    bench/prompts/core/                                the main comparison set:
+                                                       answer, answer-after-tools
+    bench/prompts/fact-check/                          the fact-checks, as an extra set
 
 Each prompt file is the request's messages and tools, exactly as sent, as
 one line of JSON: {"messages": [...], "tools": [...]}. No roles are
@@ -19,6 +22,7 @@ import csv
 import json
 import os
 import re
+import shutil
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RAW = os.path.join(HERE, "raw")
@@ -106,6 +110,28 @@ def main():
             text = said[row["scenario"]][earlier]
             if not any(text in u for u in users):
                 gaps.append(f"{row['file']}: turn {earlier} ({text[:40]!r}) not in history")
+
+    # The sets that go to the comparison. "core" is what a caller waits on:
+    # the answer, and the answer again once a tool has run. The fact-checks
+    # are many, small and alike, and go as an extra set of their own.
+    subsets = {"core": ("answer", "answer-after-tools"), "fact-check": ("fact-check",)}
+    for folder, kinds in subsets.items():
+        where = os.path.join(OUT, folder)
+        os.makedirs(where, exist_ok=True)
+        for old in os.listdir(where):
+            os.remove(os.path.join(where, old))
+        picked = [row for row in rows if row["kind"] in kinds]
+        for row in picked:
+            shutil.copyfile(os.path.join(OUT, row["file"]), os.path.join(where, row["file"]))
+        with open(os.path.join(where, "index.json"), "w", encoding="utf-8") as f:
+            json.dump(picked, f, ensure_ascii=False, indent=1)
+        with open(os.path.join(where, "index.csv"), "w", encoding="utf-8", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(rows[0]))
+            w.writeheader()
+            w.writerows(picked)
+        sizes = [row["approx_input_tokens"] for row in picked]
+        print(f"  {folder}/: {len(picked)} prompts, approx input tokens "
+              f"{min(sizes)}–{max(sizes)}")
 
     by_kind = {}
     for row in rows:

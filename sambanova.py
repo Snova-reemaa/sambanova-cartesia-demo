@@ -1,5 +1,6 @@
 import os
 import re
+import time
 
 from openai import AsyncOpenAI
 
@@ -51,6 +52,44 @@ def read_usage(chunk):
     data = usage.model_dump() if hasattr(usage, "model_dump") else dict(usage)
     picked = {k: data[k] for k in SERVER_FIELDS if data.get(k) is not None}
     return picked or None
+
+
+class StreamClock:
+    """Our own generation rate, timed on our side of the stream.
+
+    SambaNova reports its own tokens per second in the usage frame, and
+    other providers report nothing of the kind, so a comparison needs a
+    figure every provider's stream gives the same way: output tokens
+    divided by the time from the first streamed token to the last, on this
+    machine's clock. Tool-call pieces count as output; they are tokens the
+    model produced.
+
+    The token count is the provider's own completion_tokens from its usage
+    frame. A stream without one falls back to characters / 4, and says so.
+    """
+
+    def __init__(self):
+        self.first = self.last = None
+        self.chars = 0
+
+    def tick(self, text):
+        now = time.perf_counter()
+        if self.first is None:
+            self.first = now
+        self.last = now
+        self.chars += len(text or "")
+
+    def into(self, stats):
+        if stats is None or self.first is None:
+            return
+        tokens = stats.get("completion_tokens")
+        source = "usage"
+        if not tokens:
+            tokens, source = round(self.chars / 4), "estimate"
+        span = self.last - self.first
+        stats.update(stream_output_tokens=tokens, stream_tokens_source=source,
+                     stream_seconds=round(span, 4),
+                     stream_tokens_per_sec=round(tokens / span, 1) if span > 0 else None)
 
 
 DEFAULT_VISION_MODEL = "gemma-4-31B-it"
@@ -169,13 +208,16 @@ async def stream_tools(client, messages, model=None, tools=None, stats=None,
     calls = {}
     announced = False
     think = ThinkFilter()
+    clock = StreamClock()
 
     async for chunk in stream:
+        # Usage can ride on the closing frame with no choices (SambaNova) or
+        # on the last frame that has some (others), so look on every one.
+        if stats is not None:
+            found = read_usage(chunk)
+            if found:
+                stats.update(found)
         if not chunk.choices:
-            if stats is not None:
-                found = read_usage(chunk)
-                if found:
-                    stats.update(found)
             continue
 
         delta = chunk.choices[0].delta
@@ -185,6 +227,7 @@ async def stream_tools(client, messages, model=None, tools=None, stats=None,
                 announced = True
                 yield ("tool_start", None)
             for part in parts:
+                clock.tick((part.function and part.function.arguments) or "")
                 slot = calls.setdefault(part.index or 0, {"name": "", "arguments": ""})
                 if part.function:
                     if part.function.name:
@@ -192,10 +235,12 @@ async def stream_tools(client, messages, model=None, tools=None, stats=None,
                     if part.function.arguments:
                         slot["arguments"] += part.function.arguments
         elif delta.content:
+            clock.tick(delta.content)
             clean = think.feed(delta.content)
             if clean:
                 yield ("text", clean)
 
+    clock.into(stats)
     tail = think.flush()
     if tail:
         yield ("text", tail)
@@ -219,20 +264,23 @@ async def stream_chat(client, messages, model=None, stats=None, temperature=None
     )
 
     think = ThinkFilter()
+    clock = StreamClock()
     async for chunk in stream:
         # SambaNova closes the stream with a usage frame that carries no choices
         # — the one that used to crash this demo. It holds the inference timings.
+        if stats is not None:
+            found = read_usage(chunk)
+            if found:
+                stats.update(found)
         if not chunk.choices:
-            if stats is not None:
-                found = read_usage(chunk)
-                if found:
-                    stats.update(found)
             continue
         delta = chunk.choices[0].delta.content
         if delta:
+            clock.tick(delta)
             clean = think.feed(delta)
             if clean:
                 yield clean
+    clock.into(stats)
     tail = think.flush()
     if tail:
         yield tail

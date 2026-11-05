@@ -47,6 +47,7 @@ OFFLINE_SUITES = [
     ("tests/auth.py", "Auth0: no way in on a header, fails closed"),
     ("tests/chart.py", "the chart with Auth0 off and on"),
     ("tests/confirming.py", "names and emails read back, spelled, typed, 8 languages"),
+    ("tests/metrics.py", "tokens/sec timed by us; first token is the model's"),
 ]
 
 LIVE_SUITES = [

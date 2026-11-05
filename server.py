@@ -889,6 +889,15 @@ class Turn:
             "cost": self.meter.summary(),
             "cost_call": self.cost_call,
             "network_overhead_s": overhead,
+            # Tokens per second, timed by us from the stream (first token to
+            # last, provider's output-token count), the same on any provider;
+            # SambaNova's own figure beside it for reference. Both are for the
+            # turn's first model round.
+            "tokens_per_sec": self.server.get("stream_tokens_per_sec"),
+            "tokens_per_sec_from": self.server.get("stream_tokens_source"),
+            "output_tokens": self.server.get("stream_output_tokens"),
+            "stream_seconds": self.server.get("stream_seconds"),
+            "sambanova_tokens_per_sec": self.server.get("completion_tokens_after_first_per_sec"),
             "first_token_s": self.first_token,
             "last_token_s": self.last_token,
             "tts_start_s": self.tts_start,
@@ -2608,7 +2617,8 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
         # attached to one that is optional.
         if not session.disclosed and not intro and not interpreting:
             session.disclosed = True
-            await mark_first()
+            # Not the first token: a fixed line, said before the model has
+            # produced anything. First token means the model's first token.
             await emit(disclosure(code))
 
         if draft is not None:
@@ -2642,7 +2652,8 @@ async def run_turn(chan, conn, llm, session, turn_id, prompt, opts, interrupt, d
                         "say okay again — that has happened."},
                 ]
             if attachments or prelook:
-                await mark_first()
+                # The "let me have a look" bridge is fixed text too, so the
+                # first token waits for the model, as on any other turn.
                 bridge, description = await look_at_attachments()
                 # `extras` lasts one turn; `notes` goes into history. Without
                 # this, anything seen but not said out loud is gone next turn —

@@ -22,8 +22,10 @@ not been called.
 | Path | What it is |
 |---|---|
 | `scenarios/*.json` | The ten scripted calls: what the caller says each turn |
-| `prompts/NNN-<scenario>-t<turn>-<kind>.txt` | **One request each**, flattened: 93 of them |
-| `prompts/index.csv`, `prompts/index.json` | What each prompt file is (below) |
+| **`prompts/core/`** | **The main comparison set**: the 33 `answer` and `answer-after-tools` prompts, with their own `index.csv` / `index.json` |
+| `prompts/fact-check/` | The extra set: the 51 `fact-check` prompts, with their own index |
+| `prompts/NNN-<scenario>-t<turn>-<kind>.txt` | All 93 requests, flattened, one each (the two sets above are copies of some of these) |
+| `prompts/index.csv`, `prompts/index.json` | What each of the 93 is (below) |
 | `raw/requests.jsonl` | Each request exactly as handed to the SDK, with the model's reply beside it: text, tool calls, SambaNova's usage frame |
 | `raw/turns.jsonl` | When each turn was played and what came back, which places each request in its turn |
 | `recorder.py`, `run.py`, `export.py` | How they were made |
@@ -101,10 +103,17 @@ the kinds that match what you want to compare.
 | `translate` | 2 | a non-English question put into English for retrieval | not streamed; `max_tokens` 120 |
 | `write-up` | 1 | the call summarised after hang-up | `MiniMax-M3`; not streamed; `max_tokens` 400 |
 
-For time to first token on what a caller waits for, `answer` is the one
-that matters: its first token is the start of the reply. The fact-checks
+**Send `prompts/core/` for the main comparison.** It is what a caller
+waits on: the answer, and the answer again once a tool has run. About
+1,000–2,430 input tokens each.
+
+**`prompts/fact-check/` goes as a separate, extra set.** The fact-checks
 run alongside the answer, sentence by sentence, and are small (about
-600–1,600 tokens) with 30 tokens out.
+590–1,610 tokens in, 30 out) and alike, so mixed into the main set they
+would outnumber and skew it.
+
+The other kinds (`answer-retry`, `translate`, `write-up`) are in the full
+set only.
 
 ## What flattening loses
 

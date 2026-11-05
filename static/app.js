@@ -858,7 +858,10 @@ function showMetrics(t) {
   el('m-audio').innerHTML = secs(t ? t.firstAudio : null);
   ui.audioNote.textContent = t && t.draftLead
     ? `Answer started ${t.draftLead.toFixed(1)} s before you finished`
-    : 'From sending the question to hearing the reply';
+    // What is measured, not what it feels like: the server's turn clock to
+    // Cartesia's first chunk arriving at the server. The trip to the
+    // browser and the speaker's buffer are not in it.
+    : "Server: turn start to Cartesia's first audio";
   el('m-text').innerHTML = secs(t ? t.textDone : null);
   el('m-chars').textContent = t ? `${t.chars} chars` : '—';
   const rt = t && t.audioDone ? t.buffered / t.audioDone : null;
@@ -868,14 +871,17 @@ function showMetrics(t) {
   // the gap between the two numbers is what the wire cost.
   el('m-infer').innerHTML = ms(t ? t.inferTtft : null);
   const note = el('m-overhead');
+  // Tokens per second as we timed it from the stream (the same on any
+  // provider), with SambaNova's own figure beside it for reference.
+  const parts = [];
   if (t && t.overhead !== null && t.overhead !== undefined) {
-    const tps = t.server && t.server.completion_tokens_after_first_per_sec;
-    note.textContent = tps
-      ? `${Math.round(t.overhead * 1000)} ms was network · ${Math.round(tps)} tok/s`
-      : `${Math.round(t.overhead * 1000)} ms was network`;
-  } else {
-    note.textContent = "SambaNova's own clock";
+    parts.push(`${Math.round(t.overhead * 1000)} ms was network`);
   }
+  if (t && t.tokensPerSec) {
+    const sn = t.server && t.server.completion_tokens_after_first_per_sec;
+    parts.push(`${Math.round(t.tokensPerSec)} tok/s` + (sn ? ` (SambaNova says ${Math.round(sn)})` : ''));
+  }
+  note.textContent = parts.length ? parts.join(' · ') : "SambaNova's own clock";
 }
 
 
@@ -2010,6 +2016,7 @@ function onEvent(m) {
         turn.server = m.metrics.server || null;
         turn.inferTtft = m.metrics.inference_ttft_s;
         turn.overhead = m.metrics.network_overhead_s;
+        turn.tokensPerSec = m.metrics.tokens_per_sec;
         // A turn the user already stopped stays stopped; don't advertise it
         // as ready to play again.
         turn.status = turn.played ? 'played'
