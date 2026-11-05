@@ -152,9 +152,19 @@ async def race(names, messages, emit, settings=None):
         try:
             await asyncio.wait_for(stream(), TIMEOUT_SECONDS)
             end = time.perf_counter()
+            visible = "".join(said).strip()
+            cap = settings["max_tokens"]
+            hit_cap = (stats.get("stream_output_tokens") or 0) >= cap
             if stats.get("stream_first_at") is None:
                 out.update(ok=False, kind="empty", message="Empty reply")
-            elif looks_like_a_tool_call("".join(said)):
+            elif not visible:
+                # Tokens came (reasoning, streamed apart from the answer) but
+                # no words did: the clock ticked, the caller heard nothing.
+                # Counting that as a run would time thinking against an answer.
+                out.update(ok=False, kind="no_words", message=(
+                    f"No answer in words: it used all {cap} tokens before saying anything"
+                    if hit_cap else "No answer in words, only reasoning"))
+            elif looks_like_a_tool_call(visible):
                 # Not an answer: a few tokens of JSON would win on time
                 # against real words from the other side.
                 out.update(ok=False, kind="tool_call",
@@ -168,6 +178,8 @@ async def race(names, messages, emit, settings=None):
                     tokens=stats.get("stream_output_tokens"),
                     tokens_from=stats.get("stream_tokens_source"),
                     provider_tps=stats.get("completion_tokens_after_first_per_sec"),
+                    # Stopped by max_tokens: an answer, but not a whole one.
+                    truncated=hit_cap,
                 )
         except Exception as exc:                              # every kind is shown
             kind, message = failure(exc)
@@ -193,6 +205,7 @@ def summarise(names, rounds):
         results = [r for rnd in rounds for r in rnd if r["side"] == name]
         good = [r for r in results if r.get("ok")]
         side = {"runs": len(results), "ok": len(good),
+                "truncated": sum(1 for r in good if r.get("truncated")),
                 "failures": [r["message"] for r in results if not r.get("ok")]}
         for metric in METRICS:
             values = [r[metric] for r in good if r.get(metric) is not None]

@@ -190,7 +190,8 @@ function handle(m) {
         p.ttft.textContent = `${fmt(m.ttft)} s`;
         p.tps.textContent = fmtRate(m.tps);
         // Replies differ in length, so say how long each one was.
-        p.sub.textContent = m.tokens ? `${m.tokens} tokens${m.tokens_from === 'estimate' ? ' (estimated)' : ''}` : '';
+        p.sub.textContent = (m.tokens ? `${m.tokens} tokens${m.tokens_from === 'estimate' ? ' (estimated)' : ''}` : '')
+          + (m.truncated ? ' · cut off at the token limit' : '');
         p.tps.title = m.provider_tps ? `${p.label} reports ${Math.round(m.provider_tps)} tok/s itself` : '';
       } else {
         p.node.classList.add('failed');
@@ -262,7 +263,8 @@ function summarise(m) {
         p.ttft.textContent = `${fmt(side.ttft.median)} s`;
         p.tps.textContent = fmtRate(side.tps && side.tps.median);
         p.sub.textContent = `median of ${side.ok} · worst ${fmt(side.total.worst)} s`
-          + (side.ok < side.runs ? ` · ${side.runs - side.ok} of ${side.runs} failed` : '');
+          + (side.ok < side.runs ? ` · ${side.runs - side.ok} of ${side.runs} failed` : '')
+          + (side.truncated ? ` · ${side.truncated} cut off` : '');
         p.node.querySelector('.cmp-big-label').textContent = 'Full reply, median';
       } else {
         p.sub.textContent = `all ${side.runs} runs failed: ${side.failures[0] || ''}`;

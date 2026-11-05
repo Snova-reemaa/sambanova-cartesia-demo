@@ -30,11 +30,12 @@ class Fake:
     """One provider. `plan` says how the next request is answered."""
 
     def __init__(self, first=0.2, gap=0.03, tokens=10, status=200, hang=False,
-                 usage_in_last=False, words=None):
+                 usage_in_last=False, words=None, reasoning=False):
         self.port = free_port()
         self.plans = []
         self.default = dict(first=first, gap=gap, tokens=tokens, status=status,
-                            hang=hang, usage_in_last=usage_in_last, words=words)
+                            hang=hang, usage_in_last=usage_in_last, words=words,
+                            reasoning=reasoning)
         self.arrivals, self.bodies = [], []
 
     def plan(self, **kw):
@@ -71,7 +72,8 @@ class Fake:
                 await asyncio.sleep(p["gap"])
             last = n == p["tokens"] - 1
             piece = p["words"][n] if p["words"] else f"word{n} "
-            await resp.write(chunk({"content": piece},
+            delta = {"reasoning_content": piece} if p["reasoning"] else {"content": piece}
+            await resp.write(chunk(delta,
                                    usage if (last and p["usage_in_last"]) else None))
         if not p["usage_in_last"]:
             await resp.write(chunk(None, usage))
@@ -198,6 +200,21 @@ async def main():
         check("a reply that is only a tool call is not timed as an answer",
               not out["fireworks"]["ok"] and out["fireworks"]["kind"] == "tool_call"
               and "total" not in out["fireworks"])
+
+        # A reasoning model that spends every token thinking has said
+        # nothing; the clock ticked, but it is not an answer.
+        quick.plan(tokens=compare.SETTINGS["max_tokens"], gap=0, reasoning=True)
+        out = {r["side"]: r for r in await compare.race(
+            ["sambanova", "fireworks"], messages, lambda e: None)}
+        check("a run that only reasoned, no words, is not counted as an answer",
+              not out["fireworks"]["ok"] and out["fireworks"]["kind"] == "no_words"
+              and "used all" in out["fireworks"]["message"])
+        quick.plan(tokens=compare.SETTINGS["max_tokens"], gap=0)
+        out = {r["side"]: r for r in await compare.race(
+            ["sambanova", "fireworks"], messages, lambda e: None)}
+        check("a reply stopped by the token limit is marked as cut off",
+              out["fireworks"]["ok"] and out["fireworks"]["truncated"]
+              and not out["sambanova"]["truncated"])
 
         # Five runs: the median and the worst, and a failure counted, not
         # averaged in.
